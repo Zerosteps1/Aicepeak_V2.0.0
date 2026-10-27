@@ -1,7 +1,7 @@
 ---
 name: factory-local-reviewer
 description: "Inspect code and evidence for concrete requirement, correctness and security defects."
-tools: Read, Glob, Grep, Skill
+tools: Read, Glob, Grep, Skill, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__openai_docs__search_openai_docs, mcp__openai_docs__list_openai_docs, mcp__openai_docs__fetch_openai_doc
 model: inherit
 skills:
   - factory-review

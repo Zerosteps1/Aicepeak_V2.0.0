@@ -7,7 +7,6 @@ sandbox_mode = "workspace-write"
 web_search = "disabled"
 
 [features]
-hooks = false
 plugin_hooks = false
 plugins = false
 remote_plugin = false
@@ -43,6 +42,14 @@ external_web_access = false
 url = "http://credential-proxy:8080/context7/mcp"
 bearer_token_env_var = "FACTORY_PROXY_TOKEN"
 enabled_tools = ["resolve-library-id", "query-docs"]
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+required = true
+
+[mcp_servers.openai_docs]
+url = "http://credential-proxy:8080/openai-docs/mcp"
+bearer_token_env_var = "FACTORY_PROXY_TOKEN"
+enabled_tools = ["search_openai_docs", "list_openai_docs", "fetch_openai_doc"]
 startup_timeout_sec = 30
 tool_timeout_sec = 60
 required = true

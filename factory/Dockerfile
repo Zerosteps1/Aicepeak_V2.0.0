@@ -6,9 +6,8 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends python3 git ca-certificates ripgrep \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/factory-clients
-COPY client-tools.lock.json ./package-lock.json
-RUN node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("package-lock.json")).packages[""]; fs.writeFileSync("package.json",JSON.stringify(p));' \
-    && npm ci --omit=dev --include=optional --no-audit --no-fund \
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --include=optional --no-audit --no-fund \
     && PATH="/opt/factory-clients/node_modules/.bin:$PATH" \
     && test "$(codex --version)" = "codex-cli 0.164.0" \
     && test "$(claude --version)" = "2.1.311 (Claude Code)" \

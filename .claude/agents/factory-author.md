@@ -1,7 +1,7 @@
 ---
 name: factory-author
 description: "Implement the approved task in the isolated repository candidate."
-tools: Read, Glob, Grep, Bash, Edit, Write, Skill
+tools: Read, Glob, Grep, Bash, Edit, Write, Skill, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__openai_docs__search_openai_docs, mcp__openai_docs__list_openai_docs, mcp__openai_docs__fetch_openai_doc
 model: inherit
 skills:
   - factory-start

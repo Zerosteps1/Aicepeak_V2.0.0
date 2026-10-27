@@ -1,5 +1,7 @@
 """Boundary tests: no Docker daemon, network, personal configuration, or credentials."""
 import copy
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -7,15 +9,24 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import clients
-import proxy
-
-
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(os.environ.get("FACTORY_CANDIDATE", Path(__file__).resolve().parents[3])).resolve()
+# The harness is trusted base code, while the implementation under test must
+# come from the candidate even with python -I and previously imported modules.
+_package = types.ModuleType("_factory_client_candidate")
+_package.__path__ = [str(REPO / "tools/factory")]
+sys.modules[_package.__name__] = _package
+def _candidate_module(name):
+    spec = importlib.util.spec_from_file_location(f"{_package.__name__}.{name}", REPO / "tools/factory" / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+proxy = _candidate_module("proxy")
+clients = _candidate_module("clients")
 CONFIG = {
     "author_models": {"codex": "gpt-6-astra", "claude": None},
     "review_model": "gpt-6-astra",
@@ -92,6 +103,31 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(clients.ClientError, "metadata"):
                 clients.initialize_baseline(work)
             git.assert_not_called()
+
+    def test_smoke_never_mounts_outside_canary_or_provider_secrets(self):
+        calls = []
+        real_command = clients.command
+        image_id = "sha256:" + "b" * 64
+        def fake_command(args, **kwargs):
+            if args[0] == "git":
+                return real_command(args, **kwargs)
+            calls.append((args, kwargs.get("env", {})))
+            if args[1:3] == ["image", "inspect"]:
+                return image_id.encode()
+            if "_smoke" in args:
+                canary = Path(args[args.index("--host-canary") + 1])
+                self.assertTrue(canary.is_file())
+                mounts = [args[i + 1] for i, value in enumerate(args) if value == "--mount"]
+                self.assertEqual(len(mounts), 3)
+                self.assertTrue(all(value.endswith(",readonly") for value in mounts))
+                self.assertTrue(all(f"source={canary}" not in value and f"source={canary.parent}," not in value for value in mounts))
+                self.assertEqual(args[args.index("--network") + 1], "none")
+                return b'{"status":"passed","model_execution":"not attempted"}'
+            return b""
+        real_run = subprocess.run
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "never-in-smoke", "ANTHROPIC_API_KEY": "never-in-smoke", "CONTEXT7_API_KEY": "never-in-smoke"}), mock.patch.object(clients.shutil, "which", return_value="/usr/bin/docker"), mock.patch.object(clients, "command", side_effect=fake_command), mock.patch.object(clients.subprocess, "run", side_effect=lambda args, **kw: subprocess.CompletedProcess(args, 0) if args[0] == "docker" else real_run(args, **kw)):
+            self.assertEqual(clients.smoke(self.root)["status"], "passed")
+        self.assertNotIn("never-in-smoke", str(calls))
 
     def test_patch_contains_new_files_and_no_commit(self):
         work = Path(self.temp.name) / "work"
@@ -232,6 +268,48 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaisesRegex(proxy.Denied, "documentation"):
             self.policy.prepare("/context7/mcp", json.dumps(call).encode())
 
+    def test_openai_docs_fixed_route_tools_and_official_fetch_urls(self):
+        def invoke(name, arguments):
+            return self.policy.prepare("/openai-docs/mcp", json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}).encode())
+        url, _, kind = invoke("search_openai_docs", {"query": "Responses API", "limit": 3})
+        self.assertEqual((url, kind), ("https://developers.openai.com/mcp", "openai_docs"))
+        invoke("list_openai_docs", {"limit": 5})
+        for value in ("https://developers.openai.com/codex/skills", "https://platform.openai.com/docs/api-reference/responses", "https://learn.chatgpt.com/docs/skills"):
+            invoke("fetch_openai_doc", {"url": value})
+        for value in ("http://developers.openai.com/codex/skills", "https://developers.openai.com.evil.example/doc", "https://user@developers.openai.com/codex/skills", "https://127.0.0.1/docs", "https://platform.openai.com/settings", "https://developers.openai.com:443/codex/skills"):
+            with self.subTest(url=value), self.assertRaises(proxy.Denied):
+                invoke("fetch_openai_doc", {"url": value})
+        for name, arguments in (("get_openapi_spec", {}), ("fetch_openai_doc", {"url": "https://developers.openai.com/codex/skills", "headers": {}}), ("search_openai_docs", {"query": "test", "limit": 500})):
+            with self.subTest(name=name), self.assertRaises(proxy.Denied):
+                invoke(name, arguments)
+
+    def test_openai_docs_upstream_receives_no_job_or_provider_credential(self):
+        body = b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+        handler_type = proxy.make_handler(self.policy, {"job": "job-token", "codex": "provider-token", "context7": "context-token"})
+        handler = object.__new__(handler_type)
+        handler.headers = {"Authorization": "Bearer job-token", "Content-Length": str(len(body)), "Mcp-Session-Id": "public-session"}
+        handler.path = "/openai-docs/mcp"
+        handler.rfile = io.BytesIO(body)
+        handler.wfile = io.BytesIO()
+        handler.connection = mock.Mock()
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.headers = {"Content-Type": "application/json"}
+        response.read1.side_effect = [b'{"result":{}}', b'']
+        opener = mock.Mock()
+        opener.open.return_value = response
+        with mock.patch.object(proxy.urllib.request, "build_opener", return_value=opener):
+            handler.do_POST()
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, "https://developers.openai.com/mcp")
+        self.assertFalse(any(key.lower() in ("authorization", "x-api-key") for key in request.headers))
+        self.assertNotIn("token", str(request.headers))
+        handler.send_response.assert_called_once_with(200)
+
     def test_unknown_fields_media_and_expired_job_rejected(self):
         with self.assertRaisesRegex(proxy.Denied, "unsupported"):
             self.policy.prepare("/openai/v1/responses", self.payload(unknown_option=True))
@@ -253,6 +331,82 @@ class BrokerTests(unittest.TestCase):
 
 
 class LauncherTests(unittest.TestCase):
+    def test_candidate_modules_and_canonical_inputs_share_root(self):
+        self.assertEqual(Path(clients.__file__).resolve().parents[2], REPO)
+        self.assertEqual(Path(proxy.__file__).resolve().parents[2], REPO)
+
+    def test_standard_npm_lock_matches_reviewed_cli_versions(self):
+        package = json.loads((REPO / "factory/package.json").read_text())
+        lock = json.loads((REPO / "factory/package-lock.json").read_text())
+        self.assertEqual(package["dependencies"], lock["packages"][""]["dependencies"])
+        self.assertEqual(package["dependencies"]["@openai/codex"], clients.VERSIONS["codex"].split()[1])
+        self.assertEqual(package["dependencies"]["@anthropic-ai/claude-code"], clients.VERSIONS["claude"].split()[0])
+        self.assertTrue(all(item["integrity"].startswith("sha512-") for key, item in lock["packages"].items() if key))
+
+    def test_native_discovery_requires_canonical_project_skills_and_config(self):
+        skills = {"data": [{"cwd": "/work", "errors": [], "skills": [{"name": name, "enabled": True, "scope": "repo", "path": f"/work/.agents/skills/{name}/SKILL.md"} for name in clients.SKILLS]}]}
+        config = {"config": {"model_provider": "factory", "agents": {"factory_author": {}, "factory_senior_reviewer": {}}, "mcp_servers": {"context7": {}, "openai_docs": {}}}}
+        self.assertEqual(clients.inspect_codex_discovery(skills, config)["status"], "passed")
+        config["config"]["model_provider"] = "organization-required-provider"
+        with self.assertRaisesRegex(clients.ClientError, "administrator"):
+            clients.inspect_codex_discovery(skills, config)
+        config["config"]["model_provider"] = "factory"
+        skills["data"][0]["skills"][0]["path"] = "/tmp/unreviewed/SKILL.md"
+        with self.assertRaisesRegex(clients.ClientError, "canonical"):
+            clients.inspect_codex_discovery(skills, config)
+
+    def test_boundary_probe_detects_read_escape_and_writable_control(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "work"
+            project.mkdir()
+            (project / ".factory-smoke-readable").write_text("factory smoke positive control\n")
+            (project / "AGENTS.md").write_text("unchanged")
+            outside = root / "harmless-canary"
+            outside.write_text("harmless")
+            (project / ".factory-smoke-outside-link").symlink_to(outside)
+            with self.assertRaisesRegex(clients.ClientError, "canary was readable"):
+                clients.boundary_probe(project, outside)
+            outside.unlink()
+            with self.assertRaisesRegex(clients.ClientError, "instructions are writable"):
+                clients.boundary_probe(project, outside)
+            self.assertEqual((project / "AGENTS.md").read_text(), "unchanged")
+
+    def test_sonnet_author_accepts_standard_client_tools_with_explicit_prices(self):
+        config = copy.deepcopy(CONFIG)
+        config["author_models"]["claude"] = "claude-sonnet-5-5"
+        config["author_pricing_usd_per_million"]["claude"] = {"input": 2, "output": 10}
+        broker = proxy.BrokerPolicy(proxy.author_policy(config, "claude"))
+        payload = {"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": "test"}], "max_tokens": 100, "thinking": {"type": "adaptive"}, "tools": [{"name": "Read", "input_schema": {"type": "object"}}]}
+        url, _, kind = broker.prepare("/anthropic/v1/messages", json.dumps(payload).encode())
+        self.assertEqual(url, "https://api.anthropic.com/v1/messages")
+        self.assertEqual(kind, "claude")
+        self.assertEqual(broker.policy["max_cost"], 5)
+
+    def test_preflight_discovers_both_documentation_servers_before_inference(self):
+        seen = []
+        def respond(request, **kwargs):
+            value = json.loads(request.data)
+            seen.append((request.full_url, value["method"]))
+            if value["method"] == "initialize":
+                result = {"protocolVersion": "2025-03-26"}
+            elif value["method"] == "tools/list":
+                names = ("resolve-library-id", "query-docs") if "/context7/" in request.full_url else ("search_openai_docs", "list_openai_docs", "fetch_openai_doc", "get_openapi_spec")
+                result = {"tools": [{"name": name} for name in names]}
+            else:
+                result = {}
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.headers = {"Content-Type": "application/json"}
+            response.read.return_value = json.dumps({"id": value.get("id"), "result": result}).encode()
+            return response
+        opener = mock.Mock()
+        opener.open.side_effect = respond
+        with mock.patch.object(clients.urllib.request, "build_opener", return_value=opener):
+            clients.probe_documentation("test-job-token")
+        self.assertEqual([method for _, method in seen], ["initialize", "notifications/initialized", "tools/list"] * 2)
+        self.assertEqual({url for url, _ in seen}, {"http://credential-proxy:8080/context7/mcp", "http://credential-proxy:8080/openai-docs/mcp"})
+
     def test_final_report_omits_reasoning_and_keeps_dispute(self):
         output = b'\n'.join(json.dumps(event).encode() for event in [
             {"type": "item.completed", "item": {"type": "reasoning", "text": "PRIVATE DO NOT PUBLISH"}},
@@ -278,11 +432,13 @@ class LauncherTests(unittest.TestCase):
         codex = clients.worker_arguments("codex", "gpt-6-astra")
         self.assertIn("--ephemeral", codex)
         self.assertIn("--ignore-user-config", codex)
+        self.assertNotIn("--ignore-rules", codex)
         self.assertNotIn("resume", codex)
         claude = clients.worker_arguments("claude", "example-model")
         self.assertIn("--no-session-persistence", claude)
         self.assertIn("--strict-mcp-config", claude)
         self.assertIn("project", claude)
+        self.assertIn("mcp__openai_docs__fetch_openai_doc", claude[claude.index("--allowedTools") + 1])
         self.assertNotIn("--bare", claude)
 
     def test_process_environment_does_not_inherit_secrets(self):

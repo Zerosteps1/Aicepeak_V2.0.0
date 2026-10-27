@@ -11,6 +11,7 @@ import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,23 +106,30 @@ class BrokerPolicy:
             raise Denied("request must contain valid JSON") from None
         if not isinstance(data, dict):
             raise Denied("JSON object required")
-        if path == "/context7/mcp":
+        if path in ("/context7/mcp", "/openai-docs/mcp"):
+            kind = "context7" if path == "/context7/mcp" else "openai_docs"
             method = data.get("method")
             if method not in ("initialize", "notifications/initialized", "ping", "tools/list", "tools/call"):
-                raise Denied("unsupported Context7 method")
+                raise Denied("unsupported documentation MCP method")
             if method == "tools/call":
                 params = data.get("params", {})
-                if not isinstance(params, dict) or params.get("name") not in ("resolve-library-id", "query-docs"):
-                    raise Denied("only Context7 documentation tools are allowed")
+                allowed_tools = ("resolve-library-id", "query-docs") if kind == "context7" else ("search_openai_docs", "list_openai_docs", "fetch_openai_doc")
+                if not isinstance(params, dict) or params.get("name") not in allowed_tools:
+                    raise Denied("only reviewed documentation tools are allowed")
                 arguments = params.get("arguments")
-                required = ("libraryName", "query") if params["name"] == "resolve-library-id" else ("libraryId", "query")
-                if not isinstance(arguments, dict) or not all(isinstance(arguments.get(k), str) and 0 < len(arguments[k]) <= 8000 for k in required):
-                    raise Denied("invalid Context7 arguments")
+                if not isinstance(arguments, dict):
+                    raise Denied("invalid documentation arguments")
+                if kind == "context7":
+                    required = ("libraryName", "query") if params["name"] == "resolve-library-id" else ("libraryId", "query")
+                    if not all(isinstance(arguments.get(k), str) and 0 < len(arguments[k]) <= 8000 for k in required):
+                        raise Denied("invalid Context7 arguments")
+                else:
+                    validate_openai_docs_arguments(params["name"], arguments)
             with self.lock:
                 if self.context_requests >= 64:
-                    raise Denied("Context7 request limit exceeded")
+                    raise Denied("documentation MCP request limit exceeded")
                 self.context_requests += 1
-            return "https://mcp.context7.com/mcp", body, "context7"
+            return ("https://mcp.context7.com/mcp" if kind == "context7" else "https://developers.openai.com/mcp"), body, kind
         allowed = {
             "codex": ("/openai/v1/responses", "https://api.openai.com/v1/responses", "max_output_tokens"),
             "claude": ("/anthropic/v1/messages", "https://api.anthropic.com/v1/messages", "max_tokens"),
@@ -175,6 +183,27 @@ class BrokerPolicy:
         return upstream + ("?beta=true" if path.endswith("?beta=true") else ""), json.dumps(data, separators=(",", ":")).encode(), self.policy["runner"]
 
 
+def validate_openai_docs_arguments(name: str, arguments: dict):
+    fields = {"search_openai_docs": {"query", "limit", "cursor"}, "list_openai_docs": {"limit", "cursor"}, "fetch_openai_doc": {"url", "anchor"}}[name]
+    if set(arguments) - fields:
+        raise Denied("unsupported OpenAI Docs arguments")
+    for key in ("query", "cursor", "anchor"):
+        if key in arguments and (not isinstance(arguments[key], str) or not 0 < len(arguments[key]) <= 8000):
+            raise Denied("invalid OpenAI Docs text argument")
+    if name == "search_openai_docs" and "query" not in arguments:
+        raise Denied("OpenAI Docs search requires a query")
+    if "limit" in arguments and (isinstance(arguments["limit"], bool) or not isinstance(arguments["limit"], int) or not 1 <= arguments["limit"] <= 20):
+        raise Denied("OpenAI Docs result limit must be 1..20")
+    if name == "fetch_openai_doc":
+        value = arguments.get("url")
+        if not isinstance(value, str) or not 0 < len(value) <= 2048 or any(ord(c) < 33 for c in value):
+            raise Denied("invalid OpenAI Docs URL")
+        parsed = urllib.parse.urlsplit(value)
+        allowed = parsed.hostname == "developers.openai.com" or (parsed.hostname in ("platform.openai.com", "learn.chatgpt.com") and parsed.path.startswith("/docs/"))
+        if parsed.scheme != "https" or not allowed or parsed.username or parsed.password or parsed.port is not None or parsed.query or parsed.fragment:
+            raise Denied("only public official OpenAI documentation URLs are allowed")
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -223,7 +252,7 @@ def make_handler(policy: BrokerPolicy, secrets: dict):
                     raise Denied("incomplete request")
                 upstream, forwarded, kind = policy.prepare(self.path, body)
                 key = secrets.get(kind)
-                if not key:
+                if kind != "openai_docs" and not key:
                     raise Denied("upstream credential not configured")
                 headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
                 if kind == "claude":
@@ -234,9 +263,9 @@ def make_handler(policy: BrokerPolicy, secrets: dict):
                     selected = [item.strip() for item in beta.split(",") if item.strip() in allowed_betas]
                     if selected:
                         headers["anthropic-beta"] = ",".join(selected)
-                else:
+                elif kind != "openai_docs":
                     headers["Authorization"] = "Bearer " + key
-                if kind == "context7":
+                if kind in ("context7", "openai_docs"):
                     for header in ("Mcp-Session-Id", "MCP-Protocol-Version"):
                         value = self.headers.get(header)
                         if value and len(value) <= 512 and all(32 <= ord(c) < 127 for c in value):
@@ -247,7 +276,7 @@ def make_handler(policy: BrokerPolicy, secrets: dict):
                     self.send_response(response.status)
                     self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
                     self.send_header("Connection", "close")
-                    if kind == "context7" and response.headers.get("Mcp-Session-Id"):
+                    if kind in ("context7", "openai_docs") and response.headers.get("Mcp-Session-Id"):
                         self.send_header("Mcp-Session-Id", response.headers["Mcp-Session-Id"])
                     self.end_headers()
                     self.close_connection = True

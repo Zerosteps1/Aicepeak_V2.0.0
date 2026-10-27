@@ -6,6 +6,13 @@
       "headers": {
         "Authorization": "Bearer ${FACTORY_PROXY_TOKEN}"
       }
+    },
+    "openai_docs": {
+      "type": "http",
+      "url": "http://credential-proxy:8080/openai-docs/mcp",
+      "headers": {
+        "Authorization": "Bearer ${FACTORY_PROXY_TOKEN}"
+      }
     }
   }
 }

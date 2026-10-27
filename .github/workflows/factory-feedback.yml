@@ -1,0 +1,21 @@
+name: Factory review feedback ingress
+run-name: factory-feedback:${{ github.event.pull_request.number }}:${{ github.event_name }}:${{ github.event.review.id || github.event.comment.id }}
+
+on:
+  pull_request_review:
+    types: [submitted, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+
+# These triggers can load PR-controlled YAML. There is no checkout, secret,
+# cache, write token, or artifact. A default-branch workflow_run continuation
+# treats the run title only as untrusted numeric identifiers and re-reads the API.
+permissions: {}
+cache-mode: none
+
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - run: echo 'Feedback metadata available to the trusted dispatcher.'

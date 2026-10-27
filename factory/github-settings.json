@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "repository": "Zerosteps1/Aicepeak_V2.0.0",
+  "quality_ruleset_name": "Factory mandatory review and checks",
+  "human_ruleset_name": "Factory human PR merges only",
+  "required_checks": ["factory/deterministic", "factory/senior-review"],
+  "actions": {"enabled": true, "allowed_actions": "selected", "sha_pinning_required": true},
+  "selected_actions": {"github_owned_allowed": true, "verified_allowed": false, "patterns_allowed": []},
+  "workflow_permissions": {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": false},
+  "environment_secrets": ["OPENAI_API_KEY", "FACTORY_PUBLISHER_APP_PRIVATE_KEY", "FACTORY_WRITER_APP_PRIVATE_KEY"],
+  "optional_environment_secrets": ["ANTHROPIC_API_KEY", "CONTEXT7_API_KEY"],
+  "publisher_permissions": {"metadata": "read", "contents": "read", "pull_requests": "write", "checks": "write", "actions": "read"},
+  "writer_permissions": {"metadata": "read", "contents": "write", "pull_requests": "write"}
+}

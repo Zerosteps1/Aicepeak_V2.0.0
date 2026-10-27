@@ -1,0 +1,4 @@
+# BLOCKED: verified human maintainers have not been configured.
+# Generate only after API verification:
+# python3 tools/factory/settings.py codeowners
+# Commit the generated file through a reviewed bootstrap PR.

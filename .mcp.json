@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "context7": {
+      "type": "http",
+      "url": "http://credential-proxy:8080/context7/mcp",
+      "headers": {
+        "Authorization": "Bearer ${FACTORY_PROXY_TOKEN}"
+      }
+    }
+  }
+}

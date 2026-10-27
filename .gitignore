@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.factory-runtime/
+.env
+.env.*
+!.env.example

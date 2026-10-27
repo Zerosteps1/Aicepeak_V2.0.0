@@ -2,13 +2,15 @@ import copy
 import base64
 import importlib.util
 import json
+import os
+import sys
 from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from tools.factory import settings
-
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(ROOT / 'tools/factory'))
+import settings
 SPEC = json.loads((ROOT / "factory/github-settings.json").read_text())
 _loader = importlib.util.spec_from_file_location("factory_dispatcher", ROOT / ".github/scripts/dispatch_factory.py")
 dispatcher = importlib.util.module_from_spec(_loader)
@@ -167,6 +169,8 @@ class DispatcherTests(unittest.TestCase):
             calls.append((method, endpoint, body))
             if method == "POST":
                 return None
+            if endpoint.endswith('/comments?per_page=100&page=1') and endpoint not in responses:
+                return []
             if endpoint not in responses:
                 raise AssertionError(endpoint)
             return responses[endpoint]
@@ -192,6 +196,23 @@ class DispatcherTests(unittest.TestCase):
         post = next(call for call in calls if call[0] == "POST")
         self.assertEqual(post[2], {"ref": "main", "inputs": {"pr": "4", "feedback_kind": "issue_comment", "feedback_id": "55"}})
         self.assertNotIn("NEVER FORWARD BODY", json.dumps(calls))
+
+    def test_only_obsolete_authenticated_runs_are_cancelled(self):
+        prefix=dispatcher.PREFIX
+        comment={'performed_via_github_app':{'id':201},'body':'<!-- factory-ledger:v1 -->\n{"check_id":8}'}
+        check={'app':{'id':201},'status':'in_progress','external_id':f'{settings.REPOSITORY}:4:{"a"*40}:{"b"*40}:9:1'}
+        responses={prefix+'/issues/4/comments?per_page=100&page=1':[comment,comment],
+                   prefix+'/check-runs/8':check,
+                   prefix+'/actions/runs/9':{'status':'in_progress','event':'workflow_dispatch','head_sha':'b'*40,'repository':{'full_name':settings.REPOSITORY},'workflow_id':6},
+                   prefix+'/actions/workflows/6':{'path':'.github/workflows/factory.yml'}}
+        calls=[]
+        def request(method,path,data=None):
+            calls.append((method,path));return responses.get(path)
+        with patch.object(dispatcher,'api',side_effect=request):
+            dispatcher.cancel_obsolete(config(),4,{'head':{'sha':'a'*40},'base':{'sha':'b'*40}})
+            self.assertFalse(any(m=='POST' for m,p in calls))  # Title-only edit.
+            dispatcher.cancel_obsolete(config(),4,{'head':{'sha':'c'*40},'base':{'sha':'b'*40}})
+        self.assertEqual([(m,p) for m,p in calls if m=='POST'],[('POST',prefix+'/actions/runs/9/cancel')])
 
     def test_wrong_default_ref_and_forged_comment_author_fail(self):
         with self.assertRaises(RuntimeError):

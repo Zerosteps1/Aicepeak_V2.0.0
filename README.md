@@ -19,14 +19,14 @@ python3 tools/factory/clients.py smoke --root .
 python3 tools/factory/verify.py --root .
 ```
 
-Der Doctor prüft lesend lokale Voraussetzungen und GitHub-CLI-Authentifizierung. Er zeigt nur Secret-Präsenz, niemals Werte. Exitcode 2 bedeutet offene Voraussetzungen oder ausstehende Live-Abnahme; lokale Präsenz ist kein Betriebsnachweis. `smoke` prüft nur Container/CLI-Versionen. `verify.py` benötigt `actionlint` und `gitleaks` im PATH; `--structure-only` ersetzt die vollständige Prüfung nicht. Im Image sind beide enthalten. Auf Linux installiert `python3 factory/install_tools.py --lock factory/tools.lock.json --destination /tmp/aicepeak-factory-tools` die geprüften Binaries; dieses Verzeichnis anschließend in den PATH aufnehmen. Andere Hosts benötigen passende offizielle Binaries derselben Versionen.
+Der Doctor prüft lesend lokale Voraussetzungen und GitHub-CLI-Authentifizierung. Er zeigt nur Secret-Präsenz, niemals Werte. Exitcode 2 bedeutet offene Voraussetzungen oder ausstehende Live-Abnahme; lokale Präsenz ist kein Betriebsnachweis. `smoke` prüft Containergrenzen, einen ungemounteten Testinhalt, CLI-Versionen und native Discovery; authentifizierte Modell- und MCP-Ausführung ist eine gesonderte Live-Abnahme. `verify.py` benötigt `actionlint` und `gitleaks` im PATH; `--structure-only` ersetzt die vollständige Prüfung nicht. Im Image sind beide enthalten. Auf Linux installiert `python3 factory/install_tools.py --lock factory/tools.lock.json --destination /tmp/aicepeak-factory-tools` die geprüften Binaries; dieses Verzeichnis anschließend in den PATH aufnehmen. Andere Hosts benötigen passende offizielle Binaries derselben Versionen.
 
-Provider- und Context7-Schlüssel ausschließlich über die Secret-Funktion der Launcher-Umgebung bereitstellen: für Codex `OPENAI_API_KEY` und `CONTEXT7_API_KEY`; für Claude zusätzlich `ANTHROPIC_API_KEY`. Claude benötigt zuerst ein geprüftes exaktes Autormodell und Preise in `factory/config.json`. Bei einem abweichenden Docker-Endpunkt `FACTORY_DOCKER_HOST` setzen.
+Provider- und Context7-Schlüssel ausschließlich über die Secret-Funktion der Launcher-Umgebung bereitstellen: für Codex `OPENAI_API_KEY` und `CONTEXT7_API_KEY`; für Claude zusätzlich `ANTHROPIC_API_KEY`. Claude ist auf `claude-sonnet-5-5` mit dokumentierten Preisannahmen konfiguriert; tatsächlicher API-Zugang bleibt zu prüfen. Bei einem abweichenden Docker-Endpunkt `FACTORY_DOCKER_HOST` setzen.
 
 ```sh
 python3 tools/factory/engine.py model-smoke
 python3 tools/factory/clients.py launch --root . --runner codex
-# Nach Konfiguration auch: --runner claude
+# Für Claude: --runner claude
 ```
 
 Im frischen Client mit `factory-start` beginnen und den versionierten Auftrag nennen. `factory-change` implementiert, `factory-review` prüft lokal, `factory-fix-review` bearbeitet Rückmeldungen. Das Startprogramm liefert einen Patch und verändert den ursprünglichen Checkout nicht. Weitere Details: [Clients](factory/clients.md), [Beitragen](CONTRIBUTING.md), [Policy](factory/policy.md).
@@ -37,7 +37,7 @@ Im frischen Client mit `factory-start` beginnen und den versionierten Auftrag ne
 2. Zwei [GitHub Apps registrieren](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) und ausschließlich im Zielrepository installieren. Der genaue Rechtesplit steht in `factory/github-settings.json`: Publisher publiziert Checks/Feedback, Writer schreibt Korrekturbranches. Reale IDs eintragen; keine App erhält Bypass. `python3 tools/factory/settings.py codeowners` verifiziert die menschlichen Identitäten und erzeugt CODEOWNERS. Beide Änderungen vor Veröffentlichung committen. [Einrichtung und API-Prüfung](factory/github.md).
 3. Bei weiterhin leerem Remote erstellt der **Mensch** einmalig einen leeren `main`-Commit. Danach die lokale Factory-Historie in einem separaten Veröffentlichungsbranch anbinden; `factory/setup` bleibt erhalten. Diese Bootstrap-Ausnahme benötigt menschliche Prüfung, da die Factory noch nicht auf `main` existiert:
 
-```sh
+````sh
 # Mensch, einmalig in einem neuen leeren Verzeichnis:
 git init --initial-branch=main
 git remote add origin git@github.com:Zerosteps1/Aicepeak_V2.0.0.git
@@ -49,8 +49,17 @@ git fetch origin main
 git switch -c factory/bootstrap-publish factory/setup
 git merge --allow-unrelated-histories --no-edit origin/main
 git push -u origin factory/bootstrap-publish
-gh pr create --base main --head factory/bootstrap-publish --title "Set up repository factory" --body-file /path/to/reviewed-pr-body.md
+gh pr create --base main --head factory/bootstrap-publish --title "Set up repository factory" --body-file - <<'PR_BODY'
+This bootstrap adds the repository-only factory, two isolated author clients,
+trusted tests, Astra-high review, authenticated human feedback and bounded fixes.
+See factory/evidence.md for executed checks and outstanding live activation.
+Work order: docs/work/FACTORY-001.md. Human merge required; no product code.
+
+```factory-handoff
+{"runner":"codex","task":"docs/work/FACTORY-001.md","owner":"Zerosteps1"}
 ```
+PR_BODY
+````
 
 4. Mensch prüft und merged den Bootstrap-PR; kein Agent pusht auf `main` oder merged. Für die anschließenden Settings-Prüfungen zusätzlich kurzlebige `FACTORY_PUBLISHER_APP_JWT` und `FACTORY_WRITER_APP_JWT` bereitstellen.
 5. `settings.py inspect`, dann `settings.py diff` prüfen und `settings.py apply` bewusst ausführen. Das installiert zwei aktive Rulesets: Pflichtchecks ohne Bypass sowie Default-Branch-Updates nur durch menschliche PR-Merges. CODEOWNER-Freigabe und auf die Publisher-App gebundene Checks bleiben erforderlich. Das Credential-Environment `factory-control` darf ausschließlich den Default-Branch zulassen.

@@ -9,12 +9,6 @@ on:
     workflows: [Factory review feedback ingress]
     types: [completed]
   push:
-  workflow_dispatch:
-    inputs:
-      pr:
-        description: Pull request number for a manual retry
-        required: true
-        type: string
 
 permissions: {}
 cache-mode: none
@@ -27,6 +21,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
       actions: write
     steps:
       - name: Checkout immutable trusted orchestration

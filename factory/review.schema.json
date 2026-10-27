@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "pr": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "head_sha": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "[0-9a-f]{40}"
+    },
+    "base_sha": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "[0-9a-f]{40}"
+    },
+    "policy_sha": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "[0-9a-f]{40}"
+    },
+    "run_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "model": {
+      "type": "string",
+      "const": "gpt-6-astra"
+    },
+    "effort": {
+      "type": "string",
+      "const": "high"
+    },
+    "scope": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "minItems": 1,
+      "maxItems": 1000
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 3000
+      },
+      "minItems": 0,
+      "maxItems": 30
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 3000
+      },
+      "minItems": 0,
+      "maxItems": 30
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "changes_requested",
+        "blocked"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "[A-Z0-9_-]+"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "impact": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          },
+          "requirement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          },
+          "minimal_fix": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          },
+          "verification": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000
+          }
+        },
+        "required": [
+          "id",
+          "priority",
+          "file",
+          "line",
+          "impact",
+          "evidence",
+          "requirement",
+          "minimal_fix",
+          "verification"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 30
+    },
+    "run_attempt": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "repository",
+    "pr",
+    "head_sha",
+    "base_sha",
+    "policy_sha",
+    "run_id",
+    "model",
+    "effort",
+    "scope",
+    "evidence",
+    "limitations",
+    "complete",
+    "outcome",
+    "summary",
+    "findings",
+    "run_attempt"
+  ],
+  "additionalProperties": false
+}

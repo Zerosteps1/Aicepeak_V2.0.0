@@ -31,6 +31,6 @@ python3 tools/factory/clients.py launch --root . --runner codex
 # Im Client: factory-fix-review für PR #<Nummer>, aktuellen Auftrag und Findings.
 ```
 
-Launcher-Secret-Präsenz ersetzt keine gültigen API-Rechte. Bei fehlendem Zugang die in [README](README.md) genannten Secrets/Modelle herstellen; bei Konflikt zuerst menschliche Entscheidung im Auftrag festhalten. Patch prüfen, Branch aktualisieren; der neue Head startet frische Prüfungen. Ohne Codeänderung kann ein verifizierter Maintainer den Factory-Workflow mit PR-Nummer erneut starten. Alte Checks geben einen neuen Head oder Basisstand nicht frei.
+Launcher-Secret-Präsenz ersetzt keine gültigen API-Rechte. Bei fehlendem Zugang die in [README](README.md) genannten Secrets/Modelle herstellen; bei Konflikt zuerst menschliche Entscheidung im Auftrag festhalten. Patch prüfen, Branch aktualisieren; der neue Head startet frische Prüfungen. Ohne Codeänderung kann ein verifizierter Maintainer einen neuen Lauf mit `gh workflow run factory.yml --ref main -f pr=<Nummer> -f retry=true` starten. GitHubs „Re-run jobs“ wird abgewiesen, weil es alte Budgetreservierungen wiederverwenden würde. Alte Checks geben einen neuen Head oder Basisstand nicht frei.
 
 Merge erst nach beiden App-gebundenen Pflichtchecks, menschlicher CODEOWNER-Freigabe und geklärten Threads. Ein Mensch entscheidet und merged. Modelle haben keine GitHub-Zugangsdaten; keine Direktpushes auf `main`, automatischen Merges oder eigenmächtigen Schutzregeländerungen.

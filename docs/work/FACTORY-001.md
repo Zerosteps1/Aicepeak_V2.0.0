@@ -2,6 +2,10 @@
 
 Status: durch den aktuellen Setup-Auftrag autorisierte Factory-Arbeit; Bootstrap-PR benötigt menschliche Prüfung. Keine Produktfreigabe.
 
+```factory-task
+{"status":"approved","kind":"factory","allowed_paths":[".github/",".agents/",".claude/",".codex/",".mcp.json","AGENTS.md","CLAUDE.md","README.md","CONTRIBUTING.md",".gitignore","factory-smoke.json","factory/","tools/factory/","docs/work/","docs/decisions/"]}
+```
+
 ## Ziel und Umfang
 
 Für `Zerosteps1/Aicepeak_V2.0.0` gemeinsame Regeln, vier Skills und Autor-/Reviewer-Rollen für Codex und Claude Code einrichten. Zentraler Reviewer ausschließlich `gpt-6-astra`, Effort `high`. PR-Prüfung, strukturierte Findings, begrenzte automatische Autor-Korrektur und menschliche Merge-Entscheidung ausführbar machen.
@@ -25,7 +29,7 @@ Prüffokus: veraltete Reviews, manipulierte eigene Regeln, Secrets in untrusted 
 
 ## Produktgrundlage
 
-Der Remote-Inhalt und damit ein kanonischer Nordstern sind noch nicht verifizierbar. Kein Produktauftrag darf daraus abgeleitet werden. Eine außerhalb dieses Git-Arbeitsbereichs vorhandene Datei wird weder gelesen noch importiert. Nach Zugang wird ausschließlich der vorhandene Repo-Pfad in `factory/config.json` eingetragen; die Originaldatei bleibt erhalten.
+Das Zielrepository ist per öffentlicher GitHub-API als leer verifiziert (keine Branches, Contents-API 404); ein Nordstern fehlt dort. Kein Produktauftrag darf daraus abgeleitet werden. Eine außerhalb dieses Git-Arbeitsbereichs vorhandene Datei wird weder gelesen noch importiert. Nach bewusster menschlicher Ablage und Freigabe wird ausschließlich dessen Repo-Pfad in `factory/config.json` eingetragen; die Originaldatei bleibt erhalten.
 
 ## Arbeitsabgrenzung
 

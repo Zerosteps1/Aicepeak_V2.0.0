@@ -12,7 +12,7 @@ Record the checks performed and any limits. The factory reports deterministic te
 
 Replace the values below with an existing task and a verified configured human owner. Use `codex` or `claude`. Do not add commands or credentials.
 
-```json
+```factory-handoff
 {"runner":"codex","task":"docs/work/NAME.md","owner":"verified login"}
 ```
 

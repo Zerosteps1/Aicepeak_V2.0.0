@@ -1,0 +1,204 @@
+name: Factory trusted pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        type: string
+        required: true
+      feedback_kind:
+        type: choice
+        options: [none, issue_comment, review, review_comment]
+        default: none
+      feedback_id:
+        type: string
+        default: '0'
+      retry:
+        description: Explicit maintainer retry; previous cost/round reservations remain charged
+        type: boolean
+        default: false
+
+permissions: {}
+cache-mode: none
+concurrency:
+  group: factory-${{ github.repository }}-pr-${{ inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Snapshot
+    if: github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      snapshot: ${{ steps.snapshot.outputs.snapshot }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: snapshot
+        env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          PR_NUMBER: ${{ inputs.pr }}
+          FEEDBACK_KIND: ${{ inputs.feedback_kind }}
+          FEEDBACK_ID: ${{ inputs.feedback_id }}
+          FACTORY_RETRY: ${{ inputs.retry }}
+        run: python3 tools/factory/engine.py snapshot --pr "$PR_NUMBER" --feedback-kind "$FEEDBACK_KIND" --feedback-id "$FEEDBACK_ID"
+
+  tests:
+    name: Deterministic tests
+    needs: snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      tests: ${{ steps.test.outputs.tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
+        run: python3 tools/factory/engine.py test
+
+  review:
+    name: Senior review
+    needs: [snapshot, tests]
+    if: always() && needs.snapshot.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    outputs:
+      review: ${{ steps.review.outputs.review }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
+          TESTS_JSON: ${{ needs.tests.outputs.tests || '{}' }}
+        run: python3 tools/factory/engine.py review
+
+  publish:
+    name: Publish gates
+    needs: [snapshot, tests, review]
+    if: always() && needs.snapshot.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      author: ${{ steps.publish.outputs.author }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: publish
+        env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
+          TESTS_JSON: ${{ needs.tests.outputs.tests }}
+          REVIEW_JSON: ${{ needs.review.outputs.review }}
+          TEST_JOB_RESULT: ${{ needs.tests.result }}
+          REVIEW_JOB_RESULT: ${{ needs.review.result }}
+        run: python3 tools/factory/engine.py publish
+
+  author:
+    name: Author correction
+    needs: [snapshot, publish]
+    if: needs.publish.result == 'success' && fromJSON(needs.publish.outputs.author).enabled == true
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    outputs:
+      report: ${{ steps.author.outputs.report }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: author
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
+          AUTHOR_JSON: ${{ needs.publish.outputs.author }}
+        run: python3 tools/factory/engine.py author --patch "$RUNNER_TEMP/patch.diff"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-patch
+          path: ${{ runner.temp }}/patch.diff
+          if-no-files-found: error
+          retention-days: 3
+
+  push:
+    name: Push correction
+    needs: [snapshot, publish, author]
+    if: needs.author.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          FACTORY_WRITER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_WRITER_APP_PRIVATE_KEY }}
+          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
+          AUTHOR_JSON: ${{ needs.publish.outputs.author }}
+          AUTHOR_REPORT: ${{ needs.author.outputs.report }}
+        run: python3 tools/factory/engine.py push --patch "$RUNNER_TEMP/patch.diff"
+
+  author-failed:
+    name: Author handoff
+    needs: [snapshot, publish, author, push]
+    if: always() && needs.publish.result == 'success' && fromJSON(needs.publish.outputs.author).enabled == true && needs.push.result != 'success'
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
+          AUTHOR_REPORT: ${{ needs.author.outputs.report }}
+        run: python3 tools/factory/engine.py author-failed

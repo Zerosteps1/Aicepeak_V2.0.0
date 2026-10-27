@@ -41,6 +41,40 @@ def valid_pr(pr, config, repository_id):
             and pr.get("base", {}).get("repo", {}).get("id") == repository_id)
 
 
+def cancel_obsolete(config, pr_number, pr):
+    """Cancel only authenticated runs for older heads/policies, never a title edit."""
+    app=config.get('publisher_app_id')
+    if not isinstance(app,int) or app<=0:return
+    handled=set()
+    for page in range(1,21):
+        comments=api('GET',f'{PREFIX}/issues/{pr_number}/comments?per_page=100&page={page}')
+        for comment in comments:
+            if (comment.get('performed_via_github_app') or {}).get('id')!=app:continue
+            body=comment.get('body') or ''
+            if not body.startswith('<!-- factory-ledger:v1 -->\n'):continue
+            pointer=json.loads(body.split('\n',1)[1])
+            check=api('GET',f"{PREFIX}/check-runs/{number(pointer['check_id'])}")
+            if check.get('app',{}).get('id')!=app or check.get('status')=='completed':continue
+            binding=(check.get('external_id') or '').split(':')
+            if len(binding)!=6 or binding[:2]!=[TARGET,str(pr_number)]:raise RuntimeError('Invalid authenticated run binding')
+            if binding[2]==pr['head']['sha'] and binding[3]==pr['base']['sha']:continue
+            run_id=number(binding[4])
+            if run_id in handled:continue
+            handled.add(run_id)
+            run=api('GET',f'{PREFIX}/actions/runs/{run_id}')
+            if run.get('status')=='completed':continue
+            workflow=api('GET',f"{PREFIX}/actions/workflows/{number(run['workflow_id'])}")
+            if (run.get('event')!='workflow_dispatch' or run.get('head_sha')!=binding[3]
+                    or run.get('repository',{}).get('full_name')!=TARGET
+                    or workflow.get('path')!='.github/workflows/factory.yml'):
+                raise RuntimeError('Refuse to cancel an unverified workflow')
+            try:api('POST',f'{PREFIX}/actions/runs/{run_id}/cancel')
+            except RuntimeError:
+                if api('GET',f'{PREFIX}/actions/runs/{run_id}').get('status')!='completed':raise
+        if len(comments)<100:return
+    raise RuntimeError('Incomplete cancellation ledger')
+
+
 def main():
     config = json.loads(Path("factory/config.json").read_text())
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
@@ -95,10 +129,6 @@ def main():
                 break
         else:
             raise RuntimeError("PR pagination limit reached")
-    elif kind == "workflow_dispatch":
-        if not authorized(event.get("sender", {}), config):
-            raise RuntimeError("Manual retry requires a configured human maintainer")
-        jobs.append((number(event["inputs"]["pr"]), "none", "0"))
     else:
         raise RuntimeError("Unsupported dispatcher event")
     for pr_number, feedback_kind, feedback_id in jobs:
@@ -106,6 +136,7 @@ def main():
         if not valid_pr(pr, config, repository["id"]):
             print("Ignored closed PR or different target branch")
             continue
+        cancel_obsolete(config,pr_number,pr)
         api("POST", PREFIX + "/actions/workflows/factory.yml/dispatches", {
             "ref": config["default_branch"], "inputs": {"pr": str(pr_number),
             "feedback_kind": feedback_kind, "feedback_id": feedback_id}})

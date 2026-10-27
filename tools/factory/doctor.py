@@ -34,6 +34,17 @@ def regular_file(root, name):
             and path.resolve().is_relative_to(root))
 
 
+def repository_identity(root):
+    """Inspect exact git root/origin without ever displaying credential-bearing URLs."""
+    try:
+        command=['git','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false']
+        top=subprocess.run([*command,'rev-parse','--show-toplevel'],cwd=root,text=True,capture_output=True,timeout=10)
+        origin=subprocess.run([*command,'remote','get-url','origin'],cwd=root,text=True,capture_output=True,timeout=10)
+        allowed={f'git@github.com:{REPOSITORY}.git',f'https://github.com/{REPOSITORY}.git',f'https://github.com/{REPOSITORY}'}
+        return top.returncode==origin.returncode==0 and Path(top.stdout.strip()).resolve()==root and origin.stdout.strip() in allowed
+    except (OSError,subprocess.SubprocessError):return False
+
+
 def positive_number(value):
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
             and value > 0 and (not isinstance(value, float) or math.isfinite(value)))
@@ -78,6 +89,8 @@ def inspect(root, runner):
     git_ok = bool(shutil.which("git")) and probe(
         ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "rev-parse", "--verify", "HEAD"], root=root)
     add("git_head", git_ok, "Lokaler Commit vorhanden; Remote-Branch nicht geprüft.", "Geprüften Factory-Commit auschecken.")
+    add("git_identity",repository_identity(root),"Git-Root und Origin müssen exakt zum Zielrepository gehören.",
+        "Im richtigen Checkout starten; Origin gegen git@github.com:Zerosteps1/Aicepeak_V2.0.0.git prüfen.")
     github_ok = bool(shutil.which("gh")) and probe(["gh", "auth", "status", "--hostname", "github.com"], root=root)
     add("github_auth", github_ok, "GitHub-CLI-Authentifizierung geprüft; Administration/App-Rechte separat offen.",
         "Als berechtigter Mensch gh auth login --hostname github.com ausführen, danach settings.py inspect.")
@@ -117,7 +130,7 @@ def inspect(root, runner):
             "factory": {"local_prerequisites": checks,
                         "live_status": "unverified",
                         "required_evidence": ["settings.py inspect/diff: Identitäten, Apps, Rulesets und Environment",
-                                              "clients.py smoke: gepinnte CLIs; launch/run: echter Modell- und Context7-Zugang",
+                                              "clients.py smoke: gepinnte CLIs; launch/run: echter Modell-, Context7- und OpenAI-Docs-Zugang",
                                               "engine.py model-smoke: gpt-6-astra high",
                                               "realer Smoke-PR mit Review, Korrektur, erneutem Review und menschlicher Freigabe"]},
             "product": {"status": "locally_configured_unverified" if approved and product_checks else "blocked",

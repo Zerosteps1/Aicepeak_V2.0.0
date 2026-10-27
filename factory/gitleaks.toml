@@ -1,0 +1,12 @@
+title = "Factory: upstream rules, no PR-controlled ignores"
+[extend]
+useDefault = true
+
+# Exact public internal URL misclassified as a generic key by Gitleaks 8.30.1.
+# This does not exempt a file, variable, provider key or arbitrary URL.
+[[allowlists]]
+description = "Literal non-secret broker URL"
+condition = "AND"
+paths = ['''(^|/)tools/factory/clients\.py$''']
+regexTarget = "match"
+regexes = ['''^credential-proxy:8080/anthropic"$''']

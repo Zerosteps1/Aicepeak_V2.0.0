@@ -321,7 +321,12 @@ class EngineBoundaries(unittest.TestCase):
             def request(self,method,path,data=None):
                 if path=='/repos/fixture/repo':return {'full_name':'fixture/repo','node_id':'fixture-node'}
                 assert path=='/graphql' and method=='POST'
-                update=data['variables']['input']['updates'][0]
+                payload=data['variables']['input']
+                # Field names of GitHub's live GraphQL schema (UpdateRefsInput, RefUpdate), read by
+                # introspection on 2026-10-28; 'updates' made the live writer push fail (run 40766190552).
+                assert set(payload)<={'clientMutationId','repositoryId','refUpdates'},payload
+                update=payload['refUpdates'][0]
+                assert set(update)<={'name','beforeOid','afterOid','force'},update
                 assert update['force'] is False
                 if update.get('beforeOid')!=self.head:return {'errors':[{'message':'ref changed'}]}
                 self.head=update['afterOid']

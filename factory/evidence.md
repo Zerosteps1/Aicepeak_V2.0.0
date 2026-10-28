@@ -2,6 +2,16 @@
 
 Status: 2026-10-28. **Factory implemented and on `main`; not activated and not ready for operation.** This record separates executed checks from pending live scenarios. Agents made no merge and no administrative remote change; humans merged PR #1 (factory bootstrap) and PR #2 (north star) on 2026-10-28.
 
+## 2026-10-28 (PR B2, local, not live)
+
+Executed locally for PR B2 (usage-based broker accounting, federated Claude author, egress self-test, Claude brakes):
+
+- `python3 -I -m unittest discover -s tools/factory/tests`: **107 tests OK**, including a 30-turn session with 60 KB context per runner within budget, SSE and JSON usage parsing, the Workload Identity Federation exchange against a fake transport (fresh GitHub OIDC token per exchange, caching, URL and ID validation), OIDC request credentials reaching only the broker, and the fail-closed worker egress self-test.
+- `python3 tools/factory/verify.py --root .`: all four PASS lines (actionlint 1.7.12, gitleaks 8.30.1).
+- Claude Code 2.1.312 (one patch above the pinned 2.1.311) captured against a local capture server: all body fields allowlisted; `max_tokens: 128000` and six betas that the broker previously dropped (see [Clients](clients.md)). Redacted fixture: `tools/factory/tests/fixtures/claude-code-2.1.312-request.json`.
+
+Not executed: the real token exchange (needs a GitHub Actions job on `main` in `factory-control` and the Console workload), Docker/container runs, real model calls. Automatic correction stays disabled.
+
 ## 2026-10-28 (PR B1, local, not live)
 
 Executed locally on the maintainer's Mac for PR B1 (maintainer-local senior reviewer, pipeline without `OPENAI_API_KEY`, broker allowlist):

@@ -29,6 +29,8 @@ python3 tools/factory/clients.py launch --root . --runner codex
 # Für Claude: --runner claude
 ```
 
+**Nicht mit einem bloßen `codex`-Aufruf starten.** `FACTORY_PROXY_TOKEN` entsteht automatisch im isolierten Launcher; es ist kein einzutragender persönlicher Schlüssel. Die MCPs benötigen den gleichzeitig gestarteten Broker. Details und Fehlerursachen stehen in [Clients](factory/clients.md).
+
 Im frischen Client mit `factory-start` beginnen und den versionierten Auftrag nennen. `factory-change` implementiert, `factory-review` prüft lokal, `factory-fix-review` bearbeitet Rückmeldungen. Das Startprogramm liefert einen Patch und verändert den ursprünglichen Checkout nicht. Weitere Details: [Clients](factory/clients.md), [Beitragen](CONTRIBUTING.md), [Policy](factory/policy.md).
 
 ## Einmalige Aktivierung durch den Repository-Verantwortlichen

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import types
 import unittest
 from unittest import mock
@@ -57,6 +58,13 @@ class AdapterTests(unittest.TestCase):
         adapter.write_text(adapter.read_text() + "\nInjected policy")
         with self.assertRaisesRegex(clients.ClientError, "drift"):
             clients.check(self.root)
+
+    def test_project_adapter_has_no_ignored_provider_routing(self):
+        config = tomllib.loads((self.root / ".codex/config.toml").read_text())
+        self.assertNotIn("model_provider", config)
+        self.assertNotIn("model_providers", config)
+        self.assertTrue(config["mcp_servers"]["context7"]["required"])
+        self.assertTrue(config["mcp_servers"]["openai_docs"]["required"])
 
     def test_unmanaged_config_and_symlink_are_rejected(self):
         (self.root / ".claude/settings.local.json").write_text("{}")
@@ -335,6 +343,45 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(Path(clients.__file__).resolve().parents[2], REPO)
         self.assertEqual(Path(proxy.__file__).resolve().parents[2], REPO)
 
+    def test_codex_worker_routes_through_broker_when_project_provider_keys_are_ignored(self):
+        for interactive in (False, True):
+            with self.subTest(interactive=interactive):
+                args = clients.worker_arguments("codex", "gpt-6-astra", interactive)
+                overrides = [args[i + 1] for i, arg in enumerate(args) if arg == "-c"]
+                config = tomllib.loads("\n".join(overrides))
+                self.assertEqual(config.get("model_provider"), "factory")
+                provider = config["model_providers"]["factory"]
+                self.assertEqual(provider["base_url"], "http://credential-proxy:8080/openai/v1")
+                self.assertEqual(provider["env_key"], "FACTORY_PROXY_TOKEN")
+                self.assertFalse(provider["requires_openai_auth"])
+                self.assertFalse(provider["supports_websockets"])
+                self.assertEqual(provider["wire_api"], "responses")
+                self.assertFalse(provider["capabilities"]["external_web_access"])
+                self.assertEqual(provider["capabilities"]["remote_compaction"], "unsupported")
+                self.assertEqual(provider["request_max_retries"], 0)
+                self.assertEqual(provider["stream_max_retries"], 0)
+
+    def test_headless_codex_can_read_the_launchers_disposable_trust_config(self):
+        self.assertNotIn("--ignore-user-config", clients.worker_arguments("codex", "gpt-6-astra"))
+
+    def test_disposable_trust_does_not_import_or_overwrite_user_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            clients.initialize_codex_trust(home, Path("/work"))
+            path = home / "config.toml"
+            self.assertEqual(tomllib.loads(path.read_text()), {"projects": {"/work": {"trust_level": "trusted"}}})
+            before = path.read_bytes()
+            with self.assertRaises(FileExistsError):
+                clients.initialize_codex_trust(home, Path("/other"))
+            self.assertEqual(path.read_bytes(), before)
+            path.unlink()
+            target = home / "existing-personal-config"
+            target.write_text("do not change")
+            path.symlink_to(target)
+            with self.assertRaises(FileExistsError):
+                clients.initialize_codex_trust(home, Path("/work"))
+            self.assertEqual(target.read_text(), "do not change")
+
     def test_standard_npm_lock_matches_reviewed_cli_versions(self):
         package = json.loads((REPO / "factory/package.json").read_text())
         lock = json.loads((REPO / "factory/package-lock.json").read_text())
@@ -431,7 +478,7 @@ class LauncherTests(unittest.TestCase):
     def test_native_flags_fresh_sessions_and_explicit_sources(self):
         codex = clients.worker_arguments("codex", "gpt-6-astra")
         self.assertIn("--ephemeral", codex)
-        self.assertIn("--ignore-user-config", codex)
+        self.assertNotIn("--ignore-user-config", codex)
         self.assertNotIn("--ignore-rules", codex)
         self.assertNotIn("resume", codex)
         claude = clients.worker_arguments("claude", "example-model")

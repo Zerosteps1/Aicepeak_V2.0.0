@@ -10,10 +10,10 @@ Read `AGENTS.md`, the [policy](factory/policy.md) and `factory/config.json`. Sta
 4. Check the patch outside the model worker, apply it on the task branch and open the PR. In the PR describe the change, the evidence and open limits; use exactly one handoff block with a real task and a verified maintainer:
 
 ```factory-handoff
-{"runner":"codex","task":"docs/work/FACTORY-001.md","owner":"Zerosteps1"}
+{"runner":"claude","task":"docs/work/FACTORY-001.md","owner":"Zerosteps1"}
 ```
 
-`runner` must be one of the `runners` in `factory/config.json`. Under the operating model in [ADR-0005](docs/decisions/0005-operating-model-without-api-billing.md) the author runner becomes `claude` once PR B2 is merged.
+`runner` must be one of the `runners` in `factory/config.json`. Under the operating model in [ADR-0005](docs/decisions/0005-operating-model-without-api-billing.md) the only automatic author is `claude` (PR B2 removes `codex` from `runners`).
 
 Rules, skills, requirements, tests and budgets are loaded from the pinned protected base commit. Changes to this foundation are separate, human-reviewed factory or requirement changes; the current PR cannot weaken its own check by revising its own rules. Automatic corrections must not change protected files.
 
@@ -28,8 +28,8 @@ After activation, ordinary PR comments, reviews and inline comments from configu
 To resume, fix the cause named in the PR, check out the current branch freshly and start the runner named there:
 
 ```sh
-python3 tools/factory/doctor.py --root . --runner codex
-python3 tools/factory/clients.py launch --root . --runner codex
+python3 tools/factory/doctor.py --root . --runner claude
+python3 tools/factory/clients.py launch --root . --runner claude
 # In the client: factory-fix-review for PR #<number>, the current task and the findings.
 ```
 
@@ -53,7 +53,7 @@ These PRs change only factory control paths, so the factory never corrects them 
 
 Until the senior review is calibrated, it is advisory:
 
-- At activation, `required_checks` contains only `factory/deterministic`. (`factory/config.json` and `factory/github-settings.json` still list both checks today; reducing them is part of activation.)
+- During the shadow phase `required_checks` in `factory/config.json` and `factory/github-settings.json` contains only `factory/deterministic` (set by PR B1), and `automatic_correction` is `false`. The senior review is still published, from the maintainer's machine with `python3 tools/factory/local_review.py --pr N`.
 - `factory/senior-review` is still published on every PR. A maintainer checks each verdict by hand and notes in the PR where it was wrong (false alarm or missed defect). Blocking findings are answered like any review: fixed, or disputed with evidence.
 - The phase ends after 10–20 real PRs have been reviewed and checked by hand and a golden PR eval set shows the reviewer's precision. A reviewed control PR then adds `factory/senior-review` to the required checks.
 - Automatic correction rounds stay disabled during the shadow phase.

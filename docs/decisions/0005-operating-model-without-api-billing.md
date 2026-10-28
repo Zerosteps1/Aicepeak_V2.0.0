@@ -1,76 +1,51 @@
-# ADR-0005: Operating model without API billing (S1)
+# ADR-0005: Subscription-backed review and bounded API authoring
 
-- Status: Accepted (2026-10-28)
+- Status: Proposed — pending human review and merge
 - Date: 2026-10-28
-- Deciders: Gabriel (`Zerosteps1`)
-- Related: review report sections 4.4 and 5 ([factory review](../review/2026-10-28-factory-review.md)); findings F5, F28, F33, F34; [ADR-0002](0002-single-reviewer-and-model-pairing.md)
+- Deciders: verified maintainers; no acceptance or activation recorded by this amendment
+- Related: [FACTORY-001](../work/FACTORY-001.md); review report sections 4.4 and 5 ([factory review](../review/2026-10-28-factory-review.md)); findings F5, F28, F33, F34; [ADR-0002](0002-single-reviewer-and-model-pairing.md)
 
 ## Context and problem statement
 
-The whole model path of the factory is built on API billing: `engine.review_stage` calls `api.openai.com` with `OPENAI_API_KEY`, the broker holds `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, and budgets are USD reservations computed from list prices. The maintainer does not want usage-billed operation and wants to use existing subscriptions: ChatGPT Business for Codex, and a Claude plan. The desired flow stays: the PR is created in a working session, an independent reviewer starts in a **new session** with GPT-6 Astra at effort high, findings go back to the author, the fix is re-reviewed, and humans merge.
+The maintainer wants to use ChatGPT Business and the existing Claude plan while retaining both Codex and Claude Code. Authentication, consumption of included allowances, and additional billing are separate questions. This proposal cannot guarantee operation without an API invoice.
 
-The GitHub side (dispatcher, snapshot binding, deterministic tests, Publisher and Writer Apps, rulesets, ledger) does not depend on billing and stays.
+The intended review remains a fresh, independent session with `gpt-6-astra` at effort `high`, structured findings, bounded corrections, re-review and human merge. This ADR does not activate a runtime path or change required checks. Its earlier title remains in the filename to preserve existing links.
 
-## Decision drivers
+## Proposed operating model
 
-- No usage-based API invoice.
-- Only paths the vendors document and permit for this use; no unofficial endpoints, no shared accounts.
-- Structured, schema-validated review that a ruleset can require.
-- No credentials inside model workers.
-- Reviewer and author from different model families (ADR-0002).
+**Reviewer.** Use the native Codex CLI on a trusted maintainer machine with a finite-lifetime Business access token. OpenAI documents `CODEX_ACCESS_TOKEN` for trusted non-interactive Codex workflows in Business and Enterprise workspaces; it represents the creator's workspace identity. It must not be exposed to untrusted PR execution. [OpenAI access-token documentation](https://learn.chatgpt.com/docs/enterprise/access-tokens)
 
-## Considered options
+The companion reviewer implementation uses a fresh disposable home and session, bounded review material, schema validation, a model catalog without shell/patch tools, and a preflight check of the model-visible tool surface. The provider token is confined to the tool-less reviewer process; publisher credentials remain outside it. A successful model response is separate from authenticated publication for the correct PR, head and trusted policy revision.
 
-Paths A–H as evaluated in section 4.4 of the review report; combined into operating models S1–S4 (section 5).
+**Claude author.** The companion implementation configures Claude Code as the automatic author behind the isolated credential broker. In GitHub Actions, Workload Identity Federation exchanges the job's identity for a short-lived Anthropic token bound to a service account. The author worker receives only its disposable broker credential. WIF changes authentication; the Messages requests still consume Claude API usage in the configured Console organization and workspace. [Anthropic WIF documentation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation)
 
-## Decision outcome
+**Codex author.** Both author clients remain requested. The current isolated Codex author uses `OPENAI_API_KEY`; the Business-token author path is an explicit activation blocker. OpenAI now documents a ChatGPT gateway route, so a blanket claim that the backend route is unofficial is inaccurate. However, the proposed broker-only token topology and enforcement of the existing output cap and standard tier have not been verified against that backend. Keep the credential outside the author worker, and do not remove limits or silently switch billing paths to obtain a successful response. [OpenAI gateway documentation](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway)
 
-Chosen: **S1 = reviewer through path D plus automatic correction through path A.**
+A different-family advisory reviewer is optional. It does not replace the fixed Astra/high gate or create a Claude-only mandate ([ADR-0002](0002-single-reviewer-and-model-pairing.md)).
 
-**Reviewer (path D).** GPT-6 Astra, effort `high`, run by `tools/factory/local_review.py` as `codex exec --ephemeral --sandbox read-only --output-schema factory/review.schema.json` under a **ChatGPT Business access token** on the maintainer's **trusted machine**, in a new session: a fresh `CODEX_HOME` and `HOME`, no personal configuration, no memories, an empty working directory. The token reaches Codex only as the `CODEX_ACCESS_TOKEN` environment variable of that one process (no saved login). The session is tool-less: Codex 0.164.0 feature flags alone leave a code-mode `exec` tool with shell and patch access, so the reviewer also generates a model catalog without shell and patch tools, disables agents, and checks the model-visible tool surface with `codex debug prompt-input` before every run (fail closed). The result is validated against the schema and the SHA binding (`contracts.validate_review`) and published as `factory/senior-review` through the Publisher App. OpenAI documents access tokens for trusted automation under the workspace identity and excludes public GitHub runners, so the reviewer never runs on GitHub Actions. Usage is recorded as turn/token counters instead of USD and capped by `limits.max_reviews_per_pr`.
+## Billing and price evidence
 
-**Author (path A).** Claude Code behind the **existing credential broker**, billed to the Console organisation linked to the **Claude Team plan** and funded by the plan's monthly API credit (available since 2026-10-07, "never charged to your Claude plan", pooled up to 500 USD, stops when exhausted). The pipeline holds **no Anthropic key**: the author job's GitHub OIDC identity is exchanged through **Workload Identity Federation** for a short-lived Anthropic token. The broker performs and refreshes the exchange; the rule is pinned to this repository, the `factory-control` environment, `main` and `factory.yml`, with scope `workspace:inference`. The worker still holds no credential; the USD ledger stays for the author and settles against provider-reported usage. `--max-turns` and `--max-budget-usd` are added as a second brake. Automatic correction is enabled only after the shadow phase.
+Checked against the linked manufacturer sources on **2026-10-28**; prices and entitlements must be rechecked before activation.
 
-**No `OPENAI_API_KEY`.** It is removed from the pipeline, the broker configuration and `factory/github-settings.json` (PR B1).
+- Eligible Claude Team plans provide monthly API credits of USD 20 per Standard seat or USD 100 per Premium seat, pooled up to USD 500. The credits are claimed into a linked Console organization. New subscribers become eligible after seven days on the plan; this is not a seven-day delay after linking. Credits cover Platform API use, not interactive Claude Code subscription sessions. [Claude monthly API credits](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-and-team-plans)
+- When monthly credits are exhausted, purchased credits or auto-reload can fund further usage; invoiced organizations can incur their usual charges. Requests stop only when the organization has no other credits or applicable billing. Confirm the actual organization, balance, auto-reload and contract settings. A Team subscription or successful WIF login proves none of those conditions. [Credit exhaustion and billing](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-and-team-plans)
+- Anthropic lists Sonnet 5.5 at USD 2 input and USD 10 output per million tokens, with USD 2.50 for 5-minute cache writes, USD 4 for 1-hour writes and USD 0.10 for cache reads. These are published API rates, not a promise of covered usage. The repaired broker rejects 1-hour cache writes until separately supported. [Anthropic cache pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 
-**Credential placement.**
+The broker's configured reservations and usage accounting govern admission within a job. They do not establish the provider's final invoice or the available subscription balance. Keep provider spend controls and billing verification separate. `--max-turns` and `--max-budget-usd` are additional client brakes, not proof of a zero-cost run. Business reviewer usage consumes workspace entitlements; this ADR makes no fixed message allowance or subscription-price promise.
 
-- Reviewer machine login keychain: the ChatGPT Business access token (short lifetime) and the Publisher App private key.
-- Environment `factory-control` (default branch only, branch policy before secrets): `FACTORY_PUBLISHER_APP_PRIVATE_KEY`, `FACTORY_WRITER_APP_PRIVATE_KEY`, `CONTEXT7_API_KEY`. No `ANTHROPIC_API_KEY`; the federation IDs in `factory/config.json` are not secret.
+## Evidence and remaining activation checks
 
-**Interlock.** The pipeline leaves `factory/senior-review` in progress with an authenticated receipt; the local reviewer completes that check with the same receipt format as before. On `changes_requested` it starts a separate run with `gh workflow run factory.yml -f pr=N -f correction=<check_id>`. Its Correction gate re-verifies the Publisher receipt, the maintainer actor and the policy revision before it reserves an author round; author and push jobs verify that correction run. The GitHub review job disappears.
+Evidence recorded on **2026-10-28** in the companion control change's `docs/work/FACTORY-WIF-SMOKE.md`:
 
-### Consequences
+- Gabriel ran the reviewer smoke from [PR #5 revision `009c010`](https://github.com/Zerosteps1/Aicepeak_V2.0.0/blob/009c010aafc9881d3e29e00b65100092fe9a7cc2/tools/factory/local_review.py) in his macOS terminal and reported `status=passed`, `model=gpt-6-astra`, `effort=high`, `auth=CODEX_ACCESS_TOKEN`, one turn, 7,330 input and 15 output tokens. This is user-reported evidence of that local authentication/model path. It does not prove PR publication, Felix's setup or the isolated Codex author.
+- Federation smoke [40684684126](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40684684126) passed on main commit `70bb59f722f9f0c260f2524e21c93a1290891b47`: GitHub identity, token exchange and a minimal `claude-sonnet-5-5` response, with 18 input and four output tokens. The recorded returned scope was `workspace:developer`. This proves neither the full author/container integration nor which balance paid for the request; least-privilege scope remains a separate check.
 
-- Good: no API invoice; the factory's trust model stays intact; reviewer and author are different families (F34 resolved); `@codex review` (included in Business) is available as a free second opinion.
-- Bad / accepted cost: the review depends on a running trusted machine; the reviewer consumes the maintainer's Codex seat window (GPT-6 Astra on a Business standard seat: about 5–45 messages per 5 hours, shared with interactive use), so consumption is measured during the shadow phase and a dedicated factory seat or flexible billing may be needed; author runs stop when the monthly credit is used up.
-- Public list prices: ChatGPT Business 20 USD per user per month billed annually (from 2 users) or 25 USD monthly; Claude Team at Anthropic's list price, with a monthly API credit of 20 USD (Standard) or 100 USD (Premium) per seat.
+Before declaring the factory ready, obtain evidence for each enabled author's isolated runtime and limits, both maintainers' reviewer setup, serialized authenticated publication, and the real review/fix cycle. Confirm actual billing settings and current prices. Review and merge control changes under the existing trusted policy, then activate them through the authorized administrative path. Configuration flags alone are not live acceptance evidence.
 
-### Confirmation
+## Alternatives and consequences
 
-Before activation:
+- Keep the fixed native Business reviewer and use human corrections while automatic authoring is not accepted. This is a valid staged deployment.
+- Add Business-authenticated Codex authoring only after a trusted smoke proves the documented route, identity handling, enforced output limits, terminal usage and tool/follow-up behavior. A text-only success is insufficient. [Gateway compatibility checks](https://learn.chatgpt.com/docs/enterprise/gateway-compatibility)
+- Continue an explicitly authorized Platform API author path when needed; disclose its billing basis. Do not present it as subscription authentication.
 
-- The Console organisation is linked to the Team plan (7-day waiting period); the first author run shows a successful exchange in the Console's workload identity authentication history and appears as credit usage of the rule's workspace, not as an invoice.
-- `python3 tools/factory/local_review.py --smoke` passes with the access token, and a review run on the smoke PR produces a schema-valid review that passes the binding check and appears as `factory/senior-review`; the run appears in the Codex usage dashboard.
-- `grep -r OPENAI_API_KEY` finds no mandatory path after PR B1.
-- `--max-budget-usd` triggers with a deliberately low value.
-
-## Pros and cons of the options
-
-| Option | Why not chosen |
-|---|---|
-| S2: Codex cloud review and `@codex fix` as gate | Advisory only, produces no check run a ruleset can require, review rules come from the PR-controlled `AGENTS.md`, depth not controllable. Kept as a free second opinion. |
-| S3 / paths F–G: Hermes agent with Claude/Codex OAuth or Nous Portal | No structured output (only stream-json), Codex suitability not documented and relies on an unofficial backend path, Claude use only at discretion and billed at API prices; no gain. |
-| S4: local reviewer, human corrections only | Not rejected as such: it is the first stage of S1 until automatic correction is enabled after the shadow phase. |
-| Path E: broker swaps a job token for Codex OAuth and calls `chatgpt.com/backend-api` | Unofficial endpoint ("do not point it at ChatGPT's backend-api"); risk under Services Agreement 3.3(i) (circumventing usage limits). Excluded. |
-| Codex author with a placeholder token exchanged by the broker | Credential in the worker, unofficial endpoint, and the same model family as the reviewer. Rejected. |
-| Path C: personal `auth.json` (Plus/Pro) on a private runner | Documented as "advanced", explicitly not recommended and "not for public repositories"; the consumer terms forbid programmatic extraction of output. Emergency only. |
-| Path B: Claude Code with `CLAUDE_CODE_OAUTH_TOKEN` | Allowed for "ordinary, individual usage" only; the token would live in the worker; no USD control. |
-| ChatGPT auth on GitHub-hosted runners | OpenAI: "Do not use this workflow for public or open-source repositories." |
-| Keep API billing (`OPENAI_API_KEY`) | Contradicts the maintainer's requirement. |
-
-## More information
-
-- `https://learn.chatgpt.com/docs/auth`, `https://learn.chatgpt.com/docs/auth/ci-cd-auth`, `https://learn.chatgpt.com/docs/cli/reference`, `https://learn.chatgpt.com/docs/non-interactive-mode`
-- Implementation: PR B1 (Codex start, allowlist, local reviewer, pipeline without `OPENAI_API_KEY`) and PR B2 (broker settlement, limits, egress self-test, Claude author configuration), review report section 7.
-- Open points: live test of `--output-schema` under a Business token; status of the Codex 5-hour window; reported 401 problems of `claude setup-token` in containers do not affect path A.
+The proposed model avoids giving provider credentials to author shells, but still depends on trusted reviewer availability, workspace quotas, API funding and a verified implementation. No alternative in this ADR grants merge permission or promises no additional charges.

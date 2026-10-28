@@ -1,57 +1,45 @@
-# ADR-0002: Single gate reviewer, model-family pairing and model changes
+# ADR-0002: Fixed senior reviewer and both author clients
 
-- Status: Proposed
+- Status: Proposed — pending human review and merge
 - Date: 2026-10-28
-- Deciders: verified maintainers
-- Related: findings F10, F12, F34 in the [factory review](../review/2026-10-28-factory-review.md); [ADR-0005](0005-operating-model-without-api-billing.md)
+- Deciders: verified maintainers; no acceptance recorded by this amendment
+- Related: [FACTORY-001](../work/FACTORY-001.md); findings F10, F12, F34 in the [factory review](../review/2026-10-28-factory-review.md); [ADR-0005](0005-operating-model-without-api-billing.md)
 
 ## Context and problem statement
 
-The gate reviewer is fixed to `gpt-6-astra` with effort `high` (`factory/config.json`, `factory/review.schema.json` `const`, `contracts.validate_review`, `verify.py`). The same model is also configured as the Codex author (`author_models.codex`), so in the Codex path a model reviews its own work. Research on LLM judges recommends a judge from a different model family than the author (self-preference bias) and a judge without access to the author's reasoning; the second point is already met, because the review never sees author transcripts. The model name is hard-coded in 14 places and there is no procedure for a model change or a model sunset, although "no fallback" is policy.
+The existing policy fixes the gate reviewer to `gpt-6-astra` with effort `high`. The requested factory supports Codex and Claude Code as author clients. A proposal to require different model families must not silently remove Codex as an author or change the fixed reviewer.
+
+The Codex author and reviewer may use the same model family. Review independence therefore requires a fresh session, separate instructions and evidence, no author reasoning transcript, and no author authority over the review result. A reviewer from another family can provide an additional opinion; that alone neither proves correctness nor changes the required gate.
+
+The current companion implementation configures only Claude for automatic author work. The isolated Codex author still uses a Platform API key; the requested Business-authenticated author path remains unverified. These are implementation and activation limits, not a permanent Claude-only product decision. [ADR-0005](0005-operating-model-without-api-billing.md) records the authentication and billing distinctions.
 
 ## Decision drivers
 
-- One reviewer that a ruleset can require, with a strict JSON contract.
-- Independence between author and reviewer.
-- Changes to the reviewer must be measurable before they affect the gate.
+- Preserve both requested author clients and the fixed Astra/high gate.
+- Keep author and reviewer sessions and privileges separate.
+- Make reviewer changes measurable before they affect acceptance.
+- State unsupported runtime paths explicitly.
 
 ## Considered options
 
-1. One gate reviewer (`gpt-6-astra`, effort `high`), author from a different model family, model change only after an eval run.
-2. A panel of reviewers from several families (PoLL-style jury) as the gate.
-3. Keep the current configuration, where the Codex author and the reviewer can be the same model.
+1. Keep the fixed gate, support both author clients as their isolated paths are verified, and allow optional advisory reviews from another family.
+2. Require different model families and restrict authors to Claude.
+3. Replace the gate with a panel of reviewers.
 
-## Decision outcome
+## Proposed decision
 
-Proposed option 1.
+Option 1, subject to human review and merge:
 
-- **Single gate reviewer:** `gpt-6-astra`, effort `high`, no fallback model. Under ADR-0005 it runs through `codex exec --output-schema` on the maintainer's trusted machine.
-- **Pairing rule:** reviewer and author must belong to different model families. Under ADR-0005 the author is Claude Code, so `runners` becomes `["claude"]` (PR B2). A Codex author can be re-enabled only through a new ADR that changes the reviewer family or explains why the pairing rule does not apply. Config validation should enforce the rule (proposed for PR C).
-- **Model change:** changing the review model, effort or review prompt requires an eval run on the golden PR set (F10) with precision and recall per priority recorded in the PR, plus an update of this ADR. A vendor sunset is handled the same way; there is no silent fallback.
-- **Single source:** the model name should live only in `factory/config.json`, with the schema `const` generated from it (F12, PR C).
+- **Gate reviewer:** retain `gpt-6-astra`, effort `high`, with no silent fallback. Local advisory output does not substitute for the authenticated senior-review gate.
+- **Author choice:** retain Codex and Claude Code in the intended interface. A verified author path must preserve isolation, credential placement and budget controls. Do not enable the Business Codex author until those controls are demonstrated; do not substitute a billable API path without explicit authorization.
+- **Optional additional review:** a reviewer from another model family may supply advisory findings. It neither replaces Astra/high nor becomes a mandatory pairing rule through this ADR.
+- **Reviewer changes:** proposed changes to the model, effort or prompt should include evaluation on a maintained set of representative PRs, with outcomes by severity. A model sunset requires an explicitly reviewed replacement; it does not authorize fallback.
+- **Configuration:** consolidate duplicate reviewer identity declarations through a separately reviewed control change. This document does not alter the current schema or gate.
 
-### Consequences
+### Consequences and confirmation
 
-- Good: an independent reviewer; reviewer changes become measurable; a model sunset has a defined procedure.
-- Bad / accepted cost: one reviewer is a single point of failure for review quality until the golden set exists; the eval set must be built and maintained (PR G).
+The fixed gate remains a single reviewer, so its quality must be measured. Additional advisory review consumes time and quota and requires evaluation of its usefulness. Neither a different model family nor a passing local review proves merge readiness.
 
-### Confirmation
+Before activation, verify the exact gate identity, a fresh reviewer session, the absence of author transcripts and writable tools, and each enabled author's isolated runtime. Record Codex Business author limitations until resolved. Any reviewer-policy change must be reviewed against the existing trusted policy, not accepted by its own new rule.
 
-- `factory/config.json`: `review_model` family differs from every model in `author_models` for the runners listed in `runners`.
-- A PR that changes the review model, effort or prompt links an eval run.
-
-## Pros and cons of the options
-
-### Option 2: panel of reviewers
-
-- Good: panels beat single judges in the literature.
-- Bad: several times the cost and quota; needs aggregation logic and a calibrated set first. Can be revisited after the shadow phase.
-
-### Option 3: same model for author and reviewer
-
-- Good: no configuration change.
-- Bad: self-preference bias in exactly the step that gates merges.
-
-## More information
-
-Cohere PoLL: `https://arxiv.org/abs/2404.18796`. Shadow phase and golden set: review report sections 3.2 (F10) and 6.
+Option 2 is not adopted: the user did not authorize a mandatory family restriction. Option 3 is deferred; a panel would require a separate aggregation and evaluation decision.

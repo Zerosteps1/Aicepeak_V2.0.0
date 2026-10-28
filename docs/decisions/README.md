@@ -4,15 +4,19 @@ This directory holds the permanent decisions of the factory and, later, of the p
 
 `docs/decisions/` is a protected control path (`factory/config.json`): records change only through a human-reviewed PR, and automatic corrections never edit them.
 
+PR #4 remains a documentation proposal pending human review and merge. ADR-0002 and ADR-0005 are proposed factory decisions; earlier acceptance labels in other draft records do not establish that this PR has been merged or that a runtime gate is active. No entry in this index grants operational or product acceptance.
+
+[FACTORY-001](../work/FACTORY-001.md) covers factory setup and `docs/decisions/`; it does not authorize the accompanying `docs/review/`, `docs/CONSTITUTION.md` or north-star additions. Those materials remain pending separate human scope and product review. This PR must not widen its own trusted task basis or mark the product ready. The constitution, north star and architecture are unchanged by these operating-model corrections.
+
 ## Index
 
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-maintainer-model.md) | Two code owners and how a PR gets a legitimate approval | Accepted (2026-10-28) |
-| [0002](0002-single-reviewer-and-model-pairing.md) | Single gate reviewer, model-family pairing and model changes | Proposed |
+| [0002](0002-single-reviewer-and-model-pairing.md) | Fixed senior reviewer and both author clients | Proposed; human review and merge pending |
 | [0003](0003-stdlib-only.md) | Standard library only for security-critical factory code | Proposed |
 | [0004](0004-language.md) | English as the repository language, north star excepted | Accepted (2026-10-28) |
-| [0005](0005-operating-model-without-api-billing.md) | Operating model without API billing (S1) | Accepted (2026-10-28) |
+| [0005](0005-operating-model-without-api-billing.md) | Subscription-backed review and bounded API authoring | Proposed; human review and merge pending |
 
 ## Process
 

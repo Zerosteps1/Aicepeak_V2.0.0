@@ -1,5 +1,52 @@
 # Prüfstand und noch offene Aktivierung
 
+## Nachtrag 28.10.2026: Anmeldung und App-Registrierung
+
+Der lokale Codex-Smoke mit GPT-6 Astra / high wurde von Gabriel erfolgreich in
+seinem Terminal ausgeführt. Der Anthropic-Federation-Smoke einschließlich einer
+echten Claude-Antwort wurde anschließend in GitHub Actions direkt geprüft.
+Läufe, Revisionen, Verbrauch und Grenzen stehen im
+[Diagnosenachweis](../docs/work/FACTORY-WIF-SMOKE.md#nachweisstand-am-28102026).
+
+Publisher `5510081` und Writer `5510093` sind gemäß Gabriels Zuordnung konfiguriert.
+Beide bereitgestellten PEM-Dateien bestanden lokal `openssl rsa -check -noout`.
+Dies allein prüft die Schlüsseldateien, nicht deren App-Zuordnung oder GitHub-Rechte.
+Gabriel führte anschließend den lesenden Inspector mit kurzlebigen App-JWTs in
+seinem Terminal aus und übermittelte die JSON-Ausgabe. Beide Apps, die exakten
+Rechte und die Installationen im Zielrepository wurden bestätigt: Publisher
+`176168187`, Writer `176168111`; keine App-/Identitätsblocker.
+Der Agent hat die Ausgabe geprüft, die API-Abfrage aber nicht selbst ausgeführt:
+aus seiner Shell scheitert der direkte GitHub-Netzwerkzugriff; der Connector
+unterstützt die benötigten Administrationsendpunkte nicht.
+
+Die erste Ausgabe zeigte eine Aktivierungslücke: `factory-control` hatte
+`deployment_branch_policy: null`, keine Branch-Regeln und noch keine App-Secrets.
+Gabriel setzte die Environment-Grenze und führte den Inspector erneut aus:
+`protected_branches: false`, `custom_branch_policies: true`, exakt eine Regel
+`name: main`, `type: branch` (Regel-ID `64660737`). Diese zweite Ausgabe bestätigt
+die Branch-Grenze vor dem Speichern der Secrets. Factory-Rulesets und App-Secrets
+waren weiterhin nicht vorhanden. Das gemeldete fehlende `OPENAI_API_KEY` gehört zum alten
+Main-Workflow; für den vorgesehenen lokalen Business-Reviewer wird kein solcher
+Schlüssel verlangt. Die Umstellung ist erst mit dem geprüften Merge von PR #5
+beziehungsweise dessen korrigiertem Stand wirksam.
+
+Beim unabhängigen Review wurde der App-JWT-Transport korrigiert: `gh` verwendet
+für `GH_TOKEN` das Schema `token`, App-JWTs verlangen `Bearer`. `settings.py`
+nutzt für diese beiden GET-Abfragen jetzt explizites Bearer-HTTPS ohne
+Weiterleitungen; die menschliche Administration bleibt bei gh. Vier neue
+Regressionen prüfen Header/Transport, erlaubte Endpunkte, Fehlerausgabe und
+Weiterleitungsschutz. Vor der Korrektur schlugen sie fehl, danach bestanden
+alle 19 Settings-Tests und die vollständige Suite mit 80 Tests. Die anschließende
+authentifizierte App-Prüfung stammt aus Gabriels Terminal, wie oben ausgewiesen.
+
+PRs #4, #5 und #6 waren bei dieser Prüfung weiterhin offene Entwürfe. Der
+erfolgreiche lokale Reviewer-Smoke bedeutet deshalb noch keine Umstellung des
+Main-Workflows. Keine App-Secrets hochgeladen, keine Rulesets aktiviert und
+keine Review-Fix-Schleife als abgenommen erklärt. Die folgenden Angaben vom
+27.10. bleiben historische Nachweise des ursprünglichen Bootstrap-Stands.
+
+## Historischer Bootstrap-Stand
+
 Stand: 27.10.2026. **Factory lokal implementiert; noch nicht einsatzbereit.** Dieser Nachweis trennt ausgeführte Prüfungen von ausstehenden Live-Szenarien. Kein Merge und keine administrativen Remote-Änderungen wurden vorgenommen.
 
 ## Ziel und Voraussetzungen

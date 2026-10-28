@@ -10,8 +10,8 @@
       "id": 115100163
     }
   ],
-  "publisher_app_id": null,
-  "writer_app_id": null,
+  "publisher_app_id": 5510081,
+  "writer_app_id": 5510093,
   "anthropic_federation": {
     "organization_id": "8b2d2d84-7a24-4db7-966f-866e5d6e5b47",
     "service_account_id": "svac_01LQabb1RDVrAgcnF5xcHXA7",

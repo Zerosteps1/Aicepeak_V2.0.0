@@ -853,3 +853,90 @@ Die Prüfung der tatsächlichen Prognosegüte durch Forecast-Ist-Vergleich und h
 - Konkrete Bildschirmaufteilung, feste Mindmap-Knotenanzahl, Wizard-Schritte, Charttypen und Zahl/Namen von Excel-Blättern.
 - Feste Standard- oder Maximalhorizonte, zusätzliche Zeitraster über Monate/Quartale/Jahre hinaus, Uploadlimits, Standardgewichte, Quantile, Genauigkeitsversprechen, Preislisten und Nutzungsbudgets.
 - Vollständiges Vertragsmanagement, allgemeines ERP, Buchhaltungssystem, automatischer Excel-Rückimport oder automatische externe Kommunikation.
+
+## 12. Entscheidungspunkte
+
+Dieses Kapitel ist ein Gerüst für die in Abschnitt 1.1 eingeführten Entscheidungspunkte D-xx. Es führt die im Dokument verwiesenen Punkte zusammen. Fragen und Optionen sind ausschließlich aus den verweisenden Textstellen abgeleitet; das Kapitel trifft keine Entscheidung und füllt offene Teile nicht mit Standardwerten. Wo der Text keine Optionen nennt, ist das ausdrücklich vermerkt. Eine Entscheidung wird beim jeweiligen Punkt mit Datum, Ergebnis und Begründung eingetragen und ändert dessen Stand.
+
+| Punkt | Gegenstand | Bezug | Stand |
+|---|---|---|---|
+| D-01 | Rechengrenzen des Excel-Exports je Methode | AIC-032, 9.1 | offen |
+| D-02 | Ausprägung von Bilanz und Liquidität | AIC-041, AIC-042, AIC-043 | offen |
+| D-03 | Zusätzliche Zeitraster, angebrochene Perioden, Horizonte | AIC-010 | offen |
+| D-04, D-05 | Im Dokument nicht verwiesen | – | offen |
+| D-06 | Zusammenarbeit, Rechte, Zuständigkeit für „aktuell gültig“, Aufbewahrung und Löschung | Kap. 3, AIC-027, 9.1, AIC-044, AIC-046, S-22 | offen |
+| D-07 | Organisations- und Währungssichten, Konsolidierungsumfang, repräsentative Fälle | Kap. 6, AIC-042, 9.1, AIC-053 | offen |
+| D-08 | Weitere Eingabeformate, Varianten und Sprachen | AIC-004, 9.1 | offen |
+| D-09 | Zulässige Größen, Lastfälle, Zielwerte für Aufwand, Laufzeit und Kosten | AIC-010, AIC-037, AIC-038, 9.1 | offen |
+| D-10 | Qualitätsmaßstäbe, Toleranzen und Abnahmekriterien | AIC-024, AIC-048, 9.1, 9.4 | offen |
+| D-11 | Weitergehende Bedeutung von Business Modeling | AIC-054 | offen |
+
+### D-01 – Rechengrenzen des Excel-Exports je Methode
+
+- **Frage:** Wo liegt je gewählter Berechnungsmethode die genaue Grenze zwischen Ergebnissen, die nach einer Excel-Änderung in Excel neu berechnet werden, und Ergebnissen, die einen Aicepeak-Lauf benötigen?
+- **Optionen:** Der Text nennt keine konkreten Optionen, sondern einen Rahmen. Untergrenze: kein bloßer Werteexport; Mengen, Preise, Wachstums- und Kostenannahmen und die davon abhängigen Finanzpositionen sind bearbeitbar bzw. neu berechenbar, soweit das Modell sie verwendet (1.2, AIC-032). Obergrenze: vollständige unabhängige Excel-Parität ist nicht verlangt; neue Recherche, Modellschätzung und Unsicherheitsberechnung dürfen einen Aicepeak-Lauf benötigen (1.2, AIC-032). Prüfmaßstab sind die gesetzten Controlleraufgaben.
+- **Bezug:** AIC-032 (7.9); 9.1 Excel-Nutzbarkeit.
+- **Stand:** offen
+
+### D-02 – Ausprägung von Bilanz und Liquidität
+
+- **Frage:** Welche Ausprägungen und Rechnungslegungsbezüge gelten für die optionalen Bereiche Bilanz und Liquidität, insbesondere Rechnungslegungs-, Konsolidierungs- und Detailtiefe der Bilanz sowie Darstellung und Umfang der Liquidität?
+- **Optionen:** Für die Liquidität nennt der Text eine direkte oder indirekte Darstellung (AIC-043). Für Rechnungslegungsbezug und Detailtiefe nennt er keine Optionen. Gesetzt bleibt: Die GuV ist eigenständig nutzbar, Bilanz und Liquidität werden von Beginn an fachlich mitgeführt, eine Rechenmethode wird nicht gewählt (1.2, AIC-041, AIC-043).
+- **Bezug:** AIC-041, AIC-042, AIC-043 (7.13); die Konsolidierungstiefe in AIC-042 gemeinsam mit D-07.
+- **Stand:** offen
+
+### D-03 – Zusätzliche Zeitraster, angebrochene Perioden und Horizonte
+
+- **Frage:** Wird eine wöchentliche Liquiditätsplanung unterstützt, wie werden angebrochene Perioden behandelt, und welche typischen bzw. maximalen Horizonte gelten?
+- **Optionen:** Wöchentliche Liquiditätsplanung aufnehmen oder nicht aufnehmen (1.2 nennt sie als noch nicht entschieden). Für angebrochene Perioden und Horizonte nennt der Text keine Optionen; feste Standard- oder Maximalhorizonte sind ausdrücklich nicht entschieden (11.2). Gesetzt: Monate, Quartale und Jahre, frei wählbarer Beginn und Endzeitpunkt, abweichende Geschäftsjahre (1.2).
+- **Bezug:** AIC-010 (7.3), dort gemeinsam mit D-09 genannt („D-03/D-09“). Die Aufteilung der dort genannten Punkte auf D-03 und D-09 legt der Text nicht fest; dieses Gerüst ordnet Zeitraster und Horizonte D-03 und die zulässigen Größen D-09 zu. Die Zuordnung ist bei der Entscheidung zu bestätigen.
+- **Stand:** offen
+
+### D-04 und D-05 – nicht verwiesen
+
+- **Frage:** Im Dokument nicht verwiesen; der Gegenstand ist nicht ableitbar.
+- **Optionen:** –
+- **Bezug:** keiner.
+- **Stand:** offen; Nummern belegen oder als nicht vergeben kennzeichnen.
+
+### D-06 – Zusammenarbeit, Rechte, Zuständigkeit für „aktuell gültig“, Aufbewahrung und Löschung
+
+- **Frage:** Wie werden Mehrbenutzerzusammenarbeit, konkrete Lese- und Änderungsrechte, Rollen und externe Verwendungsregeln geregelt? Wer darf einen Stand als „aktuell gültig“ kennzeichnen, und wie werden gleichzeitig gültige Stände bei unterschiedlichen Zeiträumen oder Szenarien abgegrenzt? Welche Aufbewahrungsdauer, Löschregeln und Anforderungen an die historische Belegverfügbarkeit gelten?
+- **Optionen:** Der Text nennt keine Optionen. Gesetzte Grenzen: kein formaler Forecastfreigabeprozess (1.2, AIC-046); aus AIC-046 wird keine Owner/Editor/Viewer- oder Freigeber-Rollenmatrix abgeleitet; Beratende erhalten durch die Arbeit für mehrere Unternehmen nicht automatisch erweiterte Zugriffsrechte (Kap. 3); technische Sicherheitsverfahren werden im Nordstern nicht gewählt (AIC-044).
+- **Bezug:** Kap. 3; AIC-027 (7.7); 9.1 Evidenzqualität und Nutzerkontrolle; AIC-044 und AIC-046 (9.2); S-22 (Kap. 10).
+- **Stand:** offen
+
+### D-07 – Organisations- und Währungssichten, Konsolidierungsumfang, repräsentative Fälle
+
+- **Frage:** Welche weitergehenden Organisations- und Währungssichten werden über die getrennte Planung von Gesellschaften und Geschäftsbereichen hinaus unterstützt? Welche Konsolidierungstiefe gilt für die Bilanz, und welchen Umfang hätte eine Aufnahme von AIC-053? Welche repräsentativen Branchen- und Unternehmensfälle belegen die Übertragbarkeit?
+- **Optionen:** Vollständige Konzernkonsolidierung (AIC-053, Status O) aufnehmen oder nicht aufnehmen. Für weitere Sichten und repräsentative Fälle nennt der Text keine Optionen; ein Papierhersteller dient nur als anschaulicher Anwendungsfall (Kap. 3). Gesetzt: getrennte Planung von Gesellschaften und Geschäftsbereichen (1.2).
+- **Bezug:** Kap. 6 (Unternehmen / betrachtete Einheit); AIC-042 (7.13, gemeinsam mit D-02); 9.1 Branchenübertragbarkeit (gemeinsam mit D-10); AIC-053 (11.1).
+- **Stand:** offen
+
+### D-08 – Weitere Eingabeformate, Varianten und Sprachen
+
+- **Frage:** Welche weiteren Eingabeformate, konkreten Formatvarianten und zusätzlichen Sprachen werden unterstützt, und welche Formatvarianten muss die Robustheit abdecken?
+- **Optionen:** Der Text nennt keine Optionen. Gesetzt: PDFs einschließlich gescannter PDFs, CSV-, Excel- und Word-Dateien sowie direkt eingefügte Texte auf Deutsch und Englisch, Transkripte als Text (1.2, AIC-004). Eigene Audio- und Videotranskription ist gesondert AIC-055 (Status O).
+- **Bezug:** AIC-004 (7.2); 9.1 Robustheit (gemeinsam mit D-09).
+- **Stand:** offen
+
+### D-09 – Zulässige Größen, Lastfälle, Zielwerte für Aufwand, Laufzeit und Kosten
+
+- **Frage:** Welche zulässigen Größen und typischen Unternehmens- und Datenumfänge (Lastfälle) gelten? Welche messbaren Zielwerte gelten für Bearbeitungsaufwand, Laufzeit und Kosten von Erstlauf und Aktualisierung? Wie werden Kostenanzeige und Verbrauchsgrenzen gestaltet?
+- **Optionen:** Der Text nennt keine Werte oder Optionen. Vorgaben: Zielwerte werden nicht aus Altwerbung abgeleitet (AIC-037); unbekannte Kosten werden nicht als kostenfrei oder exakt geschätzt dargestellt (AIC-038); keine erfundenen Antwortzeiten, Dateigrößenlimits oder Eurobudgets (9.1).
+- **Bezug:** AIC-010 (7.3, gemeinsam mit D-03); AIC-037 und AIC-038 (7.11); 9.1 Robustheit (gemeinsam mit D-08) und Wirtschaftlichkeit.
+- **Stand:** offen
+
+### D-10 – Qualitätsmaßstäbe, Toleranzen und Abnahmekriterien
+
+- **Frage:** Welche Toleranzen und Wesentlichkeitsgrenzen, Regeln zur fachlichen Verwendbarkeit, numerischen Reproduktionstoleranzen sowie Fehlermaße, Vergleichsmaßstäbe und Abnahmeschwellen für die Prognosegüte gelten? Welche repräsentativen Nutzergruppen, Abnahmekriterien sowie Branchen- und Unternehmensfälle liegen der Qualitätsprüfung zugrunde?
+- **Optionen:** Der Text nennt keine Werte oder Optionen. Vorgaben: kein formaler Forecastfreigabeprozess (AIC-024); keine erfundenen Genauigkeitsquoten (9.1); aus der Fähigkeit zur Messung entsteht kein numerisches Leistungsversprechen (9.4).
+- **Bezug:** AIC-024 (7.6); AIC-048 (7.14); 9.1 Fachliche Korrektheit, Verständlichkeit, Wiederholbarkeit und Branchenübertragbarkeit (gemeinsam mit D-07); 9.4.
+- **Stand:** offen
+
+### D-11 – Weitergehende Bedeutung von Business Modeling
+
+- **Frage:** Welche weitergehende Bedeutung erhält Business Modeling über das Abbilden des bestehenden Geschäftsmodells (AIC-001 bis AIC-003) hinaus, insbesondere für die Bewertung strategischer Geschäftsmodellvarianten?
+- **Optionen:** AIC-054 (Status Q/O) aufnehmen oder nicht aufnehmen. Der gesetzte Kern AIC-001 bis AIC-003 bleibt in beiden Fällen vollständig (AIC-054).
+- **Bezug:** AIC-054 (11.1).
+- **Stand:** offen

@@ -23,6 +23,7 @@ class Transport:
         self.config=config
         self.checks={}
         self.comments=[]
+        self.labels=set()
         self.calls=[]
         self.runs={}
         self.files=[{'filename':'example.txt','status':'modified'}]
@@ -45,6 +46,12 @@ class Transport:
             return {}
         if method=='GET' and '/actions/runs/' in path:
             return copy.deepcopy(self.runs[int(path.rsplit('/',1)[-1])])
+        if method=='POST' and path.endswith('/issues/1/labels'):
+            self.labels.update(data['labels'])
+            return {}
+        if method=='DELETE' and '/issues/1/labels/' in path:
+            self.labels.remove(path.rsplit('/',1)[-1])
+            return {}
         if path.endswith('/labels'):return {}
         if method=='POST' and path.endswith('/check-runs'):
             item={**data,'id':len(self.checks)+1,'app':{'id':7}}
@@ -57,6 +64,7 @@ class Transport:
 
     def pages(self,path,field=None):
         if path.endswith('/issues/1/comments'):return copy.deepcopy(self.comments)
+        if path.endswith('/issues/1/labels'):return [{'name':name} for name in sorted(self.labels)]
         if path.endswith('/files'):return copy.deepcopy(self.files)
         return []
 
@@ -172,12 +180,43 @@ class EngineBoundaries(unittest.TestCase):
         deterministic=[c for c in self.transport.checks.values() if c['name']=='factory/deterministic']
         self.assertEqual([c['conclusion'] for c in deterministic],['success'])
         self.assertIn('local_review.py --pr 1',self.transport.comments[-1]['body'])
+        self.assertEqual(self.transport.labels,{'awaiting-senior-review'})
 
     def test_failed_tests_complete_review_without_requesting_it(self):
         snapshot,_=self.publish(tests_ok=False)
         check=self.transport.checks[snapshot['check_id']]
         self.assertEqual((check['status'],check['conclusion']),('completed','failure'))
         self.assertEqual(json.loads(check['output']['text'])['phase'],'completed')
+        self.assertEqual(self.transport.labels,{'needs-author-action'})
+
+    def test_review_prompt_names_the_policy_and_the_incomplete_review_rule(self):
+        # A real Astra/high review reported factory/policy.md as missing and returned
+        # complete=false with changes_requested, which the gate must discard.
+        prompt=engine.review_prompt()
+        self.assertTrue(prompt.startswith('TRUSTED POLICY factory/policy.md'))
+        self.assertIn((ROOT/'factory/policy.md').read_text(),prompt)
+        self.assertIn('complete=false is only valid with outcome blocked',prompt)
+        schema=json.loads((ROOT/'factory/review.schema.json').read_text())
+        self.assertIn('outcome blocked',schema['properties']['complete']['description'])
+
+    def test_new_passing_head_hands_the_next_step_to_the_reviewer(self):
+        self.transport.labels={'needs-author-action','awaiting-senior-review'}
+        self.publish()
+        self.assertEqual(self.transport.labels,{'awaiting-senior-review'})
+
+    def test_draft_is_blocked_without_an_author_handoff(self):
+        self.transport.pr['draft']=True
+        self.transport.labels={'awaiting-senior-review','needs-author-action'}
+        snapshot=self.capture_snapshot()
+        tests={'repository':'fixture/repo','head_sha':'a'*40,'policy_sha':'b'*40,'run_id':1,'ok':True,'exit_code':0,'summary':'trusted output'}
+        env={'SNAPSHOT_JSON':json.dumps(snapshot),'TESTS_JSON':json.dumps(tests),'TEST_JOB_RESULT':'success'}
+        with patch.dict(os.environ,env), patch.object(engine,'installation',return_value=self.transport), patch.object(engine,'verify_run'):
+            engine.publish_stage(self.config)
+        deterministic=[c for c in self.transport.checks.values() if c['name']=='factory/deterministic']
+        self.assertEqual([c['conclusion'] for c in deterministic],['failure'])
+        self.assertEqual(self.transport.checks[snapshot['check_id']]['conclusion'],'failure')
+        self.assertEqual(self.transport.labels,set())
+        self.assertFalse(any(c['body'].startswith('needs-author-action') for c in self.transport.comments))
 
     def reviewed(self,outcome='changes_requested'):
         snapshot,tests=self.publish()

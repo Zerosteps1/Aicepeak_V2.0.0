@@ -183,15 +183,15 @@ def notify_review(gh, config, snapshot, value, outcome, reason, result_id):
     body = f"Factory · Head `{snapshot['head_sha'][:12]}` · Astra/high `{outcome}` (maintainer-local reviewer){advisory}\n\n{reason or value['review']['summary']}"
     if not any(b.startswith(marker + '\n') for b in bodies):
         gh.request('POST', f"/repos/{snapshot['repository']}/issues/{snapshot['pr']}/comments", {'body': marker + '\n' + body})
+    engine.remove_label(gh, snapshot, engine.AWAITING_REVIEW)
     automatic = (outcome == 'changes_requested' and not snapshot['control_changed']
                  and config.get('automatic_correction') is True and value['dispatch_correction'])
     if outcome != 'pass' and not automatic:
         handoff_marker = f'<!-- factory-review-handoff:{result_id} -->'
         if not any(b.startswith('needs-author-action: ') and handoff_marker in b for b in bodies):
             engine.needs_author(gh, snapshot, (reason or 'Senior review ' + outcome + '; address the findings in your working session.') + '\n' + handoff_marker)
-    elif outcome == 'pass' and any(label['name'] == 'needs-author-action'
-                                 for label in gh.pages(f"/repos/{snapshot['repository']}/issues/{snapshot['pr']}/labels")):
-        gh.request('DELETE', f"/repos/{snapshot['repository']}/issues/{snapshot['pr']}/labels/needs-author-action")
+    elif outcome == 'pass':
+        engine.remove_label(gh, snapshot, 'needs-author-action')
 
 
 def coordinate(gh, config, pr, check_id, claim_id, result_id=0):

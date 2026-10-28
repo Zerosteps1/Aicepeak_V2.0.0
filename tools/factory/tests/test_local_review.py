@@ -461,6 +461,7 @@ class Publication(unittest.TestCase):
 
     def test_published_review_feeds_the_correction_gate(self):
         snapshot = self.pending()
+        self.assertEqual(self.transport.labels, {'awaiting-senior-review'})
         check, record = self.claim(snapshot)
         reviewer = reviewer_metadata()
         with patch.object(local_review.subprocess, 'run') as run:
@@ -471,6 +472,7 @@ class Publication(unittest.TestCase):
         saved = json.loads(published['output']['text'])
         self.assertEqual((published['status'], published['conclusion'], saved['phase'], saved['reviewer']), ('completed', 'failure', 'completed', reviewer))
         self.assertIn('needs-author-action', self.transport.comments[-1]['body'])
+        self.assertEqual(self.transport.labels, {'needs-author-action'})
         self.config['automatic_correction'] = True
         self.transport.runs[2] = {'triggering_actor': {'type': 'User', 'id': 1}}
         captured = {}

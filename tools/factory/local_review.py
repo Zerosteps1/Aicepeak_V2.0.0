@@ -10,6 +10,7 @@ import argparse
 from contextlib import contextmanager
 import ctypes
 import base64
+import copy
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 import json
 import os
@@ -318,6 +319,14 @@ def run_codex(instructions, material, schema_path, config, freshness=None):
         raise Blocked('reviewer returned no JSON review') from None
 
 
+def file_bound_schema(schema, files):
+    """Generation schema naming the exact changed files: scope and finding paths cannot drift into prose."""
+    bound = copy.deepcopy(schema)
+    bound['properties']['scope']['items']['enum'] = list(files)
+    bound['properties']['findings']['items']['properties']['file']['enum'] = list(files)
+    return bound
+
+
 def pending_review(gh, pr, config):
     """Only the latest authenticated gate can be claimed; never fall back to older work."""
     checks = [c for c in engine.pr_checks(gh, {'repository': config['repository'], 'pr': pr}, config)
@@ -431,11 +440,15 @@ def review_pr(gh, pr, config, dispatch, dry_run):
     claim_id = uuid.uuid4().hex
     dispatch_review(config, pr, check['id'], claim_id)
     check, record = wait_for_coordination(gh, config, pr, check['id'], claim_id)
+    schema = json.loads((ROOT / 'factory/review.schema.json').read_text())
     try:
-        review, events = run_codex(instructions, material, ROOT / 'factory/review.schema.json', config,
-                                   freshness=lambda: require_active_claim(gh, config, snapshot, record['claim']))
+        with tempfile.TemporaryDirectory(prefix='factory-review-schema-') as directory:
+            schema_path = Path(directory) / 'schema.json'
+            schema_path.write_text(json.dumps(file_bound_schema(schema, snapshot['files'])))
+            review, events = run_codex(instructions, material, schema_path, config,
+                                       freshness=lambda: require_active_claim(gh, config, snapshot, record['claim']))
         reviewer = {**queue.REVIEWER_IDENTITY, **events}
-        validate_review(review, json.loads((ROOT / 'factory/review.schema.json').read_text()), snapshot)
+        validate_review(review, schema, snapshot)
         queue.validate_reviewer(reviewer)
     except (Blocked, ValueError, OSError, subprocess.SubprocessError):
         # Fixed text only; CLI/provider diagnostics may contain private material.

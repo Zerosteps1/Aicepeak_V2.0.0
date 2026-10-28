@@ -252,7 +252,7 @@ def preflight(gh, candidate, task, context):
         'No tests were executed by this command; do not claim test success. Assess the available source evidence '
         'and state missing necessary context honestly. No author session/history is available.')
     review, events = model_result(instructions, {'binding': binding, 'files': files, 'sources': sources,
-                                 'test_evidence': {'executed': False}}, advisory_schema(), config)
+                                 'test_evidence': {'executed': False}}, local_review.file_bound_schema(advisory_schema(), files), config)
     require(review['scope'] == list(dict.fromkeys(review['scope'])) and set(review['scope']) == set(files), 'incomplete diff scope')
     require(len({f['id'] for f in review['findings']}) == len(review['findings']), 'duplicate finding ID')
     for finding in review['findings']:

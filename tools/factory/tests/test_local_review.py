@@ -529,13 +529,19 @@ class Publication(unittest.TestCase):
         snapshot = self.pending()
         prompts = []
 
+        schemas = []
+
         def fake_codex(instructions, material, schema_path, config, freshness=None):
             freshness()
             prompts.append((instructions, material))
+            schemas.append(json.loads(Path(schema_path).read_text()))
             return review_for(snapshot, 'pass'), {'thread_id': 't', 'turns': 1, 'usage': {}}
         with patch.object(local_review, 'require_trusted_checkout'), patch.object(local_review, 'run_codex', side_effect=fake_codex):
             outcome = local_review.review_pr(self.transport, 1, self.config, dispatch=False, dry_run=False)
         self.assertEqual(outcome, 'pass')
+        # Live Astra/high twice returned a prose scope (PR #20); generation now names the exact files.
+        self.assertEqual(schemas[0]['properties']['scope']['items']['enum'], snapshot['files'])
+        self.assertEqual(schemas[0]['properties']['findings']['items']['properties']['file']['enum'], snapshot['files'])
         self.assertIn('APPROVED WORK ORDER', prompts[0][1])
         self.assertIn('trusted_test_evidence', prompts[0][1])
         self.assertEqual(self.transport.checks[snapshot['check_id']]['conclusion'], 'success')

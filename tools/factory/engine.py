@@ -456,7 +456,7 @@ def update_branch(writer, repository, branch, before, after):
     result=writer.request('POST','/graphql',{
         'query':'mutation($input:UpdateRefsInput!){updateRefs(input:$input){clientMutationId}}',
         'variables':{'input':{'repositoryId':identity['node_id'],
-            'refUpdates':[{'name':'refs/heads/'+branch,'beforeOid':before,'afterOid':after,'force':False}]}}})
+            'updates':[{'name':'refs/heads/'+branch,'beforeOid':before,'afterOid':after,'force':False}]}}})
     require(not result.get('errors') and result.get('data',{}).get('updateRefs') is not None,
             'atomic branch update rejected; reviewed head changed or writer lacks permission')
 

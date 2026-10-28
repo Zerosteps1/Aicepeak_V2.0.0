@@ -72,7 +72,8 @@
       "maxItems": 30
     },
     "complete": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "false is only valid together with outcome blocked; concrete defects are still listed as findings."
     },
     "outcome": {
       "type": "string",

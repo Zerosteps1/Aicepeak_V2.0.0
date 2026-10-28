@@ -73,6 +73,8 @@ gh workflow run factory.yml --repo Zerosteps1/Aicepeak_V2.0.0 --ref main -f pr=1
 
 Es gibt keine automatische Merge-Berechtigung. Die Zielkonfiguration verlangt beide erfolgreichen App-gebundenen Checks. Gabriel oder Felix entscheidet anschließend selbst über den Merge; eine zweite menschliche Freigabe ist nicht vorgeschrieben. CODEOWNERS hält die Zuständigkeit fest. Rote Pflichtchecks bleiben auch für Menschen blockierend. Die aktuelle Änderung wirkt nach dem Merge und dem geprüften Ruleset-Abgleich.
 
+**Status auf einen Blick.** `awaiting-senior-review`: deterministische Prüfungen bestanden, das verbindliche Astra-Review ist noch nicht gelaufen; ein Maintainer startet es mit `session.py watch --pr <Nummer>`. `needs-author-action`: Tests oder Review blockieren, der Autor ist am Zug. Ohne diese Labels und mit zwei grünen Pflichtchecks entscheidet ein Mensch über den Merge. Drafts haben rote Pflichtchecks, aber kein `needs-author-action`. Offene Reviews: `gh pr list --repo Zerosteps1/Aicepeak_V2.0.0 --label awaiting-senior-review`. Die Labels zeigen den letzten Pipeline-Lauf; verbindlich bleiben die Pflichtchecks.
+
 ## Aktivierung nach menschlichem Merge
 
 1. Diesen Kontrolländerungs-PR menschlich prüfen/mergen. Bestehende Schutzregeln nicht umgehen. Die neuen Workflows werden nicht vor ihrem Merge zur eigenen Prüfgrundlage.

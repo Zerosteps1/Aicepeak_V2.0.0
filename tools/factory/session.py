@@ -260,6 +260,11 @@ def preflight(gh, candidate, task, context):
         require(finding.get('kind', 'defect') == 'defect' or finding['priority'] == 'P2',
                 'only defects may have blocking priority; missing evidence belongs in limitations')
     blocking = any(f['priority'] in ('P0', 'P1') for f in review['findings'])
+    if not review['complete'] and review['outcome'] != 'blocked':
+        # Advisory only: show the findings as blocked instead of discarding the whole review.
+        review['limitations'] = review['limitations'][:29] + [
+            f"Reviewer returned an incomplete review with outcome {review['outcome']}; shown as blocked."]
+        review['outcome'] = 'blocked'
     require(review['complete'] or review['outcome'] == 'blocked', 'incomplete review must block')
     if review['outcome'] == 'pass':
         require(review['complete'] and not review['limitations'] and not blocking, 'invalid advisory pass')

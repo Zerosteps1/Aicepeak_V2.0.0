@@ -1,0 +1,393 @@
+{
+  "overall_verdict": "needs_revision",
+  "summary": "The draft provides a strong structural foundation: shared SaaS/BYOC components, an isolated calculation engine, explicit evidence and value types, proposal states, and comprehensive requirement traceability. Optional extensions remain unadopted, and numeric targets are generally labelled as proposals. However, traceability overstates implementation coverage. The temporal model cannot preserve the histories it promises; the proposal state machine excludes adopted corrections; and dialogue contracts require an existing forecast. Financial reconciliation, comparison, uncertainty and Excel-editing mechanisms need more concrete contracts. Corporate approval would also be blocked by incomplete tenant isolation and key coverage, deletion and restore gaps, incompatible residency assurances, overstated BYOC protection, and edition-dependent audit rights. Legal corrections are needed for NIS2 scope, incident-reporting triggers, CRA support, and several standards references. The two-person operating model remains unsubstantiated. These are fixable within the north star, but maintainers should not rely on the document as an implementation or procurement baseline until the findings are resolved. A corporate buyer could consider the revised design after receiving corresponding implementation, testing and contractual evidence.",
+  "nordstern_coverage": {
+    "missing_requirements": [
+      "AIC-003 (G/P, partial): B11's implementation cannot retain successive knowledge revisions for overlapping business periods or query their separate knowledge times.",
+      "AIC-006 (G, partial): Context attributes exist, but enforceable arithmetic rules for units, cumulative values, percentage points and transformations are unspecified.",
+      "AIC-007 (G, partial): Corrected values enter a state that the stated engine eligibility rule excludes.",
+      "AIC-019 (G, nominal): Event clustering is concrete; identifying an economic effect already contained in the selected baseline is not.",
+      "AIC-020 (G, partial): The engine boundary protects stored calculations, but numeric claims generated in explanations are not bound to calculation results.",
+      "AIC-021 (G, partial): Aggregation rules are listed without a sufficiently defined typed calculation and validation contract.",
+      "AIC-022 (G, partial): Snapshot identity is confused with execution identity; retention of executable environments for historical replay is unspecified.",
+      "AIC-023 (G, partial): The plug-in contract lacks a concrete joint-uncertainty representation and explicit separation of scenario spreads from probabilistic measures.",
+      "AIC-027 (G, nominal): Comparison records lack period, currency, scope and line-item alignment mechanisms.",
+      "AIC-028 (G, partial): Moving an adopted value to ConflictFlagged conflicts with the rule that only Confirmed values are effective.",
+      "AIC-030 (G, partial): The correction and effective-basis state models do not consistently make adopted corrections usable.",
+      "AIC-032 (G, partial): Export verification checks the original workbook but does not establish correct propagation after supported input edits.",
+      "AIC-033 (G, partial): No concrete mechanism distinguishes an edited workbook from its original forecast or marks affected frozen outputs as stale.",
+      "AIC-034 (G/P, partial): Dialogue requires a version and selected-run inputs, excluding required pre-forecast clarification.",
+      "AIC-035 (G, partial): Citation existence is checked, but numeric and causal claims are not verified against the selected run.",
+      "AIC-042 (G/P, nominal): Opening-plus-movements reconciliation is stated without movement schedules or links among investment, depreciation, financing and financial statements.",
+      "AIC-043 (G/P, nominal): Payment timing and working-capital mechanisms are not represented concretely beyond 'cash ≠ profit'.",
+      "AIC-044 (P, partial): Isolation, key coverage, external disclosure and deletion assurances lack complete enforcement mechanisms.",
+      "AIC-046 (G/P, partial): Immutable version records contain changeable labels without a defined append-only label-history and concurrency mechanism.",
+      "AIC-048 (G, partial): Historical cutoff queries are incorrect, and forecast-versus-actual comparisons lack alignment and revision-selection contracts."
+    ],
+    "promoted_optional_items": [],
+    "invented_commitments": []
+  },
+  "findings": [
+    {
+      "id": "F-01",
+      "severity": "P0",
+      "category": "nordstern_conflict",
+      "section": "B11 Data architecture — Bitemporal model",
+      "claim": "The implementation contradicts the declared temporal model and cannot support reliable historical knowledge reconstruction. It prevents ordinary revisions for the same business period and substitutes database insertion time for knowledge availability.",
+      "evidence": "B11 specifies an exclusion constraint on '(key, valid_period)' and selects 'the latest row recorded before the cut-off', despite separately defining valid, knowledge and record times. A corrected January actual necessarily overlaps the original January actual; a later-ingested historical publication also has different knowledge and record times. This conflicts with AIC-003, AIC-022 and AIC-048.",
+      "recommendation": "Define immutable revision identifiers, explicit knowledge-availability and supersession semantics, and valid-time selection. Scope overlap constraints to the appropriate revision or effective projection. Specify separate queries for knowledge actually available to a project and reconstructed historical knowledge, with reconstruction limits and tests for late ingestion and revised actuals.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-02",
+      "severity": "P0",
+      "category": "nordstern_conflict",
+      "section": "B5 Core workflows and state model",
+      "claim": "The proposal state machine removes adopted corrections and conflict-flagged confirmations from the engine's permitted input state. This directly contradicts effective corrections and protection of human confirmations.",
+      "evidence": "B5 says 'the confirmed state is the only one the engine reads', but 'user edits and confirms' transitions to Corrected, and a conflicting proposal transitions Confirmed or Corrected to ConflictFlagged while asserting that the existing value stays effective.",
+      "recommendation": "Separate adoption status from review/conflict status. Keep an immutable adopted revision effective until an explicit replacement, with conflict and recheck flags attached separately. Define snapshot eligibility for adopted corrections and validity expiry, and test S-02 and S-12.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-03",
+      "severity": "P0",
+      "category": "nordstern_conflict",
+      "section": "B4 Domain model; B7 AI layer — T6 and Context minimisation",
+      "claim": "The dialogue input contract excludes required interactions before the first forecast and during review of unconfirmed material. The universal confirmed-only context rule also contradicts the extraction and research task definitions.",
+      "evidence": "B4 binds dialogue to 'tenant, entity, project and version'; T6 receives 'the selected version and the elements it actually used'. B7 says calls receive 'only the confirmed basis', although T1/T2 consume unconfirmed extraction material and T4 consumes fetched items. AIC-034 explicitly requires dialogue without a completed forecast.",
+      "recommendation": "Define task-specific context types for onboarding, source review, working basis, imported-forecast review and saved-run explanation. Permit an absent forecast-version reference before a run, while retaining tenant/entity/project authorization and explicit confirmation/evidence status on every supplied item.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-04",
+      "severity": "P1",
+      "category": "architecture",
+      "section": "B7 AI layer — T6, Structured output and Injection defences",
+      "claim": "JSON-schema validation and allowed citation identifiers do not enforce that explanatory numbers and causal statements come from the selected calculation. A model can produce a valid response containing an invented amount or an unsupported explanation.",
+      "evidence": "T6 returns 'Explanations with citations to elements'; validation checks schemas and allowed references. B6's numeric restriction governs snapshot inputs, but no corresponding numeric or causal binding is specified for generated dialogue, plausibility findings or exported explanations.",
+      "recommendation": "Represent financial assertions through typed references to stored results, source values, assumptions and calculation relationships. Render referenced numbers deterministically, validate claimed causal links against the selected run, and require a calculation result before presenting a newly calculated outcome. Keep hypothetical reasoning visibly separate.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-05",
+      "severity": "P1",
+      "category": "architecture",
+      "section": "B4 Domain model — Baseline and EventCluster; B6 Financial kernel",
+      "claim": "The architecture implements duplicate-news detection but only restates the separate requirement to prevent duplicate economic effects relative to a baseline.",
+      "evidence": "EventCluster groups reports of one event; Baseline is only 'the declared reference path per line item'. B5 says overlap is checked and B6 names 'baseline-plus-effect composition', without representing already-included effects or the overlap decision required by AIC-019.",
+      "recommendation": "Specify effect identifiers, affected exposure/position/period, the selected baseline revision, and an explicit inclusion or overlap decision. Preserve the distinction between one event with several legitimate effects and repeated application of the same effect; unresolved overlap must remain visible rather than silently become additive.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-06",
+      "severity": "P1",
+      "category": "architecture",
+      "section": "B6 Deterministic computation engine — Financial kernel, Uncertainty and Verification",
+      "claim": "The financial and uncertainty contracts remain too abstract to enforce chapter 8 across interchangeable methods. Repeating the same implementation verifies repeatability, not financial correctness.",
+      "evidence": "B6 lists period arithmetic, signs, stock/flow aggregation and joint uncertainty, but the plug-in interface is only 'fit, project, uncertainty, explain'. It does not define dimensional operations, cumulative-to-period conversion, weighted margins, dependence alignment or incompatible uncertainty outputs. Verification reruns the same engine.",
+      "recommendation": "Define versioned quantity, expression, aggregation and uncertainty interfaces with unit/currency/period checks and explicit probabilistic versus scenario types. Specify how joint dependence is supplied and when aggregation is unsupported. Add independent expected-result and invariant tests from the north-star acceptance cases; leave numerical tolerances and acceptance thresholds under D-10.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-07",
+      "severity": "P1",
+      "category": "architecture",
+      "section": "B6 Deterministic computation engine — Financial kernel; B17 D-02 proposal",
+      "claim": "Balance-sheet and liquidity support is nominal rather than a concrete architecture for the required integrated financial scope.",
+      "evidence": "The kernel specifies 'opening balance + movements = closing balance and cash ≠ profit'. No movement/payment structures or schedules connect receivables, payables, inventory, investment, depreciation, tax and financing to the P&L and closing cash, as required within the selected scope by AIC-042/043.",
+      "recommendation": "Describe general movement and payment-timing objects, their financial-statement links, reconciliation invariants and missing-input behaviour. Demonstrate the S-16 payment-term change without duplicating revenue. Keep accounting framework, presentation and detail depth explicitly pending D-02/D-07.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-08",
+      "severity": "P1",
+      "category": "architecture",
+      "section": "B4 Domain model — ForecastVersion/Comparison; B6 Change attribution and Backtests",
+      "claim": "Saving a Comparison record does not specify how arbitrary saved forecasts and later actuals become comparable. Currency, scope, fiscal-period and line-structure changes can otherwise be misreported as forecast error.",
+      "evidence": "B4 stores comparisons and backtests as Comparison records without their attributes. B6 decomposes changes against 'the previous run on the same project', while AIC-027 and AIC-048 require explicit comparability, understandable error measures and identifiable actual revisions.",
+      "recommendation": "Define comparison inputs, selected actual revision, period alignment, unit/currency treatment, line-item mappings, scope bridges and non-comparability reasons. Include metric identifiers and explanatory output contracts, with metric selection and thresholds remaining D-10.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-09",
+      "severity": "P1",
+      "category": "nordstern_conflict",
+      "section": "B14 Integration architecture — Excel export and verification; Appendix C AS-6",
+      "claim": "Original-state workbook parity does not establish the required behaviour after edits, and the document does not specify how an edited export loses its original-forecast designation. The fallback of simply narrowing the boundary lacks the north star's mandatory lower bound.",
+      "evidence": "B14 recalculates the exported workbook and compares it with the original run, while the overview retains its version/export stamp and frozen outputs are listed on a limits sheet. AS-6 proposes 'a narrower boundary with a clearer limits sheet'. AIC-032/033 require supported dependent recalculation and visible non-updated results after changes.",
+      "recommendation": "Add input-mutation parity cases for quantities, prices, growth, costs and supported payment assumptions. Define a visible edited-state indicator and stale markings for affected frozen outputs. State that any D-01 fallback must preserve the mandatory controller tasks, including supported balance-sheet/liquidity dependencies.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-10",
+      "severity": "P1",
+      "category": "architecture",
+      "section": "B4 InputSnapshot/ForecastRun; B6 Manifest and Verification",
+      "claim": "An input snapshot hash is not a unique execution identity, and recording an image digest does not ensure that its executable environment remains available throughout forecast retention.",
+      "evidence": "B4 says the snapshot hash 'is the run's identity', although engine image and seed are separate run attributes. A7 defines release support, but no replay-artifact retention policy exists. NumPy conditions stream compatibility on the build, environment, machine and call sequence, not merely a seed and container tag: [NumPy compatibility policy](https://numpy.org/doc/stable/reference/random/compatibility.html).",
+      "recommendation": "Separate snapshot identity, calculation-specification identity and execution-attempt identity. Retain content-addressed engine images, plug-ins and required runtime specifications for the approved forecast retention period. Define supported replay environments, method-specific verification and a contained procedure for replaying historically vulnerable images.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-11",
+      "severity": "P1",
+      "category": "architecture",
+      "section": "B5 Core workflows; B11 Immutability; B14 Export verification",
+      "claim": "The append-only model lacks the transaction and event semantics needed for changing labels, adopting corrections and attaching later verification evidence. Concurrent edits and job retries can therefore produce ambiguous effective states.",
+      "evidence": "B11 forbids application UPDATE/DELETE on runs and versions; B4 stores the changing current label on ForecastVersion; B14 later stores export verification in the run manifest. Jobs have leases and retries, but no atomic adoption, snapshot-sealing or publication protocol is specified.",
+      "recommendation": "Define append-only adoption, label and attestation events with explicit read projections. Specify revision checks for concurrent edits, transactional snapshot creation, idempotent result publication and failure recovery across PostgreSQL and object storage. Keep concurrent-current-context policy pending D-06.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-12",
+      "severity": "P0",
+      "category": "regulation",
+      "section": "A8 Compliance summary; B15.2 GDPR — Art. 28 contract; B15.6 DORA readiness",
+      "claim": "Required audit and inspection rights cannot be categorically restricted to the Dedicated edition. Documentation and certificates can support assurance, but cannot universally replace the applicable customer and regulator rights.",
+      "evidence": "B15.2 offers 'documentation-based audits and certifications for SaaS; on-site or account-level audits in the Dedicated edition'; A8/B15.6 similarly reserve audit/testing rights for Dedicated. GDPR Art. 28(3)(h) includes inspections, and DORA Art. 30(3)(d)/(e) applies according to the supported function, not hosting edition: [GDPR](https://eur-lex.europa.eu/eli/reg/2016/679/oj), [DORA](https://eur-lex.europa.eu/legal-content/ENG/ALL/?uri=CELEX%3A32022R2554).",
+      "recommendation": "Provide edition-independent statutory audit/cooperation rights, with proportionate procedures protecting other tenants and using pooled audits or certifications where appropriate. For any future DORA-covered offering, define the applicable critical-function audit and testing arrangements or expressly decline that use until they are available.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-13",
+      "severity": "P1",
+      "category": "regulation",
+      "section": "A8 Compliance summary; B15.5 NIS2",
+      "claim": "The NIS2 scope test incorrectly treats the size threshold as an absolute exemption, classifies all larger cloud providers as important, and places managed service providers in the wrong annex.",
+      "evidence": "B15.5 says 'Below that size Aicepeak is out of scope', above it becomes an 'important entity', and managed service provision is 'Annex II'. Art. 2 contains size-independent routes; Art. 3 distinguishes essential and important entities; managed service providers are in Annex I, point 9: [NIS2 official text](https://eur-lex.europa.eu/eli/dir/2022/2555/oj/eng).",
+      "recommendation": "Replace the categorical conclusion with a documented assessment of services, enterprise/group size, applicable exceptions/designations, establishment and national implementation. Correct the annex and essential/important classification, and identify the direct obligations that activate if Aicepeak enters scope.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-14",
+      "severity": "P1",
+      "category": "regulation",
+      "section": "Executive summary; B15.3 EU AI Act — System definition and Classification",
+      "claim": "The intended-purpose non-high-risk argument is plausible, but the claimed AI-free core and automatic high-risk readiness go beyond the evidence. Determinism does not itself exclude AI, and reclassification need not be merely a documentation exercise.",
+      "evidence": "B15.3 calls the computation core 'AI-free' while B6 leaves fitting methods open, and says reclassification would require 'not a redesign'. Art. 3(1) focuses on inference, Art. 25(1)(c) separately addresses changed intended purpose, and Art. 17 requires substantive lifecycle processes: [Art. 3](https://ai-act-service-desk.ec.europa.eu/en/ai-act/article-3), [Art. 25](https://ai-act-service-desk.ec.europa.eu/en/ai-act/article-25), [Art. 17](https://ai-act-service-desk.ec.europa.eu/en/ai-act/article-17).",
+      "recommendation": "Keep the classification tied to the defined corporate-forecasting purpose and assess selected calculation methods separately. Correct the changed-purpose explanation, treat Art. 6(3) only as a fact-specific assessment, and replace high-risk-readiness assurances with a gap assessment. Do not add high-risk use cases to scope.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-15",
+      "severity": "P1",
+      "category": "regulation",
+      "section": "B15.3 EU AI Act — Marking of AI-generated text",
+      "claim": "A metadata field and spreadsheet column do not, without a defined detection and interoperability design, substantiate the claim that marking follows the transparency Code of Practice.",
+      "evidence": "The implementation is described only as a 'metadata field and export sheet column' that 'follows the Code'. Art. 50(2) requires machine-readable, detectable marking with technically feasible effectiveness, interoperability, robustness and reliability: [Art. 50](https://ai-act-service-desk.ec.europa.eu/en/ai-act/article-50), [Commission Code of Practice](https://digital-strategy.ec.europa.eu/en/policies/code-practice-ai-generated-content).",
+      "recommendation": "Retain the open applicability assessment by output type, distinguishing faithful extraction from newly generated explanations. Define the marking format, detection path, preservation of relevant provider provenance and tests across UI/API/export transformations. Describe this as a proposed implementation until its adequacy is established.",
+      "confidence": "medium"
+    },
+    {
+      "id": "F-16",
+      "severity": "P1",
+      "category": "regulation",
+      "section": "A4 Operations; A7 Incidents; B15.2 Breaches; B15.7 CRA reporting",
+      "claim": "Incident clocks and triggers are insufficiently defined and could delay legally required notifications. The CRA final-report periods are presented without their different starting events.",
+      "evidence": "GDPR notification is measured from 'confirmation', whereas Art. 33(2) uses awareness and requires notification without undue delay. CRA reporting is summarized as '14 days or one month': the vulnerability final report follows availability of a corrective/mitigating measure, whereas the incident final report follows the incident notification: [GDPR Art. 33](https://eur-lex.europa.eu/eli/reg/2016/679/oj), [Commission CRA reporting guidance](https://digital-strategy.ec.europa.eu/en/policies/cra-reporting).",
+      "recommendation": "Add an incident matrix identifying each regime's trigger, clock, recipient, responsible party and phased reporting requirements. Define awareness and distinguish it from completed investigation. Keep the proposed customer-service target separate from statutory deadlines and make CRA reporting operational from the first applicable release.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-17",
+      "severity": "P1",
+      "category": "regulation",
+      "section": "A7 Releases and Security updates; B15.7 Cyber Resilience Act",
+      "claim": "The proposed 12-month LTS policy is not reconciled with the stated CRA support obligation or long-term availability of issued security updates.",
+      "evidence": "A7 supports quarterly LTS lines for 12 months and patches only supported versions; B15.7 promises at least five years. CRA Art. 13(8) governs the support period, Art. 13(9) requires issued updates to remain available for at least ten years or the remaining support period, and Art. 13(10) permits latest-version fulfilment only under conditions: [CRA official text](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32024R2847).",
+      "recommendation": "Separate product security-support duration, release-line maintenance and update-download retention. Specify either maintained compatible versions or a compliant free migration path meeting Art. 13(10), including customer-environment constraints. Reflect the resulting staffing and release obligations in A7 and BYOC contracts.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-18",
+      "severity": "P1",
+      "category": "architecture",
+      "section": "B11 Portability and switching; B14 Research connectors; B15.4 EU Data Act",
+      "claim": "The unconditional full-export and historical-evidence promises are not reconciled with licensed third-party content and the policy of retaining only references to paywalled material.",
+      "evidence": "B11 exports every B4 entity and originals; B14 records licences but says paywalled content is 'referenced, not stored'. Data Act Art. 2(38) excludes protected provider/third-party assets from exportable data, while Art. 25 requires contractual specification of export scope: [Data Act official text](https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX%3A32023R2854).",
+      "recommendation": "Define enforceable licence permissions for ingestion, historical retention, model processing and redistribution. Distinguish customer data from licensed evidence in the export manifest, disclose lawful exclusions and preserve permitted provenance/reproduction inputs. Make inaccessible historical evidence visible without weakening mandatory customer-data portability.",
+      "confidence": "medium"
+    },
+    {
+      "id": "F-19",
+      "severity": "P2",
+      "category": "regulation",
+      "section": "B15.8 Standards and attestations; Appendix B Standards",
+      "claim": "The C5 transition is misstated, and the TISAX roadmap omits the announced ISA transition. The assertion that additional assurance schemes require only mappings is unsupported.",
+      "evidence": "B15.8 says C5:2026 is mandatory for 'reports after 1 June 2027'. Section 3.5 instead uses the Type 1 assessment date or Type 2 period beginning on/after that date. ENX identifies ISA2027 for assessments ordered from 2027: [BSI-authored C5:2026, section 3.5, mirrored PDF](https://ingenrieth-online.de/fileadmin/files/regulations/standards/c5-2026/BSI_C5_2026_en.pdf), [ENX downloads](https://new.portal.enx.com/en-US/TISAX/downloads/).",
+      "recommendation": "Correct the C5 date rule and update the TISAX planning reference. Replace 'mappings, not redesigns' with scheme-specific gap assessments, scope and evidence plans. Clearly distinguish planned certifications/attestations from assurance actually obtained.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-20",
+      "severity": "P2",
+      "category": "regulation",
+      "section": "Appendix B Regulatory references — GDPR reform; B15.2 Status of the law",
+      "claim": "The GDPR Digital Omnibus proposal number is wrong, and the predicted direction of all eventual changes is stated too confidently.",
+      "evidence": "Appendix B identifies GDPR reform as COM(2025) 836; the general Digital Omnibus is COM(2025) 837, procedure 2025/0360(COD). The Council's October position is a negotiating mandate, not an adopted reform: [Commission proposal](https://www.europarl.europa.eu/RegData/docs_autres_institutions/commission_europeenne/com/2025/0837/COM_COM%282025%290837_EN.pdf), [Council mandate announcement](https://www.consilium.europa.eu/en/press/press-releases/2026/10/21/digital-rulebook-council-agrees-position-to-simplify-data-protection-privacy-and-cyber-reporting-rules/).",
+      "recommendation": "Correct the identifier and keep the general Digital Omnibus separate from the adopted AI amendment. Replace 'would relax, not tighten' with a statement that final effects remain subject to negotiations and change assessment.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-21",
+      "severity": "P2",
+      "category": "security",
+      "section": "A4 Security and compliance features — Vulnerability remediation",
+      "claim": "The comparison with CISA BOD 19-02 is misleading: the high-severity period is equal, and starting the proposed clock at confirmation can make remediation slower.",
+      "evidence": "A4 calls proposed 7/30-day targets 'stricter than' 15/30 days and describes BOD 19-02 as 'the only published benchmark'. BOD 19-02 measures critical/high remediation from initial detection: [CISA directive](https://www.cisa.gov/sites/default/files/bod-19-02.pdf).",
+      "recommendation": "Remove the unsupported exclusivity and blanket superiority claims. Define detection, triage and remediation clocks explicitly, including exploited-vulnerability prioritisation, while retaining the proposed service targets under D-09.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-22",
+      "severity": "P1",
+      "category": "regulation",
+      "section": "B11 Employee-level figures; B15.2 DPIA; B15.9 National law; Appendix C AS-8",
+      "claim": "The claimed small personal-data footprint rests on contradictory storage rules and does not justify a general expectation that only the innovation DPIA criterion is relevant.",
+      "evidence": "B11 says person-level rows are not stored by default, while B4 retains immutable original uploads containing those rows. B15.2 nevertheless says a DPIA is 'typically not mandatory'. EDPB criteria also include highly personal data, vulnerable subjects and combined datasets; BDSG §38 contains DPO triggers independent of the 20-person threshold: [EDPB guidance](https://www.edpb.europa.eu/sme/be-compliant/be-compliant_en), [BDSG §38](https://www.gesetze-im-internet.de/bdsg_2018/__38.html).",
+      "recommendation": "Reconcile original-source retention with aggregation through an explicit restricted-source, redaction or rejection policy that preserves declared verification limits. Document actual data categories and purposes before DPIA screening, avoid treating company information as categorically non-personal, and include applicable headcount-independent DPO triggers.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-23",
+      "severity": "P0",
+      "category": "security",
+      "section": "B1 Isolation principle; B9 Multi-tenancy and isolation",
+      "claim": "Database separation and signed tenant tokens do not establish the claimed inability of shared application code to access another tenant's resources. The described nightly RLS proof is also technically incorrect.",
+      "evidence": "B9 specifies per-tenant pools and prefix policies but not the credential/IAM mechanism binding a shared worker to one authorized tenant. It proposes counting out-of-scope rows with row_security=off; PostgreSQL states that this setting raises an error when policy filtering would occur rather than bypassing RLS: [PostgreSQL row security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html).",
+      "recommendation": "Specify tenant-bound database roles, credential acquisition, object-store/KMS authorization and trusted job identities, including protections against tenant-ID substitution. Replace the RLS proof with adversarial read/write tests under actual application roles, pool reuse and missing-context cases. Treat a future pooled-table migration as a new security decision.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-24",
+      "severity": "P0",
+      "category": "security",
+      "section": "B8 Identity and access — Roles proposal",
+      "claim": "The proposed tenant-administrator role can obtain content through export despite being explicitly denied project-content access without an entity grant.",
+      "evidence": "The role may 'export and delete tenant data' and grant entity access, but may not 'Read project content without an entity grant'. A full tenant export contains documents, figures, dialogue and model outputs, creating a direct bypass of the stated restriction.",
+      "recommendation": "Before adopting D-06, choose explicitly between content-privileged tenant administrators and configuration-only administrators. For the latter, separately authorize export retrieval, support access and self-grants; enforce the same content permissions on every export and download path.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-25",
+      "severity": "P0",
+      "category": "security",
+      "section": "A4 Encryption; B9 Keys; B11 Storage and Deletion",
+      "claim": "The specified encryption coverage does not support the blanket claims that customer-key revocation renders all tenant data unreadable or that tenant/project deletion is achieved cryptographically.",
+      "evidence": "The database uses a shared platform key; additional tenant encryption is described for document text, extractions and dialogue. Financial/model metadata and full-text/vector indexes are not accounted for. B11 then invokes a 'tenant or project key', although no project-key hierarchy is defined.",
+      "recommendation": "Provide a field/store/index/backup key-coverage matrix and a defined key hierarchy. Explain retrieval over encrypted content, treatment of searchable derivatives, cached plaintext and wrapped keys, and revocation enforcement. Narrow the erasure claim until all affected data classes and project-level deletion are covered and tested.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-26",
+      "severity": "P0",
+      "category": "security",
+      "section": "A7 Offboarding; B11 Retention, deletion and recovery; B15.2 Records and rights",
+      "claim": "Deletion is not designed end to end, particularly for immutable derivatives and restored backups. A deletion certificate would overstate completion without a restore-safe deletion ledger and a complete copy inventory.",
+      "evidence": "B11 covers extractions, dialogue and logs, but does not define erasure across originals, snapshots, results, exports, indexes and retained provider copies. Backups purportedly lose deleted data within 35 days, while A7 proposes deletion 35 days after the backup-retention window. Restores do not reapply erasure decisions; residual references are merely described as pseudonymised.",
+      "recommendation": "Define deletion by data class, legal hold and storage version, including any enabled provider retention/logging. Maintain deletion tombstones outside restored datasets and reapply them before serving a restore. Reconcile the offboarding clock, distinguish restricted retention from completed erasure, and make certificates list exclusions and pending expiry.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-27",
+      "severity": "P0",
+      "category": "security",
+      "section": "A3/A8 Residency; B7 Provider policy; B11 Residency and backups",
+      "claim": "The document promises incompatible geographic boundaries, and its OpenAI fallback does not establish strict EU-only processing. Endpoint location alone cannot enforce the advertised boundary.",
+      "evidence": "B11 permits providers only in the tenant's single region, while B7 uses cross-region Bedrock profiles and Azure EU Data Zone, and backups use another region. OpenAI's Europe region is EEA plus Switzerland and excludes system data from residency guarantees; Azure Data Zone may process across EU member states: [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data), [Microsoft data-location rules](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy).",
+      "recommendation": "Define separate approved sets for primary storage, backup, inference, support and metadata processing. Reconcile single-region versus multi-region promises and exclude the broader OpenAI geography from strict EU-only profiles unless contractual evidence narrows it. Gate every fallback/model/API feature on verified region and retention eligibility, including required approvals.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-28",
+      "severity": "P0",
+      "category": "security",
+      "section": "B12 Dedicated deployment; B15.2 Transfers; B15.10 Lawful-access transparency",
+      "claim": "BYOC is overstated as both an account-level data boundary and a means of avoiding foreign lawful-access exposure. Customer ownership of the account or encryption keys does not establish either assurance for external inference.",
+      "evidence": "B12 says 'customer data and document text never leave the account', although B7 permits external model APIs. B15.2 directs customers who must avoid CLOUD Act exposure to their own account. The statute concerns provider possession, custody or control irrespective of location: [18 U.S.C. §2713](https://www.law.cornell.edu/uscode/text/18/2713).",
+      "recommendation": "Limit the no-content statement to the release/heartbeat channel. Include the actual outbound data-flow and processor table in the architecture, covering inference, research, support and observability. Describe BYOC as an operating-control measure and assess residual lawful-access exposure per provider and plaintext-processing path.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-29",
+      "severity": "P1",
+      "category": "security",
+      "section": "B3 Egress proxy; B12 Deployment architecture; B14 News connectors",
+      "claim": "The egress design assigns application-layer controls to a CONNECT tunnel without defining where those controls can execute. Private cloud-service endpoints also need explicit restrictions to preserve the claimed single model-access path.",
+      "evidence": "B3 specifies TLS termination, while B14 describes a Smokescreen-style CONNECT proxy enforcing redirects and response sizes. CONNECT normally switches to blind forwarding and cannot inspect encrypted HTTP redirects or decompressed responses: [RFC 9110 §9.3.6](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect). B12 separately exposes Bedrock/private service endpoints.",
+      "recommendation": "Choose and document the TLS model. Place redirect, decompression, size and licence checks in a controlled fetch component if traffic remains tunneled. Bind proxy authorization to trusted tenant/task identities and restrict private model endpoints with workload IAM and endpoint policies so other workloads cannot bypass the gateway.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-30",
+      "severity": "P1",
+      "category": "security",
+      "section": "B5 Research workflow; B7 T4 and Pseudonymisation; B10 Exfiltration threat",
+      "claim": "Host allow-lists prevent some SSRF paths but do not prevent disclosure of confidential information through permitted search queries or URLs. The model-facing minimisation policy does not define what research providers may receive.",
+      "evidence": "B5 generates research queries from company profiles and drivers; B7 allows company names and figures through by default; B10 lists destination controls as the defence against research exfiltration. There is no outgoing-query data policy or validation of model-proposed query contents.",
+      "recommendation": "Specify a D-06 proposal for external research disclosure, with permitted query fields and handling of confidential figures, plans and identifiers. Validate generated requests against that policy before fetching, and test injection attempts that encode confidential content into requests to otherwise allowed hosts.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-31",
+      "severity": "P1",
+      "category": "security",
+      "section": "B10 Application controls; B14 Excel export and verification",
+      "claim": "The export pipeline does not distinguish trusted generated formulas from untrusted text that a spreadsheet library may interpret as a formula.",
+      "evidence": "B14 exports source-derived text and explanations into a workbook with live formulas, while its explicit protections are no macros/external links and a small intended formula vocabulary. openpyxl automatically marks ordinary string values beginning with '=' as formulas: [openpyxl Cell implementation](https://openpyxl.readthedocs.io/en/stable/_modules/openpyxl/cell/cell.html).",
+      "recommendation": "Require explicit text cell types for source/user/model text and allow formulas only from the trusted kernel compiler. Validate the produced workbook's formulas, relationships and external connections, and include malicious-text cases in export and headless-recalculation tests.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-32",
+      "severity": "P1",
+      "category": "security",
+      "section": "B8 Identity and access — Federation only",
+      "claim": "The promised deprovisioning behaviour is not guaranteed by SCIM and short-lived tokens, and MFA assurance is unspecified when the IdP supplies no authentication-method claim.",
+      "evidence": "B8 says a removed user loses access 'at the next token check' and requires an authentication-method claim only 'where the IdP provides one'. Microsoft provisioning uses periodic incremental cycles and retries, so an IdP deletion need not already be known at that check: [Entra provisioning behaviour](https://learn.microsoft.com/en-us/entra/identity/app-provisioning/how-provisioning-works).",
+      "recommendation": "Define server-side account/grant checks, session revocation, provisioning-failure monitoring and the actual revocation bound. Specify trusted MFA-assurance mappings or documented IdP-policy verification for each federation profile, with fail-closed handling of unmet assurance requirements.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-33",
+      "severity": "P1",
+      "category": "security",
+      "section": "B10 Tampering threat; B11 Immutability; B13 Audit log",
+      "claim": "The audit-anchor design does not establish tamper evidence against the privileged operators included in the threat model. Governance-mode retention can be bypassed by specially authorized principals.",
+      "evidence": "B11 defaults to S3 Object Lock governance mode but does not isolate bypass privileges or the trust root used by auditors. AWS documents that governance retention can be overridden with s3:BypassGovernanceRetention: [S3 Object Lock](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html). Anchor cadence also differs between daily in B10 and hourly in B11/B13.",
+      "recommendation": "State the privileged-attacker boundary and define independently controlled anchor storage or customer-held checkpoints, signing-key custody and version-specific verification. Explicitly restrict and monitor bypass/retention administration, and use one documented anchoring cadence.",
+      "confidence": "high"
+    },
+    {
+      "id": "F-34",
+      "severity": "P1",
+      "category": "feasibility",
+      "section": "A7 Operations; B12 Dedicated deployment; B13 On-call; B17 Risks and build order",
+      "claim": "The claim of two-person operability is not supported by a bounded support matrix, capacity evidence or coverage plan. Managed infrastructure does not remove application incidents, customer migrations, provider regressions and parallel release maintenance.",
+      "evidence": "The design combines AWS/Azure SaaS and BYOC, numerous model adapters, per-tenant database migrations, quarterly LTS lines, certification work and a two-person on-call rotation escalating to cloud-provider support. A7 also says 'daily tested backups', while B11 specifies quarterly restore tests and A7 a yearly recovery test.",
+      "recommendation": "Add a phased qualification plan for cloud/provider/runtime combinations without cutting G scope, a workload and fleet-cost model, and explicit vendor/customer operating responsibilities. Define human incident coverage and any external support dependency. Reconcile backup-test terminology and make service commitments conditional on demonstrated operational capacity.",
+      "confidence": "medium"
+    },
+    {
+      "id": "F-35",
+      "severity": "P2",
+      "category": "consistency",
+      "section": "B2 System context; A5 Interfaces; B8 SCIM; B14 API",
+      "claim": "The system-context narrative contradicts the specified inbound integration surface and could mislead firewall and threat-model reviewers.",
+      "evidence": "B2 states 'no inbound integration from external systems in version 1' and 'all external traffic is outbound'. A5 and B14 provide REST imports, and B8 exposes inbound SCIM Users/Groups provisioning.",
+      "recommendation": "Distinguish outbound third-party connector calls from authenticated inbound customer APIs, SCIM and user access. Update the context diagram and ingress/network requirements to show each supported direction and trust boundary.",
+      "confidence": "high"
+    }
+  ],
+  "questions_for_maintainers": [
+    "For D-01, which results will remain editable and recalculable for each supported method, and which may remain frozen, while preserving all mandatory quantity, price, growth, cost and supported payment-assumption tasks?",
+    "For D-02/D-07, what initial accounting detail and cash-flow presentation should be specified: direct, indirect, or both, with which movement and payment assumptions required in each supported scope?",
+    "For D-06, are tenant administrators intended to be content-privileged, or configuration-only with separately granted export, support-access and self-grant capabilities?",
+    "For D-06, what retention and erasure policy should govern originals, historical calculation evidence, dialogue and legal holds, and how should simultaneous current versions be scoped by period and scenario?",
+    "For D-06 external-use rules, may research queries contain confidential company figures and plans, or should those require a separate explicit tenant policy beyond permission to use an LLM provider?",
+    "Is the SaaS residency commitment strictly EU-member-state-only, a broader EEA/Switzerland geography, or a selectable policy with separately declared inference, backup, support and metadata locations?",
+    "For BYOC, which operating model is the default: customer-operated application or vendor-operated application through the runner, and who owns emergency patching, incident reporting, restore execution and unavailable-key recovery?",
+    "Which cloud/provider profiles should be qualified first, and will broader simultaneous support be backed by additional operating coverage or deferred until measured readiness is demonstrated?",
+    "For D-09/D-10, which representative financial workloads, independent expected-result cases and runtime environments will be used to approve cost, availability, reproducibility and forecast-quality targets?"
+  ]
+}

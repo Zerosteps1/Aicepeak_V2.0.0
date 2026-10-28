@@ -2,6 +2,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 
@@ -21,6 +22,38 @@ class Gates(unittest.TestCase):
 
     def test_clean_change_is_not_forced_to_have_findings(self):
         self.assertEqual(validate_review(self.review,self.schema,self.snapshot),'pass')
+
+    def test_generation_schema_rejects_partial_finding_identifiers(self):
+        pattern = self.schema['properties']['findings']['items']['properties']['id']['pattern']
+        finding = dict(id='F-001', kind='defect', confidence='high', priority='P1',
+                       file='src/math.py', line=2, impact='wrong total', evidence='2+2 yields 5',
+                       requirement='sum', minimal_fix='correct addition', verification='2+2 equals 4')
+        # JSON Schema uses ECMAScript search semantics, not Python re.search.
+        # In particular, ECMAScript without the m flag rejects a trailing newline.
+        # Node is already part of the pinned Factory runtime; no provider call.
+        cases = [('F-001', True), ('SMOKE_EXPLANATION', True), ('F-1', True),
+                 ('f-1', False), ('prefix-F-001', False), ('F-001-suffix', False),
+                 ('F 001', False), ('F.001', False), ('F-001/x', False),
+                 ('F-001\n', False), ('F-001\r', False), ('F-001\r\n', False),
+                 ('F-001\u2028', False), ('F-001\u2029', False)]
+        result = subprocess.run(
+            ['node', '-e', "const p=JSON.parse(require('node:fs').readFileSync(0,'utf8'));"
+             "const regex=new RegExp(p.pattern);"
+             "process.stdout.write(JSON.stringify(p.ids.map(id=>regex.test(id))));"],
+            input=json.dumps({'pattern': pattern, 'ids': [item[0] for item in cases]}),
+            text=True, capture_output=True, check=True, timeout=10)
+        generation_accepts = json.loads(result.stdout)
+        self.assertEqual(len(generation_accepts), len(cases))
+        for (identifier, valid), accepted in zip(cases, generation_accepts):
+            with self.subTest(identifier=identifier):
+                self.assertIs(accepted, valid,
+                                 'generation must not accept an ID rejected by the local contract')
+                self.review.update(outcome='changes_requested', findings=[{**finding, 'id': identifier}])
+                if valid:
+                    self.assertEqual(validate_review(self.review, self.schema, self.snapshot), 'changes_requested')
+                else:
+                    with self.assertRaisesRegex(Blocked, r'review\.findings\[\]\.id: pattern'):
+                        validate_review(self.review, self.schema, self.snapshot)
 
     def test_blocking_finding_cannot_be_published_as_pass(self):
         self.review['findings']=[dict(id='F-1',kind='defect',confidence='high',priority='P1',file='src/math.py',line=2,impact='wrong total',evidence='2+2 yields 5',requirement='sum',minimal_fix='correct addition',verification='2+2 equals 4')]

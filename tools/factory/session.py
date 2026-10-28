@@ -64,8 +64,11 @@ def git(root, *args):
     # Object/index reads only. No status/diff of worktree files: those can invoke
     # candidate-configured clean filters. No global config, object fetches or replacements.
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'GIT_CONFIG_GLOBAL': os.devnull,
-           'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0', 'GIT_OPTIONAL_LOCKS': '0', 'GIT_ATTR_NOSYSTEM': '1'}
-    result = subprocess.run(['git', '--no-pager', '--no-lazy-fetch', '--no-replace-objects', '--literal-pathspecs',
+           'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0', 'GIT_OPTIONAL_LOCKS': '0', 'GIT_ATTR_NOSYSTEM': '1',
+           'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': ''}
+    # Bookworm Git 2.39.5 honors the environment guard, but not the CLI flag
+    # introduced in 2.45. The empty transport allowlist independently denies helpers.
+    result = subprocess.run(['git', '--no-pager', '--no-replace-objects', '--literal-pathspecs',
                              '-C', str(root), '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
                              '-c', 'core.attributesfile=/dev/null', *args], env=env, capture_output=True, timeout=30)
     require(result.returncode == 0, 'unsupported Git checkout or missing commit object')

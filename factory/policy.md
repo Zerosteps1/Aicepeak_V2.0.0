@@ -28,7 +28,7 @@ Maximal drei automatische Korrekturrunden pro PR; die aktuelle Konfiguration set
 
 PR-Code läuft nur in einer separaten Umgebung ohne Secrets, Host-Home, Docker-Socket und Netzwerk. Kein PR-gesteuertes Installations-/Hookskript im privilegierten Job. Der Reviewer ist ein werkzeugloser API-Aufruf mit vollständigem, begrenztem Text-Prüfmaterial; nicht prüfbare Binär-/Größenfälle blockieren. Provider-Schlüssel bleiben außerhalb von Modell-Shells. Autor-Container erhalten nur begrenzte Proxy-Zugänge; Publisher-/Writer-App-Schlüssel bleiben in getrennten vertrauenswürdigen Schritten.
 
-App-gebundene Pflichtchecks ersetzen keine menschliche Codeowner-Freigabe. Keine Agent-/Bot-Bypässe, kein Auto-Merge. Versionierte GitHub-Regeln sind zu prüfen und explizit anzuwenden. Eine Konfigurationsdatei oder ein lokaler Test beweist keine aktive Durchsetzung; dafür ist der reale Smoke-PR erforderlich.
+Beide App-gebundenen Pflichtchecks müssen erfolgreich sein. Gabriel oder Felix trifft anschließend selbst die menschliche Merge-Entscheidung; eine zusätzliche Freigabe durch den jeweils anderen ist nicht vorgeschrieben (`require_second_human_review: false`). CODEOWNERS bezeichnet weiterhin die zuständigen Menschen. Offene blockierende Reviewthreads müssen geklärt sein. Menschen dürfen fehlgeschlagene Pflichtchecks nicht umgehen. Keine Agent-/Bot-Bypässe, kein Auto-Merge. Versionierte GitHub-Regeln sind zu prüfen und explizit anzuwenden. Eine Konfigurationsdatei oder ein lokaler Test beweist keine aktive Durchsetzung; dafür ist der reale Smoke-PR erforderlich.
 
 ## Kosten und Betrieb
 

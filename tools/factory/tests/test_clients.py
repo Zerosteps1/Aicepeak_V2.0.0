@@ -570,6 +570,8 @@ class LauncherTests(unittest.TestCase):
         config = json.loads((REPO / "factory/config.json").read_text())
         self.assertEqual(config["runners"], ["claude"])
         self.assertEqual(set(config["anthropic_federation"]), {"organization_id", "service_account_id", "federation_rule_id", "workspace_id"})
+        # The configured (non-secret) federation IDs must pass the broker's own validation.
+        proxy.FederatedToken(config["anthropic_federation"], "https://pipelines.actions.githubusercontent.com/x/idtoken?api-version=2.0", "request-token", opener=lambda *a, **k: None)
 
     def test_standard_npm_lock_matches_reviewed_cli_versions(self):
         package = json.loads((REPO / "factory/package.json").read_text())

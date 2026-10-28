@@ -51,11 +51,19 @@ class DoctorBoundaries(unittest.TestCase):
         self.assertIn('local_review.py --smoke',text)
 
     def test_pipeline_author_requires_configured_federation_ids(self):
-        with patch.object(doctor,'probe',return_value=False), patch.object(doctor.shutil,'which',return_value=None), \
-             patch.object(doctor,'repository_identity',return_value=False), patch.object(doctor,'codex_version',return_value=''):
-            result=doctor.inspect(ROOT,'claude')
-        checks={c['check']:c for c in result['factory']['local_prerequisites']}
-        self.assertEqual(checks['author_federation']['status'],'blocked')
-        self.assertIn('workload-identity-federation',checks['author_federation']['continuation'])
+        def federation(root):
+            with patch.object(doctor,'probe',return_value=False), patch.object(doctor.shutil,'which',return_value=None), \
+                 patch.object(doctor,'repository_identity',return_value=False), patch.object(doctor,'codex_version',return_value=''):
+                result=doctor.inspect(root,'claude')
+            return {c['check']:c for c in result['factory']['local_prerequisites']}['author_federation']
+        self.assertEqual(federation(ROOT)['status'],'passed')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();(root/'factory').mkdir()
+            config=json.loads((ROOT/'factory/config.json').read_text())
+            config['anthropic_federation']={k:None for k in config['anthropic_federation']}
+            (root/'factory/config.json').write_text(json.dumps(config))
+            blocked=federation(root)
+        self.assertEqual(blocked['status'],'blocked')
+        self.assertIn('workload-identity-federation',blocked['continuation'])
 
 if __name__=='__main__':unittest.main()

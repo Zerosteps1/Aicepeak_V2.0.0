@@ -32,10 +32,10 @@
     }
   },
   "anthropic_federation": {
-    "organization_id": null,
-    "service_account_id": null,
-    "federation_rule_id": null,
-    "workspace_id": null
+    "organization_id": "8b2d2d84-7a24-4db7-966f-866e5d6e5b47",
+    "service_account_id": "svac_01LQabb1RDVrAgcnF5xcHXA7",
+    "federation_rule_id": "fdrl_01VoA2FnW6Nk8mbRynuJitNt",
+    "workspace_id": "wrkspc_01Gp1KSNMzzh4zwtsfknUETr"
   },
   "runners": [
     "claude"

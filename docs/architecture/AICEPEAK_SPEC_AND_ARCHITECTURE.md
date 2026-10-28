@@ -1,12 +1,14 @@
 # Aicepeak – Specification Sheet and Target Architecture
 
+> **Draft – not binding, also after merge.** This document is a proposal. Its architecture decisions AD-01..AD-12 are proposals, it approves no product scope and it does not replace the north star or a work order. Later work orders may cite it only as background until the maintainers adopt a part through a reviewed decision record. Product work stays blocked while `northstar_approved` is `false` (`factory/config.json`).
+
 | Field | Value |
 |---|---|
 | Version | 0.2 (draft for maintainer review; revised after the independent validation of version 0.1) |
 | Date | 2026-10-28 |
-| Status | Draft. Nothing in this document is approved until a human maintainer merges it; it changes no product scope. |
-| Basis | `AICEPEAK_NORDSTERN.md` (product north star, chapters 1–11; itself a draft pending approval, `northstar_approved: false`), the draft product constitution and the draft chapter 12 of the north star (both in draft PR #4). |
-| Language | English, per ADR-0004 (draft PR #4). The north star stays German; its terms are translated in Appendix A. |
+| Status | Draft, not binding. Merging it records the proposal; it approves nothing and changes no product scope. |
+| Basis | `AICEPEAK_NORDSTERN.md` (product north star, chapters 1–11; itself a draft pending approval, `northstar_approved: false`), the draft product constitution and the draft chapter 12 of the north star (both only on the unmerged branch `docs/factory-review-2026-10-28` of closed PR #4). |
+| Language | English. The north star stays German; its terms are translated in Appendix A. |
 | Audience | Maintainers (Gabriel, Felix), the AI software factory, and the security, legal and procurement teams of prospective enterprise customers. |
 | Validation | Independent review of version 0.1 by GPT-6 Astra at reasoning effort `max` (verdict `needs_revision`, 35 findings); prompt, schema, every finding and its resolution (fixed, disputed or decision needed) in `validation/2026-10-28-gpt-6-astra-max.md`. Version 0.2 is the revised document and has not been re-validated. |
 | Change log | 0.1 (2026-10-28): first draft. 0.2 (2026-10-28): after validation; materially changed are the proposal state model (B5), the bitemporal revision model (B11), run identities and engine contracts (B6), dialogue context types and explanation binding (B7), tenant-scoped credentials and the key-coverage matrix (B9), deletion by data class with a restore-safe ledger (B11), residency profiles (B11), the Dedicated edition's outbound data flows (B12), the incident matrix (B13), audit and inspection rights, NIS2, CRA, DPIA and standards statements (B15). |
@@ -898,7 +900,7 @@ Every north-star requirement and the architecture elements that carry it. "Statu
 
 ### B17 Architecture decisions, proposals for open product decisions, risks and build order
 
-**Architecture decisions (to become ADR-0006 ff. after draft PR #4 is merged).**
+**Proposed architecture decisions (each becomes binding only through a reviewed decision record).**
 
 | AD | Decision | Reasons | Alternatives rejected |
 |---|---|---|---|
@@ -993,7 +995,7 @@ Every north-star requirement and the architecture elements that carry it. "Statu
 
 ## Appendix B – Regulatory references
 
-All references were checked on 2026-10-28 (research notes in the repository's validation folder record the access route). EUR-Lex refused automated access on that day, so the wording of EU acts was verified through the Commission's AI Act Service Desk, Official Journal mirrors and legislation.gov.uk; EUR-Lex remains the authoritative location. Items marked *secondary* rest on law-firm or mirror sources; items marked *to verify* could not be checked against the official text.
+All references were checked on 2026-10-28. EUR-Lex refused automated access on that day, so the wording of EU acts was verified through the Commission's AI Act Service Desk, Official Journal mirrors and legislation.gov.uk; EUR-Lex remains the authoritative location. Items marked *secondary* rest on law-firm or mirror sources; items marked *to verify* could not be checked against the official text.
 
 | Regime / topic | Reference | Key facts used in this document | Source (accessed 2026-10-28) |
 |---|---|---|---|
@@ -1034,7 +1036,7 @@ Vendor facts used in B7, B9, B12 and A6 (all accessed 2026-10-28): AWS regions a
 ## Appendix D – Open questions for the maintainers
 
 1. North star approval (`northstar_approved`) and the decision points D-01, D-02, D-06, D-09 and D-10, on which the labelled proposals depend.
-2. Which architecture decisions become ADR-0006 ff. once draft PR #4 is merged, and whether any AD should be split.
+2. Which proposed architecture decisions the maintainers adopt as decision records, and whether any AD should be split.
 3. Provider contracts for SaaS: primary provider inside the hosting cloud and the second EU-resident provider; confirmation of no-training and retention terms in writing.
 4. Whether customer-managed keys are offered in SaaS from the start or only in the Dedicated edition.
 5. Default operating responsibility for the Dedicated edition (Aicepeak operates the application through the runner, the customer operates account and keys), the break-glass default, and who owns emergency patching, incident reporting to authorities, restore execution and recovery when a customer-managed key becomes unavailable (B12 responsibility matrix).

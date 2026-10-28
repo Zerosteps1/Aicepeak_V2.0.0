@@ -637,7 +637,9 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
         try:
             command(["docker", "network", "create", "--internal", network], env=env)
             command(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", f"o=size=512m,uid={os.getuid()},gid={os.getgid()},mode=0700", volume], env=env)
-            work_mount = ["--mount", f"type=volume,source={volume},target=/work"]
+            # volume-nocopy: otherwise each new container copies the image's /work owner
+            # (1000:1000, 0755) onto the empty tmpfs root and the host-uid seed cannot write.
+            work_mount = ["--mount", f"type=volume,source={volume},target=/work,volume-nocopy"]
             # Docker's local tmpfs driver discards data when its final mount is
             # released. Keep one trusted, network-disabled mount alive across
             # seeding, authoring and extraction.

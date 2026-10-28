@@ -139,6 +139,10 @@ def inspect(root, runner):
     add("author_" + runner, isinstance(model, str) and bool(model.strip()) and priced,
         "Exact author model and positive input/output prices required.",
         "Check model access and current vendor prices; record them in factory/config.json through a reviewed change.")
+    federation = config.get("anthropic_federation") or {}
+    add("author_federation", all(isinstance(federation.get(k), str) and federation[k] for k in ("organization_id", "service_account_id", "federation_rule_id")),
+        "Pipeline author authenticates through Workload Identity Federation (no stored Anthropic key); IDs are not secret.",
+        "Create the GitHub Actions workload in platform.claude.com/settings/workload-identity-federation and record the IDs in factory/config.json anthropic_federation.")
     app_ids = [config.get(role + "_app_id") for role in ("publisher", "writer")]
     apps = all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in app_ids) and app_ids[0] != app_ids[1]
     add("app_ids", apps, "Two different real App IDs required; installations are not verified here.",
@@ -166,7 +170,7 @@ def inspect(root, runner):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--runner", choices=("codex", "claude"), default="codex")
+    parser.add_argument("--runner", choices=("codex", "claude"), default="claude")
     args = parser.parse_args(argv)
     try:
         root = args.root.resolve(strict=True)

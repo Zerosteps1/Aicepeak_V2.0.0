@@ -54,9 +54,11 @@ class Gates(unittest.TestCase):
         with self.assertRaises(Blocked):authentic_check(check,self.snapshot,self.config)
 
     def test_no_commands_in_handoff(self):
-        body='```factory-handoff\n'+json.dumps({'runner':'codex','task':'docs/work/A.md','owner':'human-fixture'})+'\n```'
-        self.assertEqual(handoff(body,self.config)['runner'],'codex')
-        with self.assertRaises(Blocked):handoff(body.replace('codex','sh -c evil'),self.config)
+        body='```factory-handoff\n'+json.dumps({'runner':'claude','task':'docs/work/A.md','owner':'human-fixture'})+'\n```'
+        self.assertEqual(handoff(body,self.config)['runner'],'claude')
+        with self.assertRaises(Blocked):handoff(body.replace('claude','sh -c evil'),self.config)
+        # Only the Claude author runs automatically (ADR-0005); a Codex author needs a reviewed change.
+        with self.assertRaisesRegex(Blocked,'allowlisted'):handoff(body.replace('claude','codex'),self.config)
         with self.assertRaises(Blocked):handoff(body+'\n'+body,self.config)
 
 

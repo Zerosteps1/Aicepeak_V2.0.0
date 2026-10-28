@@ -133,6 +133,8 @@ jobs:
       pull-requests: read
       checks: read
       actions: read
+      # GitHub OIDC identity for Workload Identity Federation; only the broker exchanges it.
+      id-token: write
     outputs:
       report: ${{ steps.author.outputs.report }}
     steps:
@@ -143,7 +145,6 @@ jobs:
       - id: author
         env:
           GH_TOKEN: ${{ github.token }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
           SNAPSHOT_JSON: ${{ needs.correction.outputs.snapshot }}
           AUTHOR_JSON: ${{ needs.correction.outputs.author }}

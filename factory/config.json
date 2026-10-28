@@ -21,26 +21,37 @@
   "author_pricing_usd_per_million": {
     "codex": {
       "input": 10.0,
-      "output": 50.0
+      "output": 50.0,
+      "cache_read": 1.0
     },
     "claude": {
-      "input": 2,
-      "output": 10
+      "input": 2.0,
+      "output": 10.0,
+      "cache_read": 0.2,
+      "cache_write": 2.5
     }
   },
+  "anthropic_federation": {
+    "organization_id": null,
+    "service_account_id": null,
+    "federation_rule_id": null,
+    "workspace_id": null
+  },
   "runners": [
-    "codex",
     "claude"
   ],
   "automatic_correction": false,
   "limits": {
-    "max_rounds": 3,
+    "max_rounds": 2,
     "timeout_seconds": 900,
     "review_input_bytes": 160000,
     "max_reviews_per_pr": 6,
-    "author_output_tokens": 32000,
+    "author_output_tokens": 200000,
+    "author_request_output_tokens": 32000,
+    "author_requests": 200,
+    "author_max_turns": 60,
     "max_cost_usd": 25.0,
-    "max_run_cost_usd": 5.0,
+    "max_run_cost_usd": 12.0,
     "max_patch_bytes": 200000,
     "max_changed_files": 40
   },

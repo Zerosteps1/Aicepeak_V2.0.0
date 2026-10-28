@@ -11,6 +11,7 @@ import resource
 import select
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -324,7 +325,7 @@ def codex_provider_arguments() -> list[str]:
     return [argument for override in overrides for argument in ("-c", override)]
 
 
-def worker_arguments(runner: str, model: str, interactive=False) -> list[str]:
+def worker_arguments(runner: str, model: str, interactive=False, max_turns: int | None = None, max_budget_usd: float | None = None) -> list[str]:
     if runner == "codex":
         args = ["codex"] + ([] if interactive else ["exec", "--ephemeral", "--strict-config", "--json"])
         args += ["--model", model, "--sandbox", "danger-full-access", "-c", 'approval_policy="never"']
@@ -332,6 +333,11 @@ def worker_arguments(runner: str, model: str, interactive=False) -> list[str]:
     args = ["claude", "--model", model, "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", "/work/.mcp.json", "--no-chrome", "--permission-mode", "dontAsk", "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,Agent,Skill,mcp__context7__resolve-library-id,mcp__context7__query-docs,mcp__openai_docs__search_openai_docs,mcp__openai_docs__list_openai_docs,mcp__openai_docs__fetch_openai_doc"]
     if not interactive:
         args += ["-p", "--no-session-persistence", "--permission-prompts", "none", "--output-format", "json"]
+        # Second brake inside the worker; the broker budget stays authoritative (Claude's estimate can overshoot).
+        if max_turns:
+            args += ["--max-turns", str(max_turns)]
+        if max_budget_usd:
+            args += ["--max-budget-usd", str(max_budget_usd)]
     return args
 
 
@@ -397,6 +403,26 @@ def probe_mcp(token: str, route: str, expected: set[str], *, exact: bool):
     names = {tool.get("name") for tool in discovered.get("result", {}).get("tools", [])}
     if not expected.issubset(names) or (exact and names != expected):
         raise ClientError(f"{route} did not expose the reviewed documentation tool set")
+
+
+def broker_healthy() -> bool:
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open("http://credential-proxy:8080/healthz", timeout=5) as response:
+            return response.status == 200
+    except OSError:
+        return False
+
+
+def egress_self_test(connect=socket.create_connection, healthz=broker_healthy):
+    """Fail closed unless the broker is the worker's only reachable destination."""
+    for host in ("1.1.1.1", "api.openai.com", "api.anthropic.com"):
+        try:
+            connect(host, 443, timeout=3)
+        except OSError:
+            continue
+        raise ClientError(f"worker egress is open ({host}:443); refusing to start the author")
+    if not healthz():
+        raise ClientError("credential broker unreachable from the worker")
 
 
 def probe_documentation(token: str):
@@ -574,8 +600,11 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
     config = configuration(trusted)
     policy = author_policy(config, runner)
     check(trusted)
-    provider_key = "OPENAI_API_KEY" if runner == "codex" else "ANTHROPIC_API_KEY"
-    missing = [name for name in (provider_key, "CONTEXT7_API_KEY") if not os.environ.get(name)]
+    # In the pipeline the Claude author uses Workload Identity Federation: only the job's OIDC
+    # request credential reaches the broker, which mints short-lived Anthropic tokens itself.
+    federated = runner == "claude" and bool(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"))
+    provider_keys = ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN") if federated else ("OPENAI_API_KEY" if runner == "codex" else "ANTHROPIC_API_KEY",)
+    missing = [name for name in (*provider_keys, "CONTEXT7_API_KEY") if not os.environ.get(name)]
     if missing:
         raise ClientError("missing proxy-only environment: " + ", ".join(missing))
     if not shutil.which("docker"):
@@ -601,8 +630,8 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
         keeper_name = "factory-volume-keeper-" + secrets.token_hex(8)
         volume = "factory-work-" + secrets.token_hex(8)
         proxy_env = dict(env, FACTORY_PROXY_TOKEN=token)
-        proxy_env[provider_key] = os.environ[provider_key]
-        proxy_env["CONTEXT7_API_KEY"] = os.environ["CONTEXT7_API_KEY"]
+        for name in (*provider_keys, "CONTEXT7_API_KEY"):
+            proxy_env[name] = os.environ[name]
         try:
             command(["docker", "network", "create", "--internal", network], env=env)
             command(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", f"o=size=512m,uid={os.getuid()},gid={os.getgid()},mode=0700", volume], env=env)
@@ -617,7 +646,9 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
             seed += work_mount + mount(work, "/input")
             seed += [image_id, "python3", "-c", "import shutil; shutil.copytree('/input', '/work', dirs_exist_ok=True)"]
             command(seed, env=env)
-            proxy_args = container_flags(proxy_name) + ["--detach", "--network", "bridge", "--env", "FACTORY_PROXY_TOKEN", "--env", provider_key, "--env", "CONTEXT7_API_KEY"]
+            proxy_args = container_flags(proxy_name) + ["--detach", "--network", "bridge", "--env", "FACTORY_PROXY_TOKEN", "--env", "CONTEXT7_API_KEY"]
+            for name in provider_keys:
+                proxy_args += ["--env", name]
             proxy_args += mount(trusted / "tools/factory/proxy.py", "/opt/factory/proxy.py")
             proxy_args += mount(trusted / "factory/config.json", "/run/factory-config.json")
             proxy_args += [image_id, "python3", "/opt/factory/proxy.py", "--config", "/run/factory-config.json", "--runner", runner]
@@ -643,14 +674,15 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
             args += mount(trusted / "tools/factory/proxy.py", "/opt/factory/proxy.py")
             for name, value in {"FACTORY_PROXY_TOKEN": token, "CLAUDE_CONFIG_DIR": "/tmp/factory/claude", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_UPDATES": "1", "ANTHROPIC_BASE_URL": "http://credential-proxy:8080/anthropic", "ANTHROPIC_AUTH_TOKEN": token, "CODEX_HOME": "/tmp/factory/codex", "HOME": "/tmp/factory/home", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}.items():
                 args += ["--env", f"{name}={value}"]
-            args += [image_id, "python3", "/opt/factory/clients.py", "_worker", "--runner", runner, "--model", policy["model"]]
+            args += [image_id, "python3", "/opt/factory/clients.py", "_worker", "--runner", runner, "--model", policy["model"],
+                     "--max-turns", str(int(config["limits"].get("author_max_turns", 60))), "--max-budget-usd", str(policy["max_cost"])]
             if interactive:
                 args += ["--interactive"]
             if prompt is not None:
                 prompt += b"\n\nFinal response: give a concise author report under 6000 bytes. Explain what changed, actual verification, and an evidence-based response to each review item. If you dispute feedback or make no patch, explain why. Do not include private reasoning or raw transcripts."
             native_output = command(args, env=env, timeout=policy["timeout"], input=prompt, capture=not interactive)
             report, report_truncated = ("Interactive session completed; inspect the patch and verify it before use.\n", False) if interactive else final_report(runner, native_output)
-            for secret in (token, proxy_env[provider_key], proxy_env["CONTEXT7_API_KEY"]):
+            for secret in (token, *(proxy_env[name] for name in (*provider_keys, "CONTEXT7_API_KEY"))):
                 report = report.replace(secret, "[credential redacted]")
             extract = container_flags("factory-extract-" + secrets.token_hex(8), worker=True) + ["--network", "none"]
             extract += work_mount
@@ -691,6 +723,8 @@ def main():
     item.add_argument("--runner", choices=("codex", "claude"), required=True)
     item.add_argument("--model", required=True)
     item.add_argument("--interactive", action="store_true")
+    item.add_argument("--max-turns", type=int)
+    item.add_argument("--max-budget-usd", type=float)
     item = sub.add_parser("_extract")
     item.add_argument("--max-bytes", type=int, required=True)
     item = sub.add_parser("_smoke")
@@ -715,8 +749,9 @@ def main():
             actual = command([args.runner, "--version"], env=os.environ).decode().strip()
             if actual != VERSIONS[args.runner]:
                 raise ClientError("worker CLI version mismatch")
+            egress_self_test()
             probe_documentation(os.environ["FACTORY_PROXY_TOKEN"])
-            native = worker_arguments(args.runner, args.model, args.interactive)
+            native = worker_arguments(args.runner, args.model, args.interactive, args.max_turns, args.max_budget_usd)
             os.execvpe(native[0], native, os.environ)
         root = args.root.resolve(strict=True)
         if args.command in ("check", "sync", "smoke"):

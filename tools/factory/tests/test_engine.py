@@ -30,7 +30,7 @@ class Transport:
         self.pr={'number':1,'state':'open','draft':False,'changed_files':1,
                  'head':{'sha':'a'*40,'repo':{'full_name':'fixture/repo'}},
                  'base':{'ref':'main','sha':'b'*40},
-                 'body':'```factory-handoff\n'+json.dumps({'runner':'codex','task':'docs/work/TEST.md','owner':'test-human'})+'\n```'}
+                 'body':'```factory-handoff\n'+json.dumps({'runner':'claude','task':'docs/work/TEST.md','owner':'test-human'})+'\n```'}
 
     def request(self,method,path,data=None):
         self.calls.append((method,path,data))
@@ -81,14 +81,15 @@ class EngineBoundaries(unittest.TestCase):
             engine.snapshot_stage(argparse.Namespace(pr=1,feedback_kind='',feedback_id=0),self.config)
         return captured['snapshot']
 
-    def test_forcepush_cannot_reset_budget_or_three_round_limit(self):
-        for n in range(3):
+    def test_forcepush_cannot_reset_budget_or_round_limit(self):
+        rounds=self.config['limits']['max_rounds']
+        for n in range(rounds):
             engine.reserve(self.transport,{**self.snapshot,'head_sha':str(n)*40},self.config,'factory/author-reservation',1,str(n))
-        with self.assertRaisesRegex(Blocked,'three correction'):
+        with self.assertRaisesRegex(Blocked,'correction rounds exhausted'):
             engine.reserve(self.transport,{**self.snapshot,'head_sha':'f'*40},self.config,'factory/author-reservation',1,'fourth')
         # No commit-list traversal: the PR-scoped App ledger still owns old heads.
-        self.assertEqual(len(engine.pr_checks(self.transport,self.snapshot,self.config)),3)
-        self.config['limits']['max_cost_usd']=3
+        self.assertEqual(len(engine.pr_checks(self.transport,self.snapshot,self.config)),rounds)
+        self.config['limits']['max_cost_usd']=rounds  # every round reserved 1 USD
         with self.assertRaisesRegex(Blocked,'cost reservation'):
             engine.reserve(self.transport,self.snapshot,self.config,'factory/senior-review',1,'new-head')
 
@@ -141,6 +142,15 @@ class EngineBoundaries(unittest.TestCase):
         self.assertNotIn('name: Senior review',workflow)
         settings=json.loads((ROOT/'factory/github-settings.json').read_text())
         self.assertNotIn('OPENAI_API_KEY',settings['environment_secrets']+settings['optional_environment_secrets'])
+
+    def test_author_job_federates_instead_of_holding_an_anthropic_key(self):
+        workflow=(ROOT/'.github/workflows/factory.yml').read_text()
+        author=workflow.split('\n  author:\n',1)[1].split('\n  push:\n',1)[0]
+        self.assertIn('id-token: write',author)
+        self.assertEqual(workflow.count('id-token: write'),1)
+        self.assertNotIn('ANTHROPIC_API_KEY',workflow)
+        settings=json.loads((ROOT/'factory/github-settings.json').read_text())
+        self.assertNotIn('ANTHROPIC_API_KEY',settings['environment_secrets']+settings['optional_environment_secrets'])
 
     def publish(self,tests_ok=True):
         snapshot=self.capture_snapshot()

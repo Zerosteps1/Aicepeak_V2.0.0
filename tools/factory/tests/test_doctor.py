@@ -50,4 +50,12 @@ class DoctorBoundaries(unittest.TestCase):
         self.assertNotIn('model-smoke',text)
         self.assertIn('local_review.py --smoke',text)
 
+    def test_pipeline_author_requires_configured_federation_ids(self):
+        with patch.object(doctor,'probe',return_value=False), patch.object(doctor.shutil,'which',return_value=None), \
+             patch.object(doctor,'repository_identity',return_value=False), patch.object(doctor,'codex_version',return_value=''):
+            result=doctor.inspect(ROOT,'claude')
+        checks={c['check']:c for c in result['factory']['local_prerequisites']}
+        self.assertEqual(checks['author_federation']['status'],'blocked')
+        self.assertIn('workload-identity-federation',checks['author_federation']['continuation'])
+
 if __name__=='__main__':unittest.main()

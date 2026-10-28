@@ -128,7 +128,7 @@ def reserve(gh, snapshot, config, name, cost, key):
     require(not any(r.get('key') == key for r in records), 'duplicate processing; existing authenticated run owns this input')
     require(sum(r.get('reserved_usd', 0) for r in records) + cost <= config['limits']['max_cost_usd'], 'PR cost reservation exhausted; needs-author-action')
     if name == 'factory/author-reservation':
-        require(sum(c['name'] == name for c in previous) < config['limits']['max_rounds'], 'three correction rounds exhausted; needs-author-action')
+        require(sum(c['name'] == name for c in previous) < config['limits']['max_rounds'], f"{config['limits']['max_rounds']} correction rounds exhausted; needs-author-action")
     data = {'key': key, 'reserved_usd': cost, 'phase': 'reserved'}
     result = gh.request('POST', f"/repos/{snapshot['repository']}/check-runs", {
         'name': name, 'head_sha': snapshot['head_sha'], 'status': 'in_progress', 'external_id': bind(snapshot),
@@ -390,7 +390,8 @@ def author_stage(config,args):
         prompt=Path(tmp)/'prompt.txt'
         prompt.write_text('Use factory-fix-review. Correct only justified findings within the approved work order. If disputing, explain evidence; do not weaken tests, scope or policy.\n'+json.dumps(review)+'\n'+gh.text(snapshot['repository'],snapshot['handoff']['task'],snapshot['policy_sha']))
         # run receives no GitHub credential; the trusted launcher owns isolated provider proxying.
-        env={k:v for k,v in os.environ.items() if k in ('PATH','TMPDIR','ANTHROPIC_API_KEY','CONTEXT7_API_KEY')}
+        # The OIDC request credential reaches only the broker container (Workload Identity Federation).
+        env={k:v for k,v in os.environ.items() if k in ('PATH','TMPDIR','CONTEXT7_API_KEY','ACTIONS_ID_TOKEN_REQUEST_URL','ACTIONS_ID_TOKEN_REQUEST_TOKEN')}
         result=subprocess.run([sys.executable,str(ROOT/'tools/factory/clients.py'),'run','--root',str(candidate),'--policy-root',str(ROOT),'--runner',snapshot['handoff']['runner'],'--prompt-file',str(prompt),'--output-patch',args.patch],env=env,capture_output=True,timeout=config['limits']['timeout_seconds'])
         report_path=Path(args.patch+'.report.txt')
         if report_path.is_file():

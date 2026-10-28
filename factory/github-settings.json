@@ -8,7 +8,7 @@
   "selected_actions": {"github_owned_allowed": true, "verified_allowed": false, "patterns_allowed": []},
   "workflow_permissions": {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": false},
   "environment_secrets": ["FACTORY_PUBLISHER_APP_PRIVATE_KEY", "FACTORY_WRITER_APP_PRIVATE_KEY"],
-  "optional_environment_secrets": ["ANTHROPIC_API_KEY", "CONTEXT7_API_KEY"],
+  "optional_environment_secrets": ["CONTEXT7_API_KEY"],
   "publisher_permissions": {"metadata": "read", "contents": "read", "pull_requests": "write", "checks": "write", "actions": "read"},
   "writer_permissions": {"metadata": "read", "contents": "write", "pull_requests": "write"}
 }

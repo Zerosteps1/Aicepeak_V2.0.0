@@ -28,6 +28,13 @@ def _candidate_module(name):
     return module
 proxy = _candidate_module("proxy")
 clients = _candidate_module("clients")
+SONNET = {
+    "author_models": {"codex": "gpt-6-astra", "claude": "claude-sonnet-5-5"},
+    "limits": {"max_cost_usd": 25, "max_run_cost_usd": 12, "author_output_tokens": 200000, "author_request_output_tokens": 32000,
+               "author_requests": 200, "timeout_seconds": 900, "max_patch_bytes": 200000},
+    "author_pricing_usd_per_million": {"codex": {"input": 10, "output": 50, "cache_read": 1},
+                                       "claude": {"input": 2, "output": 10, "cache_read": 0.2, "cache_write": 2.5}},
+}
 CONFIG = {
     "author_models": {"codex": "gpt-6-astra", "claude": None},
     "review_model": "gpt-6-astra",
@@ -209,6 +216,42 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("upstream-only-test-value", " ".join(proxy_call[0]))
 
 
+    def test_federated_author_hands_the_oidc_request_credential_only_to_the_broker(self):
+        candidate = Path(self.temp.name) / "candidate"
+        candidate.mkdir()
+        (candidate / "app.py").write_text("pass\n")
+        config = json.loads((self.root / "factory/config.json").read_text())
+        config["author_models"]["claude"] = "claude-sonnet-5-5"
+        config["author_pricing_usd_per_million"]["claude"] = {"input": 2, "output": 10}
+        (self.root / "factory/config.json").write_text(json.dumps(config))
+        calls = []
+        real_command = clients.command
+
+        def fake_command(args, **kwargs):
+            if args[0] == "git":
+                return real_command(args, **kwargs)
+            calls.append((args, kwargs.get("env", {})))
+            if args[1:3] == ["image", "inspect"]:
+                return ("sha256:" + "a" * 64).encode()
+            if "_worker" in args:
+                return json.dumps({"type": "result", "subtype": "success", "result": "done", "is_error": False}).encode()
+            return b""
+        oidc = {"ACTIONS_ID_TOKEN_REQUEST_URL": "https://pipelines.actions.githubusercontent.com/x/idtoken?api-version=2.0",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc-request-only-for-broker", "CONTEXT7_API_KEY": "context-only-test-value"}
+        real_run = subprocess.run
+        with mock.patch.dict(os.environ, oidc, clear=False), mock.patch.object(clients.shutil, "which", return_value="/usr/bin/docker"), \
+                mock.patch.object(clients, "command", side_effect=fake_command), \
+                mock.patch.object(clients.subprocess, "run", side_effect=lambda args, **kw: subprocess.CompletedProcess(args, 0) if args[0] == "docker" else real_run(args, **kw)):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            clients.run(candidate, self.root, "claude", b"Fix R1", Path(self.temp.name) / "out.patch")
+        proxy_call = next((args, env) for args, env in calls if "/opt/factory/proxy.py" in args and "--config" in args)
+        self.assertEqual(proxy_call[1]["ACTIONS_ID_TOKEN_REQUEST_TOKEN"], "oidc-request-only-for-broker")
+        self.assertNotIn("oidc-request-only-for-broker", " ".join(proxy_call[0]))
+        worker = next((args, env) for args, env in calls if "_worker" in args)
+        self.assertNotIn("oidc-request-only-for-broker", json.dumps(worker))
+        self.assertIn("--max-turns", worker[0])
+        self.assertIn("--max-budget-usd", worker[0])
+
 class BrokerTests(unittest.TestCase):
     def setUp(self):
         self.policy = proxy.BrokerPolicy(proxy.author_policy(CONFIG, "codex"))
@@ -217,12 +260,12 @@ class BrokerTests(unittest.TestCase):
         return json.dumps({"model": "gpt-6-astra", "input": "test", **kwargs}).encode()
 
     def test_fixed_upstream_and_standard_tier(self):
-        url, body, kind = self.policy.prepare("/openai/v1/responses", self.payload(service_tier="priority", store=True))
+        url, body, kind, _ = self.policy.prepare("/openai/v1/responses", self.payload(service_tier="priority", store=True))
         self.assertEqual(url, "https://api.openai.com/v1/responses")
         self.assertEqual(kind, "codex")
         self.assertFalse(json.loads(body)["store"])
         self.assertEqual(json.loads(body)["service_tier"], "default")
-        self.assertLessEqual(json.loads(body)["max_output_tokens"], 8192)
+        self.assertLessEqual(json.loads(body)["max_output_tokens"], 32000)
 
     def test_foreign_route_and_foreign_model_rejected(self):
         for route in ("https://evil.example", "/openai/v1/responses?url=https://evil.example", "/anthropic/v1/messages", "/openai/v1/models"):
@@ -253,7 +296,7 @@ class BrokerTests(unittest.TestCase):
         tiny = copy.deepcopy(CONFIG)
         tiny["limits"]["author_output_tokens"] = 10
         broker = proxy.BrokerPolicy(proxy.author_policy(tiny, "codex"))
-        _, body, _ = broker.prepare("/openai/v1/responses", self.payload())
+        _, body, _, _ = broker.prepare("/openai/v1/responses", self.payload())
         self.assertEqual(json.loads(body)["max_output_tokens"], 10)
         with self.assertRaisesRegex(proxy.Denied, "budget"):
             broker.prepare("/openai/v1/responses", self.payload())
@@ -275,7 +318,7 @@ class BrokerTests(unittest.TestCase):
 
     def test_only_documentation_mcp_calls(self):
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "resolve-library-id", "arguments": {"libraryName": "Python", "query": "json parsing"}}}
-        url, _, kind = self.policy.prepare("/context7/mcp", json.dumps(call).encode())
+        url, _, kind, _ = self.policy.prepare("/context7/mcp", json.dumps(call).encode())
         self.assertEqual(url, "https://mcp.context7.com/mcp")
         self.assertEqual(kind, "context7")
         call["params"]["name"] = "execute-command"
@@ -284,7 +327,7 @@ class BrokerTests(unittest.TestCase):
 
     def test_openai_docs_fixed_route_tools_and_official_fetch_urls(self):
         def invoke(name, arguments):
-            return self.policy.prepare("/openai-docs/mcp", json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}).encode())
+            return self.policy.prepare("/openai-docs/mcp", json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}).encode())[:3]
         url, _, kind = invoke("search_openai_docs", {"query": "Responses API", "limit": 3})
         self.assertEqual((url, kind), ("https://developers.openai.com/mcp", "openai_docs"))
         invoke("list_openai_docs", {"limit": 5})
@@ -327,7 +370,8 @@ class BrokerTests(unittest.TestCase):
     def test_codex_0_164_0_request_body_is_accepted(self):
         # Shape of ResponsesApiRequest at rust-v0.164.0: client_metadata is always serialized.
         fixture = json.loads((Path(__file__).parent / "fixtures/codex-0.164.0-request.json").read_bytes())
-        _, body, _ = self.policy.prepare("/openai/v1/responses", json.dumps(fixture).encode())
+        self.policy = proxy.BrokerPolicy(proxy.author_policy(SONNET, "codex"))
+        _, body, _, _ = self.policy.prepare("/openai/v1/responses", json.dumps(fixture).encode())
         self.assertEqual(json.loads(body)["client_metadata"], fixture["client_metadata"])
         for field, value in {"stream_options": {"reasoning_summary_delivery": "sequential_cutoff"}, "prompt_cache_options": {"ttl": "24h"}}.items():
             with self.subTest(field=field):
@@ -340,6 +384,103 @@ class BrokerTests(unittest.TestCase):
         for hosted in ({"type": "web_search"}, {"type": "namespace", "name": "x", "tools": [{"type": "web_search"}]}):
             with self.subTest(hosted=hosted), self.assertRaises(proxy.Denied):
                 self.policy.prepare("/openai/v1/responses", self.payload(input=[{**native, "tools": [hosted]}]))
+
+    def test_claude_code_request_and_beta_headers_pass_unchanged(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures/claude-code-2.1.312-request.json").read_bytes())
+        broker = proxy.BrokerPolicy(proxy.author_policy(SONNET, "claude"))
+        url, body, kind, reservation = broker.prepare("/anthropic/v1/messages?beta=true", json.dumps(fixture["body"]).encode())
+        self.assertEqual((url, kind), ("https://api.anthropic.com/v1/messages?beta=true", "claude"))
+        self.assertEqual(json.loads(body)["max_tokens"], SONNET["limits"]["author_request_output_tokens"])
+        self.assertEqual(reservation.output, SONNET["limits"]["author_request_output_tokens"])
+        sent = fixture["headers"]["anthropic-beta"]
+        self.assertEqual(proxy.forwarded_betas(sent), sent)
+        self.assertEqual(proxy.forwarded_betas("files-api-2025-04-14,claude-code-20250219"), "claude-code-20250219")
+
+    def test_usage_settlement_replaces_reservations_with_actual_cost(self):
+        broker = proxy.BrokerPolicy(proxy.author_policy(SONNET, "claude"))
+        _, _, _, reservation = broker.prepare("/anthropic/v1/messages", json.dumps({"model": "claude-sonnet-5-5", "messages": [], "max_tokens": 128000}).encode())
+        self.assertGreater(broker.reserved_cost, 0.3)
+        broker.settle(reservation, {"input_tokens": 1000, "cache_creation_input_tokens": 2000, "cache_read_input_tokens": 10000, "output_tokens": 500})
+        self.assertAlmostEqual(broker.reserved_cost, (1000 * 2 + 2000 * 2.5 + 10000 * 0.2 + 500 * 10) / 1e6)
+        self.assertEqual(broker.reserved_output, 500)
+        _, _, _, unknown = broker.prepare("/anthropic/v1/messages", json.dumps({"model": "claude-sonnet-5-5", "messages": []}).encode())
+        before = broker.reserved_cost
+        broker.settle(unknown, None)  # cut-off stream: the reservation stays charged
+        self.assertEqual(broker.reserved_cost, before)
+
+    def test_thirty_turn_session_with_60_kb_context_fits_the_budget(self):
+        for runner, model, usage in (("claude", "claude-sonnet-5-5", {"input_tokens": 800, "cache_read_input_tokens": 14000, "cache_creation_input_tokens": 400, "output_tokens": 1500}),
+                                     ("codex", "gpt-6-astra", {"input_tokens": 15000, "input_tokens_details": {"cached_tokens": 14000}, "output_tokens": 1500})):
+            with self.subTest(runner=runner):
+                broker = proxy.BrokerPolicy(proxy.author_policy(SONNET, runner))
+                field = "messages" if runner == "claude" else "input"
+                for turn in range(30):
+                    body = json.dumps({"model": model, field: "x" * 60000}).encode()
+                    _, _, _, reservation = broker.prepare("/anthropic/v1/messages" if runner == "claude" else "/openai/v1/responses", body)
+                    broker.settle(reservation, usage)
+                self.assertEqual(broker.requests, 30)
+                self.assertLess(broker.reserved_cost, SONNET["limits"]["max_run_cost_usd"])
+
+    def test_usage_scanner_reads_streamed_and_plain_responses(self):
+        codex = proxy.UsageScanner("codex")
+        event = {"type": "response.completed", "response": {"usage": {"input_tokens": 9, "input_tokens_details": {"cached_tokens": 4}, "output_tokens": 2}}}
+        raw = b"event: response.created\ndata: {}\n\nevent: response.completed\ndata: " + json.dumps(event).encode() + b"\n\n"
+        for i in range(0, len(raw), 7):
+            codex.feed(raw[i:i + 7])
+        self.assertEqual(codex.result(), event["response"]["usage"])
+        claude = proxy.UsageScanner("claude")
+        claude.feed(b'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":7,"output_tokens":1}}}\n\n')
+        claude.feed(b'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":42}}\n\n')
+        self.assertEqual(claude.result(), {"input_tokens": 5, "cache_read_input_tokens": 7, "output_tokens": 42})
+        plain = proxy.UsageScanner("claude")
+        plain.feed(json.dumps({"type": "message", "usage": {"input_tokens": 3, "output_tokens": 4}}).encode())
+        self.assertEqual(plain.result(), {"input_tokens": 3, "output_tokens": 4})
+        self.assertIsNone(proxy.UsageScanner("codex").result())
+
+    def test_federated_token_comes_from_the_job_identity_and_is_cached(self):
+        calls = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = json.dumps(payload).encode()
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, limit=-1):
+                return self.payload
+
+        def opener(request, timeout):
+            calls.append(request)
+            if request.full_url.startswith("https://pipelines.actions.githubusercontent.com/"):
+                return Response({"value": "github-jwt-%d" % len(calls)})
+            return Response({"access_token": "sk-ant-oat01-fixture", "token_type": "Bearer", "expires_in": 600})
+        federation = {"organization_id": "00000000-0000-4000-8000-000000000000", "service_account_id": "svac_fixture",
+                      "federation_rule_id": "fdrl_fixture", "workspace_id": None}
+        token = proxy.FederatedToken(federation, "https://pipelines.actions.githubusercontent.com/abc/idtoken?api-version=2.0", "request-token", opener=opener)
+        self.assertEqual(token.get(), "sk-ant-oat01-fixture")
+        self.assertEqual(token.get(), "sk-ant-oat01-fixture")
+        self.assertEqual(len(calls), 2)  # cached until shortly before expiry
+        identity, exchange = calls
+        self.assertIn("audience=https%3A%2F%2Fapi.anthropic.com", identity.full_url)
+        self.assertEqual(identity.get_header("Authorization"), "Bearer request-token")
+        body = json.loads(exchange.data)
+        self.assertEqual((exchange.full_url, body["grant_type"], body["assertion"]), ("https://api.anthropic.com/v1/oauth/token", "urn:ietf:params:oauth:grant-type:jwt-bearer", "github-jwt-1"))
+        self.assertEqual({k: body[k] for k in ("federation_rule_id", "organization_id", "service_account_id")}, {k: federation[k] for k in ("federation_rule_id", "organization_id", "service_account_id")})
+        self.assertNotIn("workspace_id", body)
+        token.expires = 0
+        token.get()
+        self.assertEqual(json.loads(calls[-1].data)["assertion"], "github-jwt-3")  # a fresh, single-use JWT per exchange
+        with self.assertRaises(proxy.Denied):
+            proxy.FederatedToken(federation, "https://evil.example/idtoken?x=1", "request-token", opener=opener)
+        with self.assertRaises(proxy.Denied):
+            proxy.FederatedToken({**federation, "service_account_id": "user_1"}, "https://pipelines.actions.githubusercontent.com/x?a=1", "t", opener=opener)
+
+    def test_upstream_credentials_use_bearer_for_federated_tokens(self):
+        self.assertEqual(proxy.upstream_headers("claude", "sk-ant-oat01-x", "")["Authorization"], "Bearer sk-ant-oat01-x")
+        self.assertNotIn("x-api-key", proxy.upstream_headers("claude", "sk-ant-oat01-x", ""))
+        self.assertEqual(proxy.upstream_headers("claude", "sk-ant-api03-x", "")["x-api-key"], "sk-ant-api03-x")
+        self.assertEqual(proxy.upstream_headers("codex", "k", "")["Authorization"], "Bearer k")
 
     def test_unknown_fields_media_and_expired_job_rejected(self):
         with self.assertRaisesRegex(proxy.Denied, "unsupported"):
@@ -405,6 +546,31 @@ class LauncherTests(unittest.TestCase):
                 clients.initialize_codex_trust(home, Path("/work"))
             self.assertEqual(target.read_text(), "do not change")
 
+    def test_worker_egress_self_test_fails_closed(self):
+        def connector(open_hosts):
+            def connect(host, port, timeout):
+                if host not in open_hosts:
+                    raise OSError("unreachable")
+            return connect
+        clients.egress_self_test(connect=connector({"credential-proxy"}), healthz=lambda: True)
+        for open_hosts in ({"credential-proxy", "1.1.1.1"}, {"credential-proxy", "api.anthropic.com"}, {"credential-proxy", "api.openai.com"}):
+            with self.subTest(open_hosts=open_hosts), self.assertRaisesRegex(clients.ClientError, "egress"):
+                clients.egress_self_test(connect=connector(open_hosts), healthz=lambda: True)
+        with self.assertRaisesRegex(clients.ClientError, "broker"):
+            clients.egress_self_test(connect=connector(set()), healthz=lambda: False)
+
+    def test_claude_worker_has_turn_and_budget_brakes(self):
+        args = clients.worker_arguments("claude", "claude-sonnet-5-5", max_turns=60, max_budget_usd=12.0)
+        self.assertEqual(args[args.index("--max-turns") + 1], "60")
+        self.assertEqual(args[args.index("--max-budget-usd") + 1], "12.0")
+        self.assertNotIn("--bare", args)
+        self.assertNotIn("--max-turns", clients.worker_arguments("claude", "claude-sonnet-5-5", interactive=True, max_turns=60, max_budget_usd=12.0))
+
+    def test_factory_runs_only_the_claude_author(self):
+        config = json.loads((REPO / "factory/config.json").read_text())
+        self.assertEqual(config["runners"], ["claude"])
+        self.assertEqual(set(config["anthropic_federation"]), {"organization_id", "service_account_id", "federation_rule_id", "workspace_id"})
+
     def test_standard_npm_lock_matches_reviewed_cli_versions(self):
         package = json.loads((REPO / "factory/package.json").read_text())
         lock = json.loads((REPO / "factory/package-lock.json").read_text())
@@ -448,7 +614,7 @@ class LauncherTests(unittest.TestCase):
         config["author_pricing_usd_per_million"]["claude"] = {"input": 2, "output": 10}
         broker = proxy.BrokerPolicy(proxy.author_policy(config, "claude"))
         payload = {"model": "claude-sonnet-5-5", "messages": [{"role": "user", "content": "test"}], "max_tokens": 100, "thinking": {"type": "adaptive"}, "tools": [{"name": "Read", "input_schema": {"type": "object"}}]}
-        url, _, kind = broker.prepare("/anthropic/v1/messages", json.dumps(payload).encode())
+        url, _, kind, _ = broker.prepare("/anthropic/v1/messages", json.dumps(payload).encode())
         self.assertEqual(url, "https://api.anthropic.com/v1/messages")
         self.assertEqual(kind, "claude")
         self.assertEqual(broker.policy["max_cost"], 5)

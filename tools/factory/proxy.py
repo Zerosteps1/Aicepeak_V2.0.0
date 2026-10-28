@@ -8,6 +8,7 @@ import http.server
 import json
 import math
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -39,12 +40,18 @@ def author_policy(config: dict, runner: str) -> dict:
     if not isinstance(prices, dict):
         raise Denied(f"author pricing for {runner} is not configured")
     limits = config["limits"]
+    input_price = positive(prices.get("input"), "author input price")
     return {
         "runner": runner, "model": model,
-        "input_price": positive(prices.get("input"), "author input price"),
+        "input_price": input_price,
         "output_price": positive(prices.get("output"), "author output price"),
+        # Without explicit cache prices, cached tokens are charged at the full input price.
+        "cache_read_price": positive(prices.get("cache_read", input_price), "author cache read price"),
+        "cache_write_price": positive(prices.get("cache_write", input_price), "author cache write price"),
         "max_cost": positive(limits.get("max_run_cost_usd", limits.get("max_cost_usd")), "max_run_cost_usd"),
         "max_output": int(positive(limits.get("author_output_tokens"), "author_output_tokens")),
+        "request_output": int(positive(limits.get("author_request_output_tokens", 32000), "author_request_output_tokens")),
+        "max_requests": int(positive(limits.get("author_requests", 200), "author_requests")),
         "timeout": min(3600, int(positive(limits.get("timeout_seconds"), "timeout_seconds"))),
     }
 
@@ -84,7 +91,18 @@ def check_codex_tool(tool):
 
 
 @dataclass
+class Reservation:
+    cost: float
+    output: int
+
+
+@dataclass
 class BrokerPolicy:
+    """Admission by reservation, accounting by provider-reported usage.
+
+    reserved_cost/reserved_output hold settled usage plus the reservations of requests
+    still in flight; settle() swaps a reservation for the actual usage.
+    """
     policy: dict
     started: float = field(default_factory=time.monotonic)
     reserved_cost: float = 0.0
@@ -93,7 +111,7 @@ class BrokerPolicy:
     context_requests: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def prepare(self, path: str, body: bytes) -> tuple[str, bytes, str]:
+    def prepare(self, path: str, body: bytes) -> tuple[str, bytes, str, Reservation | None]:
         if time.monotonic() - self.started > self.policy["timeout"]:
             raise Denied("job deadline exceeded")
         if len(body) > 2 * 1024 * 1024:
@@ -127,7 +145,7 @@ class BrokerPolicy:
                 if self.context_requests >= 64:
                     raise Denied("documentation MCP request limit exceeded")
                 self.context_requests += 1
-            return ("https://mcp.context7.com/mcp" if kind == "context7" else "https://developers.openai.com/mcp"), body, kind
+            return ("https://mcp.context7.com/mcp" if kind == "context7" else "https://developers.openai.com/mcp"), body, kind, None
         allowed = {
             "codex": ("/openai/v1/responses", "https://api.openai.com/v1/responses", "max_output_tokens"),
             "claude": ("/anthropic/v1/messages", "https://api.anthropic.com/v1/messages", "max_tokens"),
@@ -163,24 +181,173 @@ class BrokerPolicy:
             raise Denied("premium inference speed is not permitted")
         elif data.get("service_tier") not in (None, "standard_only"):
             raise Denied("premium inference tier is not permitted")
-        requested = data.get(output_key, 8192)
+        requested = data.get(output_key, self.policy["request_output"])
         if isinstance(requested, bool) or not isinstance(requested, int) or requested <= 0:
             raise Denied("invalid output token limit")
         with self.lock:
             remaining = self.policy["max_output"] - self.reserved_output
-            output = min(requested, 8192, remaining)
-            if output <= 0 or self.requests >= 64:
+            # A per-request ceiling, not a session cap: unused output is returned by settle().
+            output = min(requested, self.policy["request_output"], remaining)
+            if output <= 0 or self.requests >= self.policy["max_requests"]:
                 raise Denied("author request/token budget exhausted")
-            # Bytes conservatively bound text tokenizer input; reserve additional protocol
-            # overhead and 2x input pricing for provider cache-write multipliers.
-            estimate = ((len(body) + 8192) * self.policy["input_price"] * 2 + output * self.policy["output_price"]) / 1_000_000
+            # About 3 bytes per token bounds JSON-heavy prompts; 1.25x covers a full cache write.
+            input_tokens = (len(body) + 8192) / 3
+            estimate = (input_tokens * max(self.policy["input_price"], self.policy["cache_write_price"]) * 1.25
+                        + output * self.policy["output_price"]) / 1_000_000
             if self.reserved_cost + estimate > self.policy["max_cost"]:
                 raise Denied("author cost budget exhausted")
             self.reserved_cost += estimate
             self.reserved_output += output
             self.requests += 1
         data[output_key] = output
-        return upstream + ("?beta=true" if path.endswith("?beta=true") else ""), json.dumps(data, separators=(",", ":")).encode(), self.policy["runner"]
+        forwarded = json.dumps(data, separators=(",", ":")).encode()
+        return upstream + ("?beta=true" if path.endswith("?beta=true") else ""), forwarded, self.policy["runner"], Reservation(estimate, output)
+
+    def usage_cost(self, usage: dict) -> tuple[float, int]:
+        def count(value):
+            return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+        price = self.policy
+        output = count(usage.get("output_tokens"))
+        if price["runner"] == "codex":
+            cached = count((usage.get("input_tokens_details") or {}).get("cached_tokens"))
+            uncached = max(0, count(usage.get("input_tokens")) - cached)
+            cost = uncached * price["input_price"] + cached * price["cache_read_price"]
+        else:
+            cost = (count(usage.get("input_tokens")) * price["input_price"]
+                    + count(usage.get("cache_creation_input_tokens")) * price["cache_write_price"]
+                    + count(usage.get("cache_read_input_tokens")) * price["cache_read_price"])
+        return (cost + output * price["output_price"]) / 1_000_000, output
+
+    def settle(self, reservation: Reservation | None, usage: dict | None):
+        """Replace a reservation by reported usage. Unknown usage keeps the reservation charged."""
+        if reservation is None or usage is None:
+            return
+        cost, output = self.usage_cost(usage)
+        with self.lock:
+            self.reserved_cost += cost - reservation.cost
+            self.reserved_output += output - reservation.output
+
+
+class UsageScanner:
+    """Extract the provider usage block from a streamed (SSE) or plain JSON response."""
+
+    def __init__(self, runner: str):
+        self.runner = runner
+        self.buffer = b""
+        self.usage = None
+        self.plain = b""
+
+    def feed(self, chunk: bytes):
+        if len(self.plain) < 16 * 1024 * 1024:
+            self.plain += chunk
+        self.buffer += chunk
+        *lines, self.buffer = self.buffer.split(b"\n")
+        for line in lines:
+            if line.startswith(b"data:"):
+                try:
+                    self.event(json.loads(line[5:]))
+                except ValueError:
+                    continue
+
+    def event(self, data):
+        if not isinstance(data, dict):
+            return
+        if self.runner == "codex" and data.get("type") in ("response.completed", "response.incomplete", "response.failed"):
+            usage = (data.get("response") or {}).get("usage")
+        elif self.runner == "claude" and data.get("type") == "message_start":
+            usage = (data.get("message") or {}).get("usage")
+        elif self.runner == "claude" and data.get("type") == "message_delta":
+            usage = data.get("usage")
+        else:
+            return
+        if isinstance(usage, dict):
+            self.usage = {**(self.usage or {}), **usage}
+
+    def result(self) -> dict | None:
+        if self.usage is None and self.plain.lstrip().startswith(b"{"):
+            try:
+                usage = json.loads(self.plain).get("usage")
+                self.usage = usage if isinstance(usage, dict) else None
+            except (ValueError, AttributeError):
+                pass
+        return self.usage
+
+
+# Betas observed from Claude Code 2.1.312 (fixture); request fields stay allowlisted separately.
+ALLOWED_BETAS = ("claude-code-20250219", "prompt-caching-2024-07-31", "interleaved-thinking-2025-05-14",
+                 "fine-grained-tool-streaming-2025-05-14", "context-management-2025-06-27", "per-turn-control-2026-07-01",
+                 "mid-conversation-tool-changes-2026-07-01", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20",
+                 "effort-2025-11-24")
+
+
+def forwarded_betas(header: str) -> str:
+    return ",".join(item.strip() for item in header.split(",") if item.strip() in ALLOWED_BETAS)
+
+
+def upstream_headers(kind: str, key: str, beta: str) -> dict:
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if kind == "claude":
+        # Workload Identity Federation tokens are OAuth bearer tokens; API keys use x-api-key.
+        if key.startswith("sk-ant-oat"):
+            headers["Authorization"] = "Bearer " + key
+        else:
+            headers["x-api-key"] = key
+        headers["anthropic-version"] = "2023-06-01"
+        if forwarded_betas(beta):
+            headers["anthropic-beta"] = forwarded_betas(beta)
+    elif kind != "openai_docs":
+        headers["Authorization"] = "Bearer " + key
+    return headers
+
+
+class FederatedToken:
+    """Short-lived Anthropic token from the job's GitHub OIDC identity (Workload Identity Federation)."""
+    PATTERNS = {"organization_id": r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                "service_account_id": r"svac_[A-Za-z0-9]+", "federation_rule_id": r"fdrl_[A-Za-z0-9]+"}
+
+    def __init__(self, federation: dict, request_url: str, request_token: str, opener=None):
+        for name, pattern in self.PATTERNS.items():
+            if not isinstance(federation.get(name), str) or not re.fullmatch(pattern, federation[name]):
+                raise Denied(f"anthropic_federation.{name} is not configured")
+        workspace = federation.get("workspace_id")
+        if workspace is not None and not (isinstance(workspace, str) and re.fullmatch(r"wrkspc_[A-Za-z0-9]+", workspace)):
+            raise Denied("anthropic_federation.workspace_id is invalid")
+        parsed = urllib.parse.urlsplit(request_url)
+        if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".actions.githubusercontent.com") or not request_token:
+            raise Denied("GitHub OIDC request endpoint missing or unexpected")
+        self.federation, self.request_url, self.request_token = federation, request_url, request_token
+        self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open
+        self.token, self.expires = "", 0.0
+        self.lock = threading.Lock()
+
+    def fetch(self, request) -> dict:
+        try:
+            with self.opener(request, timeout=30) as response:
+                return json.loads(response.read(65536))
+        except urllib.error.HTTPError as exc:
+            raise Denied(f"federated credential exchange failed (HTTP {exc.code})") from None
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            raise Denied("federated credential exchange unavailable") from None
+
+    def get(self) -> str:
+        with self.lock:
+            if self.token and time.monotonic() < self.expires - 120:
+                return self.token
+            # GitHub identity tokens carry a jti and are single use: fetch a fresh one per exchange.
+            audience = urllib.parse.quote("https://api.anthropic.com", safe="")
+            identity = self.fetch(urllib.request.Request(f"{self.request_url}&audience={audience}",
+                                                         headers={"Authorization": "Bearer " + self.request_token}))
+            body = {"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": identity.get("value", ""),
+                    **{k: self.federation[k] for k in self.PATTERNS}}
+            if self.federation.get("workspace_id"):
+                body["workspace_id"] = self.federation["workspace_id"]
+            minted = self.fetch(urllib.request.Request("https://api.anthropic.com/v1/oauth/token", data=json.dumps(body).encode(),
+                                                       headers={"Content-Type": "application/json"}, method="POST"))
+            token, lifetime = minted.get("access_token", ""), minted.get("expires_in")
+            if not (isinstance(token, str) and token.startswith("sk-ant-oat")) or not isinstance(lifetime, int) or lifetime < 60:
+                raise Denied("federated credential exchange returned no usable token")
+            self.token, self.expires = token, time.monotonic() + lifetime
+            return token
 
 
 def validate_openai_docs_arguments(name: str, arguments: dict):
@@ -250,21 +417,13 @@ def make_handler(policy: BrokerPolicy, secrets: dict):
                 body = self.rfile.read(length)
                 if len(body) != length:
                     raise Denied("incomplete request")
-                upstream, forwarded, kind = policy.prepare(self.path, body)
-                key = secrets.get(kind)
+                upstream, forwarded, kind, reservation = policy.prepare(self.path, body)
+                credential = secrets.get(kind)
+                key = credential.get() if isinstance(credential, FederatedToken) else credential
                 if kind != "openai_docs" and not key:
                     raise Denied("upstream credential not configured")
-                headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-                if kind == "claude":
-                    headers["x-api-key"] = key
-                    headers["anthropic-version"] = "2023-06-01"
-                    beta = self.headers.get("anthropic-beta", "")
-                    allowed_betas = {"claude-code-20250219", "prompt-caching-2024-07-31", "interleaved-thinking-2025-05-14", "fine-grained-tool-streaming-2025-05-14"}
-                    selected = [item.strip() for item in beta.split(",") if item.strip() in allowed_betas]
-                    if selected:
-                        headers["anthropic-beta"] = ",".join(selected)
-                elif kind != "openai_docs":
-                    headers["Authorization"] = "Bearer " + key
+                headers = upstream_headers(kind, key or "", self.headers.get("anthropic-beta", ""))
+                scanner = UsageScanner(kind)
                 if kind in ("context7", "openai_docs"):
                     for header in ("Mcp-Session-Id", "MCP-Protocol-Version"):
                         value = self.headers.get(header)
@@ -288,11 +447,15 @@ def make_handler(policy: BrokerPolicy, secrets: dict):
                         total += len(chunk)
                         if total > 16 * 1024 * 1024 or time.monotonic() - policy.started > policy.policy["timeout"]:
                             break
+                        scanner.feed(chunk)
                         self.wfile.write(chunk)
                         self.wfile.flush()
+                policy.settle(reservation, scanner.result())
             except (Denied, ValueError) as exc:
                 self.reply(403, str(exc))
             except urllib.error.HTTPError as exc:
+                # A rejected request produced no tokens; return its reservation.
+                policy.settle(locals().get("reservation"), {})
                 self.reply(502, f"upstream rejected request ({exc.code})")
             except (urllib.error.URLError, TimeoutError, OSError):
                 self.close_connection = True
@@ -305,8 +468,13 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--runner", choices=("codex", "claude"), required=True)
     args = parser.parse_args()
-    policy = BrokerPolicy(author_policy(json.loads(args.config.read_text()), args.runner))
+    config = json.loads(args.config.read_text())
+    policy = BrokerPolicy(author_policy(config, args.runner))
     secrets = {"job": os.environ.get("FACTORY_PROXY_TOKEN", ""), "codex": os.environ.get("OPENAI_API_KEY"), "claude": os.environ.get("ANTHROPIC_API_KEY"), "context7": os.environ.get("CONTEXT7_API_KEY")}
+    if args.runner == "claude" and os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"):
+        # In the pipeline the author authenticates through Workload Identity Federation, never a stored key.
+        secrets["claude"] = FederatedToken(config.get("anthropic_federation") or {}, os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"],
+                                           os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", ""))
     if len(secrets["job"]) < 32 or not secrets[args.runner] or not secrets["context7"]:
         raise SystemExit("broker credentials missing")
     server = http.server.ThreadingHTTPServer(("0.0.0.0", 8080), make_handler(policy, secrets))

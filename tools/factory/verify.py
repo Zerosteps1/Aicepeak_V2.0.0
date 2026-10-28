@@ -63,7 +63,7 @@ def unit_tests(root, trusted):
                   [trusted/'tools/factory/tests',root/'tools/factory/tests']):
         require_tests=list(tests.glob('test_*.py'))
         if not require_tests:raise ValueError('test suite absent: '+str(tests))
-        output=run([sys.executable,'-I','-m','unittest','discover','-s',str(tests),'-v'],env=env,cwd=trusted)
+        output=run([sys.executable,'-I','-B','-m','unittest','discover','-s',str(tests),'-v'],env=env,cwd=trusted)
     return output
 
 

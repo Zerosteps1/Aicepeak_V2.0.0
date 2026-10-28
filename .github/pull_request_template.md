@@ -10,10 +10,10 @@ Record the checks performed and any limits. The factory reports deterministic te
 
 ## Author handoff
 
-Replace the values below with an existing task and a verified configured human owner. Use `codex` or `claude`. Do not add commands or credentials.
+Replace the values below with an existing task and a verified configured human owner. Use the configured runner allowlist (currently `claude`; the Business-authenticated isolated Codex author is not yet verified). Do not add commands or credentials.
 
 ```factory-handoff
-{"runner":"codex","task":"docs/work/NAME.md","owner":"verified login"}
+{"runner":"claude","task":"docs/work/NAME.md","owner":"verified login"}
 ```
 
 Human feedback can be left as PR comments or review comments. The factory acknowledges eligible maintainer feedback and reports its outcome; it does not resolve review threads automatically.

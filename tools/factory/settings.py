@@ -22,6 +22,8 @@ from urllib.parse import quote
 REPOSITORY = "Zerosteps1/Aicepeak_V2.0.0"
 ROOT = Path(__file__).resolve().parents[2]
 CHECKS = ["factory/deterministic", "factory/senior-review"]
+# During the shadow phase the senior review is published but advisory (ADR-0005).
+SHADOW_CHECKS = CHECKS[:1]
 API_VERSION = "2026-03-10"
 
 
@@ -134,8 +136,8 @@ def config_blockers(config):
             errors.append(f"{key} is missing or invalid")
     if positive_id(config.get("publisher_app_id")) and config.get("publisher_app_id") == config.get("writer_app_id"):
         errors.append("publisher and writer must be different GitHub Apps")
-    if config.get("required_checks") != CHECKS:
-        errors.append("required_checks must exactly match the two factory App checks")
+    if config.get("required_checks") not in (SHADOW_CHECKS, CHECKS):
+        errors.append("required_checks must be the deterministic check (shadow phase) or both factory App checks")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", str(config.get("environment", ""))):
         errors.append("environment must be an explicit simple name")
     if config.get("workflow") != ".github/workflows/factory.yml":
@@ -145,7 +147,7 @@ def config_blockers(config):
 
 def desired_state(config, spec):
     errors = config_blockers(config)
-    if spec.get("schema_version") != 1 or spec.get("repository") != REPOSITORY or spec.get("required_checks") != CHECKS:
+    if spec.get("schema_version") != 1 or spec.get("repository") != REPOSITORY or spec.get("required_checks") != config.get("required_checks"):
         errors.append("unsupported or mismatched github-settings.json")
     if errors:
         raise Blocked("; ".join(errors))
@@ -161,7 +163,7 @@ def desired_state(config, spec):
                 "required_review_thread_resolution": True}},
             {"type": "required_status_checks", "parameters": {
                 "do_not_enforce_on_create": False, "strict_required_status_checks_policy": True,
-                "required_status_checks": [{"context": name, "integration_id": config["publisher_app_id"]} for name in CHECKS]}}
+                "required_status_checks": [{"context": name, "integration_id": config["publisher_app_id"]} for name in config["required_checks"]]}}
         ]}
     human = {
         "name": spec["human_ruleset_name"], "target": "branch", "enforcement": "active",

@@ -1,5 +1,52 @@
 # Verification status and pending activation
 
+## Status on 2026-10-29: live review-fix acceptance passed
+
+Checked by Claude Code on Gabriel's machine with his explicit authorization to edit and merge. Only this repository, its GitHub runs and checks, and official vendor documentation were used. The full assessment, PR decisions and start checklist are in [review-2026-10-29.md](review-2026-10-29.md).
+
+**Result: the complete review-fix loop works live** (smoke PR [#20](https://github.com/Zerosteps1/Aicepeak_V2.0.0/pull/20), approved task [FACTORY-SMOKE](../docs/work/FACTORY-SMOKE.md), base `9b9c9f6`):
+
+1. Head `f4cd4ff` (indentation plus explanation `2 × 3 = 7`): deterministic `success`; Astra/high `changes_requested` with a valid P1 F-001 on `factory-smoke.json:5` (result check `123111699361`).
+2. Correction run [40772159725](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40772159725): the Claude author ran through WIF and the writer App pushed `88cbf27`, which changes only `explanation`.
+3. A new pipeline ran on the new head: deterministic `success`, Astra/high `pass` (`123114193117`).
+4. Human feedback probe: Gabriel's PR comment `6481229042` was re-read as authenticated maintainer feedback and triggered a new snapshot and review. Astra/high `pass` (`123116575069`) answered the question with the changed line, why the numeric test stayed green, and that besides it only the indentation differs.
+5. Labels followed each state (`awaiting-senior-review`, then none). The PR was closed without merge as a fixture.
+
+**Defects found by the live runs and fixed through reviewed PRs, with no gate exception:**
+
+| Live symptom | Root cause | Fix |
+|---|---|---|
+| Advisory review with 7 correct findings discarded (`incomplete review must block`) | model returned `complete: false` with `changes_requested`; policy unnamed in the prompt | #16 (prompt, schema description, advisory display as `blocked`) |
+| Correction run 40762431387: `author runner failed` | Docker copied the image's `/work` owner onto the shared tmpfs volume; the host-uid seed could not write (reproduced locally) | #17 (`volume-nocopy`) |
+| Correction run 40766190552: author patch correct, writer push rejected | GraphQL `UpdateRefsInput` has `refUpdates`, not `updates` (live introspection); the unit test mocked the same wrong name | #18 (trusted test), #19 (code) |
+| Two reviews on #20 discarded (`incomplete diff scope`) | model wrote prose into `scope` | #21 (per-review schema with `enum` of the changed files) |
+
+Additional live evidence: WIF smoke [40762782139](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40762782139) passed on `48aeafa`. The `awaiting-senior-review` label was observed on PRs #10, #16–#22. Gabriel's machine passed `local_review.py --smoke` (Codex 0.164.0, `gpt-6-astra`/high).
+
+**Merge rule changed on 2026-10-28 by Gabriel:** "Checks immer durchführen, aber Felix und ich sollen immer mergen und bypassen können." Both checks keep running. With `maintainer_check_bypass: true` the verified maintainers are `pull_request`-mode bypass actors of the quality ruleset (#22 mechanism, this PR's setting). GitHub records each bypass. Apps and bots get none.
+
+**Still not verified live:** Felix's own reviewer machine (`local_review.py --smoke` and one gate review), authenticated native skill and MCP calls inside an interactive author container, two devices racing for one claim, a new head during a running review, and a foreign App with the same check name. The corresponding local regressions exist; they are not live proof.
+
+## Live-Aktivierung am 28.10.2026
+
+Gabriel (`Zerosteps1`) hat [PR #11](https://github.com/Zerosteps1/Aicepeak_V2.0.0/pull/11) persönlich gemergt. Der anschließend unabhängig gelesene [Merge-Commit `ce736a5`](https://github.com/Zerosteps1/Aicepeak_V2.0.0/commit/ce736a5080a04b2e72f091371ec61c49e8d84291) hat exakt die Eltern `faededdd7c1e734ce2e168502cca54f0f0a04fc3` und `90ee4f52443d719c645e9b55ad69f884930d8476` sowie den geprüften Tree `161ed940fa2651560e4bd5c70768d0cc83080858`. Der [GitHub-Testlauf 40734682121](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40734682121) dieses Heads bestand mit 203 unveränderten Basistests und 211 Kandidatentests, Struktur, Actionlint und Gitleaks; deterministischer Check `122980738257` von Publisher-App 5510081. Frische unabhängige Astra/high-Audits sind im Verlauf unten abgegrenzt.
+
+Die einmalig genehmigte Senior-Check-Ausnahme ist geschlossen. [Ruleset 26049015](https://github.com/Zerosteps1/Aicepeak_V2.0.0/rules/26049015) verlangt wieder beide strikten Pflichtchecks von App 5510081, PR und geklärte Threads, ohne Bypass-Akteure; Force-Push und Löschen bleiben gesperrt. Zusätzliche Approvals sind wie ausdrücklich entschieden null, Codeowner-/Last-Push-Approval nicht verpflichtend. [Ruleset 26049017](https://github.com/Zerosteps1/Aicepeak_V2.0.0/rules/26049017) bleibt unverändert auf PR-Merges der drei verifizierten Konten von Gabriel und Felix begrenzt. Beide Live-Regeln wurden unabhängig gelesen und gegen den versionierten Sollzustand verglichen: übereinstimmend.
+
+Der einmalige Terminal-Helfer meldete nach erfolgreicher Wiederherstellung `Mandatory checks restored, but final merge evidence is incomplete`. Seine letzte Abfrage enthielt damit nicht alle erwarteten Abschlussfelder; die konkrete fehlende Angabe wurde nicht protokolliert. Die nachfolgende direkte Prüfung bestätigt Merge-Akteur, exakte Eltern, Tree, aktuellen Main-Commit und vollständige Regeln. Es wurde weder nochmals gemergt noch erneut eine Ausnahme geöffnet. Der Helfer gehört nicht zum regulären Factory-Betrieb.
+
+Gabriel aktualisierte danach seinen sauberen Kontroll-Checkout auf diesen Main-Stand und führte den vollständigen authentifizierten Abgleich aus. Übermitteltes Ergebnis: `configuration_ready: true`, `changes: []`, `blockers: []`, `missing_environment_secrets: []`; Publisher-/Writer-Installationen `176168187` und `176168111` bestätigt. Das ist ein vom Maintainer ausgeführter Host-Nachweis; der Agent hat keine privaten Schlüssel über den Connector gelesen.
+
+**Die administrative Konfiguration ist bestätigt, die vollständige Factory-Abnahme steht weiterhin aus.** [Smoke-PR #10](https://github.com/Zerosteps1/Aicepeak_V2.0.0/pull/10) wurde ohne Force-Push auf Main aktualisiert: Head `e0448b03fef9010e7dd372abe5162f563edbe41a`, Base/Policy `ce736a5080a04b2e72f091371ec61c49e8d84291`. Gegen Main ändert er ausschließlich die Einrückung der korrekten JSON-Testfixture. [Run 40736694244](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40736694244) veröffentlichte den deterministischen Erfolg `122987680684`. Weitere ausstehende Geräte-/MCP-/Negativproben stehen in der Abnahmetabelle unten. `configuration_ready` ersetzt diese Nachweise nicht.
+
+### Tatsächliche Review-Fix-Abnahme auf PR #10
+
+Der saubere Gegenfall besteht: Senior-Check `122987148751` wurde von Publisher-App 5510081 als `success` abgeschlossen. Der neue lokale Kontext verwendete Codex 0.164.0, `gpt-6-astra`, Effort `high` und Gabriels Business-Zugang; eine Modellrunde, 38.220 Eingabe- und 474 Ausgabetokens, keine Findings oder offenen Prüfgrenzen. Authentifizierter Claim-Run [40746853315](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40746853315), Ergebnisrecord `123023411972`. Der lokale Ergebnisrecord selbst war `neutral`; erst der serialisierte Finalizer gab den Pflichtcheck frei. Gabriel übermittelte `{"pr":10,"outcome":"pass","published":true}`; App-Identität, Head-/Base-Bindung, Reviewer und endgültiger Gate-Erfolg wurden zusätzlich über GitHub gelesen. Die Aussage umfasst diese harmlose Änderung, keine pauschale Abnahme aller Factory-Funktionen.
+
+Anschließend wurde die im freigegebenen Smoke-Auftrag bezeichnete Fehlerprobe als Commit `288c5ef3729f153250f3c09c2d1dd67e82540022` eingebracht. Genau eine Zeile in `factory-smoke.json` verändert `explanation` von `2 × 3 = 6` zu `2 × 3 = 7`; numerische Werte, Tests und Regeln bleiben unverändert. Der deterministische Check `123025891334` bestand ([Run 40747539017](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40747539017)). Der Reviewer brach dagegen mit der von Gabriel übermittelten Meldung `BLOCKED: review.findings[].id: pattern` ab. Senior-Gate `123025321037` blieb `failure`, Ergebnisrecord `123026851044` enthielt kein gültiges Review und autorisierte keine automatische Korrektur. Das ist eine echte Ablehnung ungültiger Reviewdaten, noch kein erfolgreicher Defekt-/Fix-Durchlauf.
+
+Die reproduzierte Schemaabweichung wird regulär in [PR #14](https://github.com/Zerosteps1/Aicepeak_V2.0.0/pull/14) korrigiert; die konkret fehlgeschlagene Modell-ID wurde nicht aufbewahrt. Bis zum menschlichen Merge und einem neuen gültigen Review bleiben automatische Claude-Korrektur, Writer-Folgetrigger und erneutes Review offen. Die fehlerhafte Ausgabe wird nicht nachträglich als Finding akzeptiert; beide Pflichtchecks bleiben aktiv.
+
 ## Finding-ID-Fehler bei der Live-Abnahme am 28.10.2026
 
 Der saubere Smoke-Head `e0448b03fef9010e7dd372abe5162f563edbe41a` bestand den echten Astra/high-Review: App-Check `122987148751`, keine Findings, Base/Policy `ce736a5080a04b2e72f091371ec61c49e8d84291`. Beim anschließend ausdrücklich vorgesehenen Erklärungsdefekt am Head `288c5ef3729f153250f3c09c2d1dd67e82540022` bestanden die deterministischen Prüfungen ([Run 40747539017](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40747539017)); der lokale Reviewer brach mit Gabriels übermittelter Meldung `review.findings[].id: pattern` ab. App-Gate `123025321037` blieb `failure`, Ergebnisrecord `123026851044` enthielt kein gültiges Review, automatische Korrektur wurde nicht autorisiert. Die konkrete erzeugte ID wurde nicht aufbewahrt.
@@ -20,7 +67,8 @@ Finding `F-001` (P2) desselben Reviews wird mit Gegenbeleg bestritten: Es behaup
 
 Der unabhängige Astra/high-Prüfer prüfte auch diesen Folge-Diff und führte alle 16 betroffenen Tests erfolgreich aus; keine blockierenden Befunde. Die deterministische CI und das verbindliche lokale Review müssen den neuen Head regulär erneut prüfen. Es gibt keinen Retry ohne Änderung und keine Lockerung der Gates.
 
-## Aktueller Abnahmestand am 28.10.2026
+
+## Verlauf bis zur Bootstrap-Reparatur
 
 [PR #9](https://github.com/Zerosteps1/Aicepeak_V2.0.0/pull/9) wurde menschlich nach `main` übernommen (`faededdd7c1e734ce2e168502cca54f0f0a04fc3`). Die beiden Rulesets `26049015` (PR, menschliche Codeowner-Freigabe, App-gebundene Pflichtchecks) und `26049017` (Updates nur durch menschliche PR-Merges) wurden anschließend tatsächlich aktiviert und per GitHub-API gelesen. Beide App-Schlüssel und `CONTEXT7_API_KEY` sind im auf Branch `main` begrenzten Environment hinterlegt. Der Soll-/Ist-Vergleich meldete noch die unten erklärte Parameter-Normalisierung.
 
@@ -188,13 +236,13 @@ Second review: test discovery through candidate imports, base tests without a ca
 |---|---|---|
 | Fresh checkout, same rules/skills | Adapter generation and drift check | Native discovery and actual skill execution in both clients |
 | Isolated context | Gabriel-reported container smoke passed: project read allowed; foreign-host read, symlink escape and trusted-rule write denied | Live authenticated author run and resulting patch |
-| Valid PR | Dispatcher and contract tests | Both App checks appear; `local_review.py` completes the pending senior review with Astra-high |
-| Maintainer-local reviewer | Gabriel-reported real Astra/high Business smoke; local tool-surface, claim and publication regressions | Felix's own host smoke, real bound gate publication, and workspace usage/entitlement verification |
-| Defect and fix | [Smoke work order](../docs/work/FACTORY-SMOKE.md), real Git patch probe | Real author fix, App push, new check run, clean counter-example |
+| Valid PR | Real clean PR #10 passed both App checks; PR #14 also has a bound Astra/high pass | Repeat at each new head; no prior approval is transferable |
+| Maintainer-local reviewer | Gabriel real Business smoke and bound App-gate publication on PRs #10/#14; tool-surface/claim regressions | Felix's own host smoke and workspace usage/entitlement verification |
+| Defect and fix | [Smoke work order](../docs/work/FACTORY-SMOKE.md), real clean counter-example; controlled text defect still present | Valid defect finding, real author fix, App push, new check run and final review |
 | Human feedback | Identity/PR association, re-reading, changed context | Comment, inline comment and review, each with an understandable response |
 | Old head/base/run | Binding regressions and active cancellation with real child processes | New head/feedback during a live review cancels that work; stale results cannot publish |
-| Missing credentials/schema/API | Local fail-closed tests | A deliberately invalid token or schema keeps the review blocked |
-| Control changed in PR | Base policy/orchestration and read-only author adapters | A real PR rule change does not influence its own check |
+| Missing credentials/schema/API | Local fail-closed tests; real malformed finding-ID output left PR #10 blocked, with no author authorization | Live invalid-token/API-failure counterpart remains separate |
+| Control changed in PR | PR #14 schema/context changes reviewed with unchanged ce736a5 policy; both versions supplied as evidence | Continue verifying policy SHA for every control change |
 | Secret/identity boundary | Separate jobs, broker, App scope check | Tests without secrets; no Codex token on GitHub; an agent can neither update `main` nor merge |
 | Foreign check with same name | Expected App ID in the ruleset, contract negative test | A foreign check App does not satisfy the required check |
 | Budget/concurrency | Force push/rerun/duplicate/CAS and shared-claim regressions | Two correction rounds, exhausted reserves and competing devices produce the correct handoff without losing a blocking finding |

@@ -198,14 +198,16 @@ class Publication(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def pending(self):
+    def pending(self, head='a' * 40, tests_ok=True, run_id=1):
+        self.transport.pr['head']['sha'] = head
+        os.environ['GITHUB_RUN_ID'] = str(run_id)
         captured = {}
         with patch.object(engine, 'installation', return_value=self.transport), \
                 patch.object(engine, 'emit', side_effect=lambda name, value: captured.update({name: value})):
             engine.snapshot_stage(argparse.Namespace(pr=1, feedback_kind='', feedback_id=0), self.config)
         snapshot = captured['snapshot']
-        tests = {'repository': 'fixture/repo', 'head_sha': 'a' * 40, 'policy_sha': 'b' * 40, 'run_id': 1, 'ok': True, 'exit_code': 0, 'summary': 'ok'}
-        with patch.dict(os.environ, {'SNAPSHOT_JSON': json.dumps(snapshot), 'TESTS_JSON': json.dumps(tests), 'TEST_JOB_RESULT': 'success'}), \
+        tests = {'repository': 'fixture/repo', 'head_sha': head, 'policy_sha': 'b' * 40, 'run_id': run_id, 'ok': tests_ok, 'exit_code': 0 if tests_ok else 1, 'summary': 'ok'}
+        with patch.dict(os.environ, {'SNAPSHOT_JSON': json.dumps(snapshot), 'TESTS_JSON': json.dumps(tests), 'TEST_JOB_RESULT': 'success' if tests_ok else 'failure'}), \
                 patch.object(engine, 'installation', return_value=self.transport), patch.object(engine, 'verify_run'):
             engine.publish_stage(self.config)
         return snapshot
@@ -269,6 +271,20 @@ class Publication(unittest.TestCase):
         local_review.publish_review(self.transport, self.config, check, record, review_for(snapshot, 'pass'), {'turns': 1}, dispatch=False)
         with self.assertRaisesRegex(Blocked, 'review limit'):
             local_review.require_review_budget(self.transport, 1, self.config)
+
+    def test_previous_findings_survive_a_head_that_failed_its_tests(self):
+        first = self.pending()
+        check, record = local_review.pending_review(self.transport, 1, self.config)
+        local_review.publish_review(self.transport, self.config, check, record, review_for(first), {'turns': 1}, dispatch=False)
+        self.pending(head='c' * 40, tests_ok=False, run_id=2)  # completes its check without a review
+        latest = self.pending(head='d' * 40, run_id=3)
+        material = engine.review_material(self.transport, latest, self.config, {})
+        previous = material.split('PREVIOUS FINDINGS: re-check fixes at this head\n', 1)[1].split('\n\n', 1)[0]
+        self.assertEqual(json.loads(previous)['findings'][0]['id'], 'F-1')
+
+    def test_publish_comment_does_not_repeat_candidate_test_output(self):
+        self.pending()
+        self.assertNotIn('ok', self.transport.comments[-1]['body'].split('\n\n')[1:2])
 
     def test_review_pr_builds_material_and_publishes_schema_valid_result(self):
         snapshot = self.pending()

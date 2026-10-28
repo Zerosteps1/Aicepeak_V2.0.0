@@ -2,6 +2,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -21,6 +22,28 @@ class Gates(unittest.TestCase):
 
     def test_clean_change_is_not_forced_to_have_findings(self):
         self.assertEqual(validate_review(self.review,self.schema,self.snapshot),'pass')
+
+    def test_generation_schema_rejects_partial_finding_identifiers(self):
+        pattern = self.schema['properties']['findings']['items']['properties']['id']['pattern']
+        finding = dict(id='F-001', kind='defect', confidence='high', priority='P1',
+                       file='src/math.py', line=2, impact='wrong total', evidence='2+2 yields 5',
+                       requirement='sum', minimal_fix='correct addition', verification='2+2 equals 4')
+        # JSON Schema pattern searches within a string; it is not a fullmatch.
+        # These ASCII examples exercise that generation/validation boundary
+        # without adding a second schema engine or calling a model.
+        cases = [('F-001', True), ('SMOKE_EXPLANATION', True), ('F-1', True),
+                 ('f-1', False), ('prefix-F-001', False), ('F-001-suffix', False),
+                 ('F 001', False), ('F.001', False), ('F-001/x', False)]
+        for identifier, valid in cases:
+            with self.subTest(identifier=identifier):
+                self.assertEqual(re.search(pattern, identifier) is not None, valid,
+                                 'generation must not accept an ID rejected by the local contract')
+                self.review.update(outcome='changes_requested', findings=[{**finding, 'id': identifier}])
+                if valid:
+                    self.assertEqual(validate_review(self.review, self.schema, self.snapshot), 'changes_requested')
+                else:
+                    with self.assertRaisesRegex(Blocked, r'review\.findings\[\]\.id: pattern'):
+                        validate_review(self.review, self.schema, self.snapshot)
 
     def test_blocking_finding_cannot_be_published_as_pass(self):
         self.review['findings']=[dict(id='F-1',kind='defect',confidence='high',priority='P1',file='src/math.py',line=2,impact='wrong total',evidence='2+2 yields 5',requirement='sum',minimal_fix='correct addition',verification='2+2 equals 4')]

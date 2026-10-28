@@ -66,6 +66,12 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(config["mcp_servers"]["context7"]["required"])
         self.assertTrue(config["mcp_servers"]["openai_docs"]["required"])
 
+    def test_role_adapters_omit_keys_codex_ignores_for_roles(self):
+        # Codex 0.164.0 discards sandbox_mode from role files; the line would only mislead readers.
+        for name in ("factory_author", "factory_senior_reviewer"):
+            role = tomllib.loads((self.root / f".codex/agents/{name}.toml").read_text())
+            self.assertNotIn("sandbox_mode", role)
+
     def test_unmanaged_config_and_symlink_are_rejected(self):
         (self.root / ".claude/settings.local.json").write_text("{}")
         with self.assertRaisesRegex(clients.ClientError, "unmanaged"):
@@ -317,6 +323,15 @@ class BrokerTests(unittest.TestCase):
         self.assertFalse(any(key.lower() in ("authorization", "x-api-key") for key in request.headers))
         self.assertNotIn("token", str(request.headers))
         handler.send_response.assert_called_once_with(200)
+
+    def test_codex_0_164_0_request_body_is_accepted(self):
+        # Shape of ResponsesApiRequest at rust-v0.164.0: client_metadata is always serialized.
+        fixture = json.loads((Path(__file__).parent / "fixtures/codex-0.164.0-request.json").read_bytes())
+        _, body, _ = self.policy.prepare("/openai/v1/responses", json.dumps(fixture).encode())
+        self.assertEqual(json.loads(body)["client_metadata"], fixture["client_metadata"])
+        for field, value in {"stream_options": {"reasoning_summary_delivery": "sequential_cutoff"}, "prompt_cache_options": {"ttl": "24h"}}.items():
+            with self.subTest(field=field):
+                self.policy.prepare("/openai/v1/responses", json.dumps({**fixture, field: value}).encode())
 
     def test_unknown_fields_media_and_expired_job_rejected(self):
         with self.assertRaisesRegex(proxy.Denied, "unsupported"):

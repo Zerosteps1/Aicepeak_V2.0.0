@@ -143,7 +143,9 @@ class BrokerPolicy:
             raise Denied("remote persistence and background requests are not permitted")
         common = {"model", "tools", "tool_choice", "stream", "temperature", "top_p", "metadata", "service_tier"}
         provider_fields = {
-            "codex": {"input", "instructions", "max_output_tokens", "parallel_tool_calls", "reasoning", "text", "store", "include", "truncation", "prompt_cache_key", "prompt_cache_retention", "safety_identifier", "user"},
+            # Codex 0.164.0 always serializes client_metadata (trace keys only); stream_options and
+            # prompt_cache_options are delivery/cache controls. Re-check this set on every CLI update.
+            "codex": {"input", "instructions", "max_output_tokens", "parallel_tool_calls", "reasoning", "text", "store", "include", "truncation", "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options", "stream_options", "client_metadata", "safety_identifier", "user"},
             "claude": {"messages", "system", "max_tokens", "thinking", "stop_sequences", "top_k", "speed", "output_config", "context_management"},
         }
         if set(data) - common - provider_fields[self.policy["runner"]]:

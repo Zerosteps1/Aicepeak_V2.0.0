@@ -1,0 +1,20 @@
+{
+  "model": "gpt-6-astra",
+  "stream": true,
+  "input": [
+    {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "<permissions instructions>Sandbox: danger-full-access inside the factory container. Approval policy: never.</permissions instructions>"}]},
+    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Use factory-fix-review. Correct only justified findings within the approved work order."}]}
+  ],
+  "tools": [
+    {"type": "function", "name": "shell_command", "description": "Runs a shell command and returns its output.", "strict": false, "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "number"}}, "required": ["command"], "additionalProperties": false}},
+    {"type": "custom", "name": "apply_patch", "description": "Use the apply_patch tool to edit files.", "format": {"type": "grammar", "syntax": "lark", "definition": "start: begin_patch hunk+ end_patch"}}
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {"effort": "high", "summary": "auto"},
+  "store": false,
+  "include": ["reasoning.encrypted_content"],
+  "prompt_cache_key": "0199f1d2-8c4e-7b10-9f3a-2c6d1e5a7b90",
+  "text": {"verbosity": "medium"},
+  "client_metadata": {"x-codex-installation-id": "11111111-2222-4333-8444-555555555555", "x-codex-window-id": "0199f1d2-8c4e-7b10-9f3a-2c6d1e5a7b90:0", "x-codex-turn-metadata": "{\"turn_id\":\"fixture\"}"}
+}

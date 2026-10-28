@@ -64,9 +64,8 @@ def render_adapters(root: Path) -> dict[str, bytes]:
         codex_name = "factory_author" if name == "author" else "factory_senior_reviewer"
         claude_name = "factory-author" if name == "author" else "factory-local-reviewer"
         model = config["author_models"]["codex"] if name == "author" else config["review_model"]
+        # Codex roles cannot set sandbox_mode; the local reviewer inherits the session sandbox.
         codex = f'model = {json.dumps(model)}\nmodel_reasoning_effort = "high"\ndeveloper_instructions = {json.dumps(data["instructions"])}\n'
-        if name == "reviewer":
-            codex += 'sandbox_mode = "read-only"\n'
         result[f".codex/agents/{codex_name}.toml"] = codex.encode()
         tools = "Read, Glob, Grep, Bash, Edit, Write, Skill" if name == "author" else "Read, Glob, Grep, Skill"
         tools += ", mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__openai_docs__search_openai_docs, mcp__openai_docs__list_openai_docs, mcp__openai_docs__fetch_openai_doc"

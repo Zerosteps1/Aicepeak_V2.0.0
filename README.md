@@ -71,7 +71,7 @@ Maximal zwei Korrekturrunden und sechs beanspruchte Reviews je PR; Fehler, Abbru
 gh workflow run factory.yml --repo Zerosteps1/Aicepeak_V2.0.0 --ref main -f pr=123 -f retry=true
 ```
 
-Es gibt keine automatische Merge-Berechtigung. Die Zielkonfiguration verlangt beide App-gebundenen Checks und eine menschliche Codeowner-Freigabe. Ihre tatsächliche Durchsetzung beginnt erst mit dem gesonderten Ruleset-Apply und erfolgreicher Abnahme.
+Es gibt keine automatische Merge-Berechtigung. Die Zielkonfiguration verlangt beide erfolgreichen App-gebundenen Checks. Gabriel oder Felix entscheidet anschließend selbst über den Merge; eine zweite menschliche Freigabe ist nicht vorgeschrieben. CODEOWNERS hält die Zuständigkeit fest. Rote Pflichtchecks bleiben auch für Menschen blockierend. Die aktuelle Änderung wirkt nach dem Merge und dem geprüften Ruleset-Abgleich.
 
 ## Aktivierung nach menschlichem Merge
 

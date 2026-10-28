@@ -126,6 +126,30 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(pr["require_code_owner_review"])
         self.assertTrue(pr["dismiss_stale_reviews_on_push"])
 
+    def test_single_maintainer_merge_keeps_both_app_gates_and_human_identity_boundary(self):
+        actual = json.loads((ROOT / 'factory/config.json').read_text())
+        self.assertIs(actual.get('require_second_human_review'), False)
+        for candidate in ({**config(), 'require_second_human_review': False}, actual):
+            with self.subTest(repository_config=candidate is actual):
+                quality, human = settings.desired_state(candidate, SPEC)['rulesets']
+                pr = next(r['parameters'] for r in quality['rules'] if r['type'] == 'pull_request')
+                self.assertEqual(pr['required_approving_review_count'], 0)
+                self.assertFalse(pr['require_code_owner_review'])
+                self.assertFalse(pr['require_last_push_approval'])
+                self.assertTrue(pr['required_review_thread_resolution'])
+                self.assertEqual(quality['bypass_actors'], [])
+                gates = next(r['parameters'] for r in quality['rules'] if r['type'] == 'required_status_checks')
+                self.assertTrue(gates['strict_required_status_checks_policy'])
+                self.assertEqual(gates['required_status_checks'], [
+                    {'context': check, 'integration_id': candidate['publisher_app_id']} for check in settings.CHECKS])
+                self.assertTrue(all(a['actor_type'] == 'User' and a['bypass_mode'] == 'pull_request'
+                                    for a in human['bypass_actors']))
+
+    def test_second_human_review_setting_rejects_non_boolean_values(self):
+        for value in (None, 0, 1, 'false', 'true', []):
+            with self.subTest(value=value), self.assertRaises(settings.Blocked):
+                settings.desired_state({**config(), 'require_second_human_review': value}, SPEC)
+
     def test_shadow_phase_requires_only_deterministic_check(self):
         def required(checks):
             spec = {**SPEC, "required_checks": checks}
@@ -148,6 +172,19 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.diff(state, config()), [])
         self.assertEqual(settings.apply(state, config(), api), [])
         self.assertEqual(api.calls, [])
+
+    def test_github_omitted_disabled_update_exception_is_idempotent(self):
+        state = report()
+        update = state['current']['rulesets'][1]['rules'][0]
+        del update['parameters']  # Actual GitHub response for the disabled exception.
+        self.assertEqual(settings.diff(state, config()), [])
+        self.assertEqual(settings.apply(state, config(), FakeAPI()), [])
+        update['parameters'] = {'update_allows_fetch_and_merge': True}
+        self.assertEqual(len(settings.diff(state, config())), 1)
+        update['parameters'] = {}
+        self.assertEqual(len(settings.diff(state, config())), 1)
+        state['current']['rulesets'][1]['rules'] = []
+        self.assertEqual(len(settings.diff(state, config())), 1)
 
     def test_detects_added_bypass_and_removed_app_binding(self):
         state = report()

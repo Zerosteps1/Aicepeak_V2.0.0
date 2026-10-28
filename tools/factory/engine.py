@@ -244,7 +244,9 @@ def review_material(gh, snapshot, config, tests):
     if reviews:
         sections.append('PREVIOUS FINDINGS: re-check fixes at this head\n' + json.dumps(reviews[-1]))
     material = '\n\n'.join(sections)
-    require(len(material.encode()) <= config['limits']['review_input_bytes'] - 18000, 'review input budget exceeded; split PR instead of truncating')
+    size, limit = len(material.encode()), config['limits']['review_input_bytes'] - 18000
+    require(size <= limit, f'review input budget exceeded: {size} material bytes > {limit}; '
+            'reduce the PR scope or separately approve a policy budget change; no source was truncated')
     return material
 
 
@@ -268,7 +270,7 @@ def test_stage(config):
         require(image.returncode == 0, 'trusted test image build failed')
         image_id = image.stdout.strip().splitlines()[-1]
         require(re.fullmatch(r'sha256:[0-9a-f]{64}', image_id), 'invalid built image identity')
-        cmd = ['docker','run','--rm','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges',
+        cmd = ['docker','run','--rm','--init','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges',
                '--pids-limit','256','--memory','2g','--cpus','2','--tmpfs','/tmp:rw,nosuid,nodev,size=256m',
                '--mount',f'type=bind,src={candidate},dst=/candidate,readonly',
                '--mount',f'type=bind,src={ROOT},dst=/policy,readonly','--workdir','/candidate',image_id,

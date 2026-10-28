@@ -433,7 +433,7 @@ def probe_documentation(token: str):
 
 
 def container_flags(name: str, *, worker=False) -> list[str]:
-    args = ["docker", "run", "--rm", "--name", name, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=256", "--memory=4g", "--cpus=2", "--user", f"{os.getuid()}:{os.getgid()}", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,mode=1777"]
+    args = ["docker", "run", "--rm", "--init", "--name", name, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=256", "--memory=4g", "--cpus=2", "--user", f"{os.getuid()}:{os.getgid()}", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,mode=1777"]
     if worker:
         args += ["--dns", "127.0.0.1", "--workdir", "/work"]
     return args

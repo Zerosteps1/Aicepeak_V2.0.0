@@ -149,6 +149,19 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.apply(state, config(), api), [])
         self.assertEqual(api.calls, [])
 
+    def test_github_omitted_disabled_update_exception_is_idempotent(self):
+        state = report()
+        update = state['current']['rulesets'][1]['rules'][0]
+        del update['parameters']  # Actual GitHub response for the disabled exception.
+        self.assertEqual(settings.diff(state, config()), [])
+        self.assertEqual(settings.apply(state, config(), FakeAPI()), [])
+        update['parameters'] = {'update_allows_fetch_and_merge': True}
+        self.assertEqual(len(settings.diff(state, config())), 1)
+        update['parameters'] = {}
+        self.assertEqual(len(settings.diff(state, config())), 1)
+        state['current']['rulesets'][1]['rules'] = []
+        self.assertEqual(len(settings.diff(state, config())), 1)
+
     def test_detects_added_bypass_and_removed_app_binding(self):
         state = report()
         state["current"]["rulesets"][0]["bypass_actors"] = [{"actor_type": "Integration", "actor_id": 202, "bypass_mode": "always"}]

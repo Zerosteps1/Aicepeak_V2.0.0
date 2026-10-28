@@ -309,6 +309,12 @@ def project(actual, expected):
     """Drop response metadata, but preserve extra security-relevant rule/actor entries."""
     if isinstance(expected, dict):
         actual = actual if isinstance(actual, dict) else {}
+        # GitHub omits this whole optional parameter object when its sole
+        # exception is disabled. Absence of the update rule still remains drift.
+        if (actual.get('type') == expected.get('type') == 'update'
+                and 'parameters' not in actual
+                and expected.get('parameters') == {'update_allows_fetch_and_merge': False}):
+            actual = {**actual, 'parameters': {'update_allows_fetch_and_merge': False}}
         return {key: project(actual.get(key), val) for key, val in expected.items()}
     if isinstance(expected, list):
         if not isinstance(actual, list):

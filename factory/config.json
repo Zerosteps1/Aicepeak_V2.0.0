@@ -52,7 +52,7 @@
   "limits": {
     "max_rounds": 2,
     "timeout_seconds": 900,
-    "review_input_bytes": 160000,
+    "review_input_bytes": 800000,
     "max_reviews_per_pr": 6,
     "author_output_tokens": 200000,
     "author_request_output_tokens": 32000,

@@ -1,19 +1,19 @@
-# Codex-Start über den Factory-Broker
+# Codex start through the factory broker
 
-Status: Korrekturvorschlag zur menschlichen Prüfung. Auslöser: gemeldeter Startfehler mit Codex 0.164.0 nach frischem Checkout.
+Status: correction proposal for human review. Trigger: a reported startup failure with Codex 0.164.0 after a fresh checkout.
 
-Ziel: Die dokumentierten isolierten Codex-Starts laden den geprüften Factory-Provider über eine unterstützte Konfigurationsebene.
+Goal: the documented isolated Codex starts load the reviewed factory provider through a supported configuration layer.
 
-Scope: interaktiver und unbeaufsichtigter Launcher, native Smoke-Discovery, generierter Projektadapter und Startanleitung. Keine Produktänderung, keine globale Benutzerkonfiguration, keine Änderung der Isolation, MCP-Pflicht, Modelle, Budgets oder Freigaberegeln.
+Scope: interactive and unattended launcher, native smoke discovery, generated project adapter and start instructions. No product change, no global user configuration, no change to isolation, the MCP requirement, models, budgets or approval rules.
 
-Akzeptanz:
-- Die wirksame Codex-Konfiguration verwendet den Factory-Broker und ausschließlich die Referenz auf das wegwerfbare Job-Token.
-- Der Projektadapter enthält keine von Codex ignorierten Provider-Schlüssel.
-- Der Launcher erzeugt ausschließlich die notwendige Projekt-Vertrauensangabe im neuen Container-Codex-Verzeichnis, ohne vorhandene Dateien zu überschreiben; persönliche Konfiguration bleibt ausgeschlossen.
-- Beide Autorenwege und native Discovery verwenden dieselbe geprüfte Provider-Konfiguration.
-- Ein nativer Konfigurationscheck ohne Modellaufruf ergänzt die Regressionstests; nicht ausgeführte Container-/API-Tests bleiben offen.
-- Die Anleitung erklärt, warum ein direkter Host-Start nicht funktioniert und welches Startprogramm erforderlich ist.
+Acceptance:
+- The effective Codex configuration uses the factory broker and only the reference to the disposable job token.
+- The project adapter contains no provider keys that Codex ignores.
+- The launcher creates only the required project trust entry in the new container Codex directory, without overwriting existing files; personal configuration stays excluded.
+- Both author paths and native discovery use the same reviewed provider configuration.
+- A native configuration check without a model call complements the regression tests; container and API tests that were not executed stay open.
+- The instructions explain why a direct host start does not work and which launcher is required.
 
-Quellen: `AGENTS.md`, `factory/policy.md`, `factory/clients.md`, `tools/factory/clients.py` und die im Client-Dokument verlinkte offizielle Codex-Konfigurationsreferenz. Keine Altprojektquellen.
+Sources: `AGENTS.md`, `factory/policy.md`, `factory/clients.md`, `tools/factory/clients.py` and the official Codex configuration reference linked in the clients document. No sources from earlier projects.
 
-Die Übernahme ist eine geschützte Factory-Änderung und folgt dem manuellen Reviewweg. Dieser Vorschlag erklärt sich nicht selbst zur freigegebenen Prüfbasis.
+Adopting it is a protected factory change and follows the manual review path. This proposal does not declare itself the approved review baseline.

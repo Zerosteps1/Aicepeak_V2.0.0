@@ -1,17 +1,17 @@
-# Aicepeak Softwarefabrik
+# Aicepeak software factory
 
-Gemeinsame Factory für Codex und Claude Code in `Zerosteps1/Aicepeak_V2.0.0`: isolierte Autoren, deterministische Prüfungen, unabhängiges Senior-Review und menschlicher Merge. Zentraler Reviewer ist ausschließlich **`gpt-6-astra`, Effort `high`**. Seine Konfiguration ist vorhanden; API-Zugang und realer Betrieb sind noch nicht nachgewiesen.
+Shared factory for Codex and Claude Code in `Zerosteps1/Aicepeak_V2.0.0`: isolated authors, deterministic checks, an independent senior review and a human merge. The only central reviewer is **`gpt-6-astra` with effort `high`**. It runs on the maintainer's trusted Mac under a ChatGPT Business access token, not on GitHub-hosted runners, and no part of the factory uses `OPENAI_API_KEY`. Its configuration is in place; real operation has not yet been demonstrated.
 
-**Stand 27.10.2026:** lokal vorbereitet, noch nicht aktiviert. Das öffentliche Zielrepository wurde ohne Branches vorgefunden. GitHub-Authentifizierung, zwei installierte Apps, Secrets, erreichbares Docker und echte Smoke-Läufe fehlen. Ein freigegebener Nordstern fehlt ebenfalls: Produktentwicklung ist blockiert, Factory-Einrichtung bleibt zulässig. Keine Produktarchitektur wird vorweggenommen.
+**Status 2026-10-28:** the factory is on `main` but not activated. GitHub Apps, rulesets, the environment branch policy, secrets, a reachable Docker daemon and real smoke runs are still missing. `AICEPEAK_NORDSTERN.md` is in the repository but not configured or approved (`northstar_path: null`), so product development stays blocked while factory setup remains allowed. No product architecture is anticipated.
 
-## Einstieg im frischen Checkout
+## Entry in a fresh checkout
 
-Nach menschlichem Bootstrap-Merge den geprüften Stand auschecken. Benötigt werden Python ≥ 3.11, Git, GitHub CLI und Docker; Prüfwerkzeuge sind in `factory/tools.lock.json` versioniert.
+Check out the reviewed revision. Required: Python >= 3.11, Git, GitHub CLI and Docker; the check tools are versioned in `factory/tools.lock.json`.
 
 ```sh
 git clone git@github.com:Zerosteps1/Aicepeak_V2.0.0.git
 cd Aicepeak_V2.0.0
-python3 tools/factory/doctor.py --root . --runner codex
+python3 tools/factory/doctor.py --root . --runner claude
 python3 tools/factory/clients.py check --root .
 docker build -f factory/Dockerfile \
   -t aicepeak-factory-clients:codex-0.164.0-claude-2.1.311 factory
@@ -19,64 +19,71 @@ python3 tools/factory/clients.py smoke --root .
 python3 tools/factory/verify.py --root .
 ```
 
-Der Doctor prüft lesend lokale Voraussetzungen und GitHub-CLI-Authentifizierung. Er zeigt nur Secret-Präsenz, niemals Werte. Exitcode 2 bedeutet offene Voraussetzungen oder ausstehende Live-Abnahme; lokale Präsenz ist kein Betriebsnachweis. `smoke` prüft Containergrenzen, einen ungemounteten Testinhalt, CLI-Versionen und native Discovery; authentifizierte Modell- und MCP-Ausführung ist eine gesonderte Live-Abnahme. `verify.py` benötigt `actionlint` und `gitleaks` im PATH; `--structure-only` ersetzt die vollständige Prüfung nicht. Im Image sind beide enthalten. Auf Linux installiert `python3 factory/install_tools.py --lock factory/tools.lock.json --destination /tmp/aicepeak-factory-tools` die geprüften Binaries; dieses Verzeichnis anschließend in den PATH aufnehmen. Andere Hosts benötigen passende offizielle Binaries derselben Versionen.
+The doctor reads local prerequisites, GitHub CLI authentication and the reviewer host (pinned `codex-cli 0.164.0`, access token and publisher key). It reports secret presence only, never values. Exit code 2 means open prerequisites or pending live acceptance; local presence is no proof of operation. `--runner` selects which launcher key it looks for: `claude` checks `ANTHROPIC_API_KEY`, `codex` checks `OPENAI_API_KEY` for the optional API-billed Codex launcher. `smoke` checks the container boundary, an unmounted test file, the CLI versions and native discovery; authenticated model and MCP execution is a separate live acceptance. `verify.py` needs `actionlint` and `gitleaks` in the PATH; `--structure-only` does not replace the full check. Both tools are included in the image. On Linux, `python3 factory/install_tools.py --lock factory/tools.lock.json --destination /tmp/aicepeak-factory-tools` installs the verified binaries; then add that directory to the PATH. Other hosts need the matching official binaries of the same versions.
 
-Provider- und Context7-Schlüssel ausschließlich über die Secret-Funktion der Launcher-Umgebung bereitstellen: für Codex `OPENAI_API_KEY` und `CONTEXT7_API_KEY`; für Claude zusätzlich `ANTHROPIC_API_KEY`. Claude ist auf `claude-sonnet-5-5` mit dokumentierten Preisannahmen konfiguriert; tatsächlicher API-Zugang bleibt zu prüfen. Bei einem abweichenden Docker-Endpunkt `FACTORY_DOCKER_HOST` setzen.
+Supply author credentials only through the launcher environment's secret facility: `ANTHROPIC_API_KEY` and `CONTEXT7_API_KEY` for the Claude author. Claude is configured as `claude-sonnet-5-5` with documented price assumptions; real API access still has to be verified. `OPENAI_API_KEY` is needed only for the optional, API-billed `--runner codex` launcher; the factory pipeline and the senior reviewer never use it. Set `FACTORY_DOCKER_HOST` for a non-default Docker endpoint.
 
 ```sh
-python3 tools/factory/engine.py model-smoke
-python3 tools/factory/clients.py launch --root . --runner codex
-# Für Claude: --runner claude
+python3 tools/factory/clients.py launch --root . --runner claude
+# Optional and API-billed: --runner codex (needs OPENAI_API_KEY)
 ```
 
-**Nicht mit einem bloßen `codex`-Aufruf starten.** `FACTORY_PROXY_TOKEN` entsteht automatisch im isolierten Launcher; es ist kein einzutragender persönlicher Schlüssel. Die MCPs benötigen den gleichzeitig gestarteten Broker. Details und Fehlerursachen stehen in [Clients](factory/clients.md).
+**Do not start with a plain `codex` call.** `FACTORY_PROXY_TOKEN` is created automatically inside the isolated launcher; it is not a personal key to enter. The MCPs need the broker started alongside the worker. Details and failure causes are in [Clients](factory/clients.md).
 
-Im frischen Client mit `factory-start` beginnen und den versionierten Auftrag nennen. `factory-change` implementiert, `factory-review` prüft lokal, `factory-fix-review` bearbeitet Rückmeldungen. Das Startprogramm liefert einen Patch und verändert den ursprünglichen Checkout nicht. Weitere Details: [Clients](factory/clients.md), [Beitragen](CONTRIBUTING.md), [Policy](factory/policy.md).
+In the fresh client start with `factory-start` and name the versioned work order. `factory-change` implements, `factory-review` checks locally, `factory-fix-review` handles feedback. The launcher returns a patch and does not modify the original checkout. More details: [Clients](factory/clients.md), [Contributing](CONTRIBUTING.md), [Policy](factory/policy.md).
 
-## Einmalige Aktivierung durch den Repository-Verantwortlichen
+## Senior review on the maintainer's Mac
 
-1. Als Gabriel (`Zerosteps1`, ID `115100163`) GitHub authentifizieren und Administration nachweisen. Felix erst nach Verifikation seines tatsächlichen Kontos und seiner Berechtigung hinzufügen. [GitHub-Zugang](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
-2. Zwei [GitHub Apps registrieren](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) und ausschließlich im Zielrepository installieren. Der genaue Rechtesplit steht in `factory/github-settings.json`: Publisher publiziert Checks/Feedback, Writer schreibt Korrekturbranches. Reale IDs eintragen; keine App erhält Bypass. `python3 tools/factory/settings.py codeowners` verifiziert die menschlichen Identitäten und erzeugt CODEOWNERS. Beide Änderungen vor Veröffentlichung committen. [Einrichtung und API-Prüfung](factory/github.md).
-3. Bei weiterhin leerem Remote erstellt der **Mensch** einmalig einen leeren `main`-Commit. Danach die lokale Factory-Historie in einem separaten Veröffentlichungsbranch anbinden; `factory/setup` bleibt erhalten. Diese Bootstrap-Ausnahme benötigt menschliche Prüfung, da die Factory noch nicht auf `main` existiert:
+The GitHub pipeline runs snapshot, deterministic tests and publication. It then leaves `factory/senior-review` in progress ("Awaiting senior review") with an authenticated receipt of the snapshot and test evidence. The maintainer reviews that exact snapshot locally:
 
-````sh
-# Mensch, einmalig in einem neuen leeren Verzeichnis:
-git init --initial-branch=main
-git remote add origin git@github.com:Zerosteps1/Aicepeak_V2.0.0.git
-git commit --allow-empty -m "Initialize repository for reviewed factory bootstrap"
-git push -u origin main
-
-# Danach im lokalen Factory-Checkout mit sauberem, fertig committetem Stand:
-git fetch origin main
-git switch -c factory/bootstrap-publish factory/setup
-git merge --allow-unrelated-histories --no-edit origin/main
-git push -u origin factory/bootstrap-publish
-gh pr create --base main --head factory/bootstrap-publish --title "Set up repository factory" --body-file - <<'PR_BODY'
-This bootstrap adds the repository-only factory, two isolated author clients,
-trusted tests, Astra-high review, authenticated human feedback and bounded fixes.
-See factory/evidence.md for executed checks and outstanding live activation.
-Work order: docs/work/FACTORY-001.md. Human merge required; no product code.
-
-```factory-handoff
-{"runner":"codex","task":"docs/work/FACTORY-001.md","owner":"Zerosteps1"}
+```sh
+python3 tools/factory/local_review.py --smoke            # access token, model and tool-less session, no GitHub
+python3 tools/factory/local_review.py --pr 123 --dry-run # review and print, publish nothing
+python3 tools/factory/local_review.py --pr 123           # review and publish through the publisher App
 ```
-PR_BODY
-````
 
-4. Mensch prüft und merged den Bootstrap-PR; kein Agent pusht auf `main` oder merged. Für die anschließenden Settings-Prüfungen zusätzlich kurzlebige `FACTORY_PUBLISHER_APP_JWT` und `FACTORY_WRITER_APP_JWT` bereitstellen.
-5. `settings.py inspect`, dann `settings.py diff` prüfen und `settings.py apply` bewusst ausführen. Das installiert zwei aktive Rulesets: Pflichtchecks ohne Bypass sowie Default-Branch-Updates nur durch menschliche PR-Merges. CODEOWNER-Freigabe und auf die Publisher-App gebundene Checks bleiben erforderlich. Das Credential-Environment `factory-control` darf ausschließlich den Default-Branch zulassen.
-6. Environment-Secrets einrichten: `OPENAI_API_KEY`, `FACTORY_PUBLISHER_APP_PRIVATE_KEY`, `FACTORY_WRITER_APP_PRIVATE_KEY`; für automatische Autoren zusätzlich `CONTEXT7_API_KEY`, bei Claude `ANTHROPIC_API_KEY`. Keine dieser Credentials als Repository-Secret oder Datei ablegen. [OpenAI-Schlüssel](https://platform.openai.com/api-keys), [Context7-Zugang](https://context7.com/docs/resources/all-clients). `inspect` erneut ausführen; leeres Diff und vorhandene Secret-Namen beweisen noch keinen funktionierenden Lauf.
-7. Image/Client-Smoke, authentifizierten Modell-/MCP-Lauf und [Smoke-PR](docs/work/FACTORY-SMOKE.md) ausführen. Run-/Check-IDs, Head-/Base-SHAs, echte Korrektur und erneutes Review dokumentieren. Erst dann Betrieb freigeben. Ein von Gabriel selbst erstellter PR benötigt einen anderen berechtigten menschlichen Reviewer; Schutzregeln dafür nicht lockern.
+Run it from a clean checkout of the policy revision recorded in the pending check (the default-branch commit that ran the pipeline); otherwise the script stops and names the commit to switch to. `--no-dispatch` never starts a correction run, even when automatic correction is enabled. `--dry-run` still reads GitHub through the publisher App and uses the Codex seat window. At most `limits.max_reviews_per_pr` published reviews are allowed per PR. How the session is isolated is described in [Clients](factory/clients.md#senior-reviewer-maintainer-local).
 
-## Orientierung
+Credentials live only in the login keychain of that Mac, never in a file, the repository or a GitHub secret:
 
-| Pfad | Inhalt |
+- `aicepeak-factory-codex-access-token`: a ChatGPT Business access token created at [chatgpt.com/admin/access-tokens](https://chatgpt.com/admin/access-tokens) with the Codex scope and a short validity window. Store it with `security add-generic-password -a "$USER" -s aicepeak-factory-codex-access-token -w` (the trailing `-w` prompts for the value, so it stays out of the shell history).
+- `aicepeak-factory-publisher-key`: the publisher App's private key PEM, stored base64-encoded because `security` prints multi-line values as hex: `security add-generic-password -a "$USER" -s aicepeak-factory-publisher-key -w "$(base64 -i key.pem)"`. Delete `key.pem` afterwards.
+
+Environment variables `CODEX_ACCESS_TOKEN` and `FACTORY_PUBLISHER_APP_PRIVATE_KEY` take precedence over the keychain; do not export them in shell profiles. To rotate the expiring token: create a replacement, update the item with `security add-generic-password -U ...`, run `--smoke`, then revoke the old token. GitHub-hosted runners never receive the Codex token: OpenAI intends access tokens for trusted machines and private runners, and the runners of this public repository are neither. [Access tokens](https://learn.chatgpt.com/docs/enterprise/access-tokens)
+
+## Shadow phase
+
+Until the senior review has proven precise on 10-20 real PRs:
+
+- `required_checks` in `factory/config.json` and `factory/github-settings.json` is only `factory/deterministic`. `settings.py` accepts exactly this set or both factory checks.
+- `factory/senior-review` is still published, and its PR comment is marked advisory.
+- `automatic_correction` is `false`. A review that requests changes labels the PR `needs-author-action`; the author fixes it in the working session with `factory-fix-review`. The Correction gate refuses dispatched corrections.
+
+A reviewed PR ends the shadow phase by adding `factory/senior-review` to both `required_checks` lists, followed by `settings.py apply`. Automatic correction is enabled later in a separate reviewed PR.
+
+## One-time activation by the repository owner
+
+The bootstrap of the empty remote is complete: the factory reached `main` with PR #1 on 2026-10-28. Humans review and merge every PR; no agent pushes to `main` or merges.
+
+1. Authenticate to GitHub as Gabriel (`Zerosteps1`, ID `115100163`) and prove administration. [GitHub access](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+2. Add Felix as the second verified maintainer before `settings.py apply`: verify Felix's actual account login, numeric ID and permission, add the entry to `maintainers` in `factory/config.json` and regenerate CODEOWNERS. A PR Gabriel opens needs another authorized human reviewer because GitHub forbids self-approval; do not loosen the protection rules for that.
+3. [Register two GitHub Apps](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) and install them only in the target repository. The exact permission split is in `factory/github-settings.json`: the publisher publishes checks and feedback, the writer writes correction branches. Enter the real IDs; no App gets a bypass. `python3 tools/factory/settings.py codeowners` verifies the human identities and writes CODEOWNERS. Commit both changes through a reviewed PR. [Setup and API checks](factory/github.md).
+4. For the settings checks, provide short-lived `FACTORY_PUBLISHER_APP_JWT` and `FACTORY_WRITER_APP_JWT`.
+5. Review `settings.py inspect`, then `settings.py diff`, and run `settings.py apply` deliberately. This installs two active rulesets (required checks without bypass, and default-branch updates only through human PR merges), keeps CODEOWNER approval and publisher-bound checks mandatory, and restricts the credential environment `factory-control` to the default branch. During the shadow phase the only required check is `factory/deterministic`.
+6. Only after `apply` and a fresh `inspect` that shows the environment limited to the default branch, add the environment secrets `FACTORY_PUBLISHER_APP_PRIVATE_KEY` and `FACTORY_WRITER_APP_PRIVATE_KEY`. The environment was created by an earlier failed run without a branch policy; a secret stored before the policy would be readable by workflows on any branch. `ANTHROPIC_API_KEY` and `CONTEXT7_API_KEY` are needed only for automatic correction and stay unused during the shadow phase. No `OPENAI_API_KEY` and no Codex token. Never store any of these as a repository secret or file. [Context7 access](https://context7.com/docs/resources/all-clients). Run `inspect` again; an empty diff and present secret names do not yet prove a working run.
+7. On the reviewer Mac, create both keychain items and run `local_review.py --smoke`.
+8. Run the image/client smoke, the authenticated model/MCP run and the [smoke PR](docs/work/FACTORY-SMOKE.md) with the deterministic gate enforced, the review advisory and no author automation. Record run and check IDs, head/base SHAs, the real correction and the new review. Release operation only then.
+
+## Orientation
+
+| Path | Content |
 |---|---|
-| `AGENTS.md`, `factory/policy.md`, `factory/config.json` | Verbindliche Grenzen, Modell, Budgets und Identitäten |
-| `.agents/skills/`, `.agents/roles.json` | Gemeinsame Quellen der vier Skills und Rollen |
-| `.codex/`, `.claude/`, `CLAUDE.md`, `.mcp.json` | Daraus erzeugte native Client-Adapter |
-| `.github/workflows/`, `tools/factory/` | Dispatcher, Prüfungen, Review, begrenzte Korrektur und Settings |
-| `factory/review.schema.json`, `factory/github-settings.json` | Reviewvertrag und gewünschte GitHub-Durchsetzung |
-| `docs/work/` | Versionierte Aufträge und Akzeptanzkriterien |
+| `AGENTS.md`, `factory/policy.md`, `factory/config.json` | Binding limits, model, budgets and identities |
+| `.agents/skills/`, `.agents/roles.json` | Shared sources of the four skills and roles |
+| `.codex/`, `.claude/`, `CLAUDE.md`, `.mcp.json` | Native client adapters generated from them |
+| `.github/workflows/`, `tools/factory/` | Dispatcher, checks, publication, bounded correction and settings |
+| `tools/factory/local_review.py` | Maintainer-local senior review |
+| `factory/review.schema.json`, `factory/github-settings.json` | Review contract and desired GitHub enforcement |
+| `docs/work/` | Versioned work orders and acceptance criteria |
 
-Nur dieses Repository, der freigegebene Auftrag und öffentliche Herstellerdokumentation sind Quellen. Frühere Projekte, Workbrain, private Chats, Notizen und persönliche Agentenkonfiguration sind ausgeschlossen.
+The only sources are this repository, the approved work order and public vendor documentation. Earlier projects, Workbrain, private chats, notes and personal agent configuration are excluded.

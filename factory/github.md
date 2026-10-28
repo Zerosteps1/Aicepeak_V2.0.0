@@ -1,10 +1,10 @@
-# GitHub-Betrieb und technische Quellen
+# GitHub operation and technical sources
 
-Stand: 27.10.2026. Implementierung und Sollzustand sind versioniert; **keine Remote-Durchsetzung ist bisher aktiviert**. Tatsächliche Belege und Blocker stehen in [evidence.md](evidence.md), die Bootstrap-Reihenfolge in [README](../README.md). Die Datei beschreibt die Factory, keine Produktarchitektur.
+Status: 2026-10-28. Implementation and desired state are versioned; **no remote enforcement is active yet**. Actual evidence and blockers are in [evidence.md](evidence.md), the activation order is in the [README](../README.md). This file describes the factory, not a product architecture.
 
-## Einstellungen prüfen und anwenden
+## Inspect and apply settings
 
-`factory/github-settings.json` enthält die Schutzvorgaben; `factory/config.json` die verifizierten Identitäten, App-IDs und den Default-Branch. Noch fehlende App-IDs blockieren die Aktivierung. Gabriel ist als `Zerosteps1` eingetragen; Felix wird erst nach Verifikation ergänzt.
+`factory/github-settings.json` holds the protection requirements; `factory/config.json` holds the verified identities, App IDs and the default branch. Missing App IDs block activation. Gabriel is recorded as `Zerosteps1`. Felix is added as the second maintainer after verification of the real account and before `settings.py apply`.
 
 ```sh
 python3 tools/factory/settings.py codeowners
@@ -13,69 +13,97 @@ python3 tools/factory/settings.py diff
 python3 tools/factory/settings.py apply
 ```
 
-`codeowners` prüft Login, numerische ID und Schreibberechtigung über GitHub und schreibt die lokale CODEOWNERS-Datei. Sie wird per PR übernommen. `inspect` und `diff` sind lesend. `apply` verändert ausschließlich die verwalteten Einstellungen, verweigert bekannte Blocker und liest den Zustand erneut zurück. Andere Rulesets bleiben bestehen. Apps, Secrets, Tarife und Merges werden nicht automatisch eingerichtet.
+`codeowners` checks login, numeric ID and write permission through GitHub and writes the local CODEOWNERS file, which is merged through a PR. `inspect` and `diff` are read-only. `apply` changes only the managed settings, refuses known blockers and reads the state back. Other rulesets stay in place. Apps, secrets, plans and merges are never set up automatically.
 
-Für Administration ist eine separat angemeldete menschliche `gh`-Identität nötig. Für die App-Prüfung werden kurzlebige `FACTORY_PUBLISHER_APP_JWT` und `FACTORY_WRITER_APP_JWT` als Secret-Umgebungsvariablen benötigt: echte App-JWTs, keine Installation-Tokens. Diese werden nach der [offiziellen JWT-Anleitung](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app) aus App-ID und privatem Schlüssel erzeugt. Das Prüfprogramm schreibt oder druckt sie nicht. Es prüft `/app`, Installation im Zielrepository, exakte Rechte und nicht suspendierten Zustand. Die Automatik erzeugt ihre kurzlebigen, auf das Zielrepository und benötigte Rechte beschränkten Installation-Tokens selbst. [Installation-Tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)
+Administration needs a separately authenticated human `gh` identity. The App check needs short-lived `FACTORY_PUBLISHER_APP_JWT` and `FACTORY_WRITER_APP_JWT` as secret environment variables: real App JWTs, not installation tokens. Generate them from App ID and private key following the [official JWT guide](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app). The checker neither writes nor prints them. It checks `/app`, the installation in the target repository, the exact permissions and that the App is not suspended. The automation creates its own short-lived installation tokens, limited to the target repository and the permissions it needs. [Installation tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)
 
-| Identität | Rechte | Verwendung |
+| Identity | Permissions | Use |
 |---|---|---|
-| Publisher-App | Contents read, Pull requests write, Checks write, Actions read, Metadata read | Authentifizierte Checks, PR-Rückmeldungen, Label und Budgetledger |
-| Writer-App | Contents write, Pull requests write, Metadata read | Ausschließlich validierter Patch auf den zugehörigen PR-Branch |
-| Dispatcher-GITHUB_TOKEN | Contents read, Pull requests read, Checks read, Actions write | Metadaten prüfen, veraltete Runs abbrechen, zentralen Lauf starten |
-| Review-/Test-Host | Je Job ausgewiesene Leserechte | Prüfmaterial beziehen; kein GitHub-Token im Modellworker/Testcontainer |
+| Publisher App | Contents read, Pull requests write, Checks write, Actions read, Metadata read | Authenticated checks, PR feedback, labels and budget ledger |
+| Writer App | Contents write, Pull requests write, Metadata read | Only the validated patch onto the matching PR branch |
+| Dispatcher `GITHUB_TOKEN` | Contents read, Pull requests read, Checks read, Actions write | Check metadata, cancel stale runs, start the central run |
+| Test host (GitHub runner) | Read permissions listed per job | Fetch check material; no GitHub token in the model worker or test container |
+| Senior reviewer (maintainer's Mac) | Publisher App installation token (key from the login keychain); the maintainer's own `gh` login for a correction dispatch | Read the pending receipt and publish the review; the Codex session gets no GitHub credential |
 
-Apps haben keine Administration-, Workflow- oder Bypassrechte. `contents:write` beziehungsweise PR-Schreibrechte allein verbieten Merges nicht; die folgenden Rulesets erzwingen die Identitätsgrenze.
+The Apps have no Administration, Workflow or bypass permissions. `contents:write` or PR write permissions alone do not forbid merges; the rulesets below enforce the identity boundary.
 
-## Durchsetzung nach Aktivierung
+## Enforcement after activation
 
-Zwei Rulesets gelten gemeinsam auf dem tatsächlichen Default-Branch:
+Two rulesets apply together on the actual default branch:
 
-1. **Qualität, ohne Bypass:** PR-Pflicht, mindestens eine menschliche CODEOWNER-Freigabe, Verwerfen veralteter Freigaben, Freigabe des letzten Pushes, gelöste Reviewthreads, aktueller Basisstand, Schutz vor Löschen/Force-Push sowie `factory/deterministic` und `factory/senior-review` mit erwarteter Publisher-`integration_id`.
-2. **Updates nur durch Menschen:** Default-Branch-Updates gesperrt; ausschließlich verifizierte menschliche User erhalten PR-only-Bypass dieser zweiten Regel. Die erste Regel bleibt für alle unverändert verpflichtend. Kein Agent/Bot erhält eine Ausnahme, kein Auto-Merge.
+1. **Quality, without bypass:** PR required, at least one human CODEOWNER approval, stale approvals dismissed, approval of the last push, resolved review threads, up-to-date base, protection against deletion and force push, and the required checks from `required_checks`, each bound to the expected publisher `integration_id` (see [required checks](#required-checks-during-and-after-the-shadow-phase)).
+2. **Updates by humans only:** default-branch updates are blocked; only verified human users get a PR-only bypass of this second rule. The first rule stays mandatory for everyone. No agent or bot gets an exception, and there is no auto-merge.
 
-Die Regelkombination folgt der dokumentierten [Aggregation von Rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets#about-rule-layering). Reale Negativproben bleiben erforderlich. Administratoren können Einstellungen grundsätzlich verändern; die Factory behauptet keine Unveränderlichkeit gegenüber dem Repository-Administrator. [Rulesets-API](https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset), [verfügbare Regeln](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
+The combination follows the documented [aggregation of rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets#about-rule-layering). Real negative probes remain necessary. Administrators can always change settings; the factory does not claim immutability against the repository administrator. [Rulesets API](https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset), [available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 
-CODEOWNERS aus dem geschützten Basisstand schützt alle Dateien, insbesondere Regeln und sich selbst. Eine Änderung im PR ersetzt dessen eigene Owner nicht. Bei nur einem Maintainer kann Gabriel App-erstellte PRs freigeben; für einen von Gabriel selbst erstellten PR wird ein weiterer berechtigter menschlicher Reviewer benötigt. [CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)
+CODEOWNERS from the protected base protects all files, in particular the rules and itself. A change inside a PR does not replace that PR's own owners. With a single maintainer, Gabriel can approve App-created PRs, but a PR Gabriel opens needs another authorized human reviewer; this is why Felix is added before activation. [CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)
 
-Das Environment `factory-control` erlaubt genau den Default-Branch vom Typ `branch`, keine gleichnamigen Tags oder Wildcards. Darin liegen `OPENAI_API_KEY`, beide App-Privatschlüssel und für die Autoren `CONTEXT7_API_KEY` sowie bei Claude `ANTHROPIC_API_KEY`. Gleichnamige Repository-Secrets werden als unsicherer Zustand abgewiesen. Default-GITHUB_TOKEN: read, keine PR-Freigabe. Nur GitHub-eigene Actions, volle SHA-Pins und `cache-mode:none`. [Environments](https://docs.github.com/en/rest/deployments/environments#create-or-update-an-environment), [Branch-Policies](https://docs.github.com/en/rest/deployments/branch-policies#create-a-deployment-branch-policy), [Actions-Rechte](https://docs.github.com/en/rest/actions/permissions), [cache-mode](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#cache-mode)
+The environment `factory-control` allows exactly the default branch of type `branch`, no same-named tags or wildcards. It holds the required secrets `FACTORY_PUBLISHER_APP_PRIVATE_KEY` and `FACTORY_WRITER_APP_PRIVATE_KEY`. `ANTHROPIC_API_KEY` and `CONTEXT7_API_KEY` are optional and needed only for automatic correction; they stay unused during the shadow phase. There is no `OPENAI_API_KEY` and no Codex access token: the senior review runs on the maintainer's Mac, and GitHub-hosted runners never receive the Codex token. Same-named repository secrets are rejected as an unsafe state. Default `GITHUB_TOKEN`: read, no PR approval. Only GitHub-owned Actions, full SHA pins and `cache-mode: none`. [Environments](https://docs.github.com/en/rest/deployments/environments#create-or-update-an-environment), [branch policies](https://docs.github.com/en/rest/deployments/branch-policies#create-a-deployment-branch-policy), [Actions permissions](https://docs.github.com/en/rest/actions/permissions), [cache-mode](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#cache-mode)
 
-Das öffentliche Ziel wurde verifiziert; Tarif und administrative Endpunkte nicht. Bei einem privaten persönlichen Repository verlangt die aktuelle Dokumentation Pro für diese Rulesets/CODEOWNERS und Environment-Funktionen. `settings.py` blockiert private Aktivierung ohne belegten passenden Plan. Zusätzliche Environment-Reviewfreigaben sind tarifabhängig und werden hier nicht vorausgesetzt. [Verfügbarkeit](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets), [Environment-Tarife](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
+**Strict order: deployment branch policy before secrets** (review finding F2). The first pipeline run created `factory-control` automatically without a deployment branch policy. A secret stored in that state would be available to workflows on any branch. Therefore:
 
-## Ausführbarer Review-Fix-Ablauf
+1. Run `settings.py apply`; it restricts the environment to the default branch.
+2. Run `settings.py inspect` and `diff`: the environment must show the custom branch policy with exactly the default branch, and the diff must be empty.
+3. Only then add the environment secrets.
 
-`factory-dispatch.yml` verarbeitet PR-Erstellung, neue Commits, Wiederöffnung, Ready/Draft, Änderungen, menschliche PR-Kommentare und Default-Branch-Updates. Es lädt nur die fixierte geschützte Workflowrevision. Für Reviews/Inline-Kommentare liefert `factory-feedback.yml` ohne Rechte, Checkout oder Secrets nur numerische Referenzen. Der vertrauenswürdige `workflow_run`-Dispatcher liest Run, Workflow, menschlichen Autor und PR-Zuordnung erneut über GitHub. Manipulierte Titel oder gleich formatierte Kommentare sind keine Autorisierung. [Ereignisse](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), [sicheres pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
+`settings.py` does not enforce this order yet: `inspect` reports a missing policy as a pending change, not as a blocker. Follow the order manually.
 
-`factory.yml` läuft ausschließlich über `workflow_dispatch` auf dem geschützten Default-Branch. Seine Jobs trennen Snapshot, secretfreie Tests, werkzeugloses Astra-Review, deterministischen Publisher, Autor-Patch-Erzeugung und vertrauenswürdigen Writer. Native Dispatch-Jobchecks werden nicht als PR-Gate ausgegeben; die Publisher-App erstellt die beiden separaten Pflichtchecks am geprüften PR-Head. [Required Checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks), [Checks-API](https://docs.github.com/en/rest/checks/runs)
+The public target was verified; plan and administrative endpoints were not. For a private personal repository the current documentation requires Pro for these rulesets/CODEOWNERS and environment features. `settings.py` blocks private activation without a documented matching plan. Additional environment review approvals depend on the plan and are not assumed here. [Availability](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets), [environment plans](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
 
-Jeder Lauf bindet Repository, PR, Head-, Base- und Policy-SHA, Run-ID und Run-Attempt. Prüfnachweise werden gegen authentifizierte GitHub-Run-/Workflow-/Jobdaten geprüft. Die Testorchestrierung kommt aus der Basis; Kandidatencode läuft ohne Netzwerk, Secrets, Home oder Docker-Socket im Container. Der Publisher akzeptiert kein PR-eigenes Erfolg-JSON. Nicht vollständige, übersprungene, abgebrochene oder widersprüchliche Nachweise geben nicht frei. [Run-API](https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run), [Workflow-Kontext](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#github-context)
+## Executable review and fix flow
 
-Autorarbeit startet nur aus dem authentifizierten App-Review desselben Runs und Heads. Der Allowlist-Runner erhält keine GitHub-Zugangsdaten. Der Writer prüft Run, Artifact-ID/Digest, genau einen begrenzten Patch, Arbeitsauftrag, erlaubte Pfade und aktuellen Head; er führt keine Artefaktprogramme aus. Änderungen an Kontrollregeln sind ausgeschlossen. Ein App-Push soll den nächsten Prüflauf auslösen; dieser tatsächliche Folgetrigger ist Bestandteil des noch offenen Smoke-Nachweises. [Artefakte](https://docs.github.com/en/rest/actions/artifacts#get-an-artifact), [Folgetrigger](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow)
+`factory-dispatch.yml` handles PR creation, new commits, reopening, ready/draft, edits, human PR comments and default-branch updates. It loads only the pinned protected workflow revision. For reviews and inline comments, `factory-feedback.yml` provides only numeric references, without permissions, checkout or secrets. The trusted `workflow_run` dispatcher reads run, workflow, human author and PR association again from GitHub. Manipulated titles or comments formatted the same way are no authorization. [Events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), [secure pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
 
-Branch-Updates verwenden atomar [`updateRefs`](https://docs.github.com/en/graphql/reference/git#updaterefs) mit `beforeOid`, `afterOid` und `force:false`. Damit wird auch ein zwischenzeitliches Zurücksetzen auf einen Vorfahren abgewiesen. REST-`force:false` allein würde nur Fast-Forward prüfen. Quelle gelesen; echte Mutation noch nicht ausgeführt.
+`factory.yml` runs only through `workflow_dispatch` on the protected default branch. A normal run is **snapshot → tests → publish**: `Snapshot` binds the PR and reserves the `factory/senior-review` check, `Deterministic tests` runs secret-free, and `Publish gates` creates `factory/deterministic`. No job calls a model and no job holds a model credential for review. Native dispatch job checks are not used as PR gates; the publisher App creates the separate factory checks on the checked PR head. [Required checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks), [Checks API](https://docs.github.com/en/rest/checks/runs)
 
-## Feedback, Wiederholung und Fehlerbehebung
+When the deterministic checks pass, `Publish gates` leaves `factory/senior-review` **in progress** ("Awaiting senior review") with a pending receipt: phase `awaiting_review`, the authenticated snapshot (repository, PR, head/base/policy SHA, run ID and attempt, files, work order, feedback digest, draft and control-change flags) and the test evidence. The check summary names the command for the maintainer. When the checks fail, the PR is a draft or the snapshot is stale, both checks are completed as `failure`, no review is requested and the PR is labeled `needs-author-action`. The maintainer-local reviewer `python3 tools/factory/local_review.py --pr N` completes the pending check through the publisher App; see [Clients](clients.md#senior-reviewer-maintainer-local).
 
-Normale Kommentare, Reviews und Inline-Kommentare verifizierter Menschen werden im nächsten Lauf erneut gelesen. Der Review beantwortet fachlich relevante Fragen; korrigierte oder bestrittene Findings erhalten den Autorenbericht. Neues Feedback invalidiert alten Kontext. Menschliche Threads bleiben bis zur menschlichen Klärung offen. Bei erweitertem Scope muss zuerst ein überprüfbarer Auftrag im Repository freigegeben werden.
+Every run binds repository, PR, head, base and policy SHA, run ID and run attempt. Check evidence is verified against authenticated GitHub run, workflow and job data. Test orchestration comes from the base; candidate code runs in a container without network, secrets, home or Docker socket. The publisher accepts no success JSON from the PR. Incomplete, skipped, cancelled or contradictory evidence does not approve. [Run API](https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run), [workflow context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#github-context)
 
-Ein PR-weites, App-authentifiziertes Ledger verweist auf echte Check-Datensätze und erhält Budgets/Runden über Rebase und Force-Push. Maximal drei automatische Korrekturen. Derselbe Kontext darf nicht doppelt verarbeitet werden. Die Serialisierung verhindert parallele Writer. Nur authentifizierte Runs für alte Heads/Basisstände werden aktiv abgebrochen; reine Titeländerungen unterbrechen keinen gültigen Lauf. Frische Standprüfungen vor jeder relevanten Stufe, vor Veröffentlichung und atomarem Push bleiben zusätzlich erforderlich. Bereits gestartete Provideranfragen können bis zum Abbruch Kosten erzeugen.
+Author work starts only from a separate correction dispatch for a published review:
 
-Ohne neuen Commit kann ein verifizierter Maintainer bewusst neu starten:
+```sh
+gh workflow run factory.yml --ref main -f pr=123 -f correction=<check_id>
+```
+
+`local_review.py` sends this itself when a review requests changes and `automatic_correction` is `true`; a maintainer can also send it by hand. The run skips the snapshot and starts with the **Correction gate**, which refuses unless `automatic_correction` is `true` (it is `false` during the shadow phase), the run is attempt 1, the triggering actor is a configured human maintainer, the check is an authentic, completed publisher `factory/senior-review` check of that PR with a valid `changes_requested` review, the PR changes no control paths, the run executes the reviewed policy revision, and head, base, handoff and feedback are still current. If `main` moved on after the review, the gate refuses; the next pipeline run and review come first. The gate then reserves an author round (`factory/author-reservation`, `limits.max_run_cost_usd`) bound to its own run ID.
+
+The `Author correction` and `Push correction` jobs check that the reservation belongs to the current correction run. The allowlist runner gets no GitHub credentials. The writer checks run, artifact ID/digest, exactly one bounded patch, work order, allowed paths and current head; it runs no artifact programs. Changes to control rules are excluded. An App push should trigger the next check run; this actual follow-up trigger is part of the still open smoke evidence. [Artifacts](https://docs.github.com/en/rest/actions/artifacts#get-an-artifact), [follow-up triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow)
+
+Branch updates use the atomic [`updateRefs`](https://docs.github.com/en/graphql/reference/git#updaterefs) mutation with `beforeOid`, `afterOid` and `force:false`. This also rejects an intermediate reset to an ancestor. REST `force:false` alone would only check fast-forward. Source read; no real mutation executed yet.
+
+## Required checks during and after the shadow phase
+
+| Phase | `required_checks` (config and settings spec) | Senior review | Correction |
+|---|---|---|---|
+| Shadow phase (now) | `["factory/deterministic"]` | Published by the maintainer-local reviewer, advisory; the PR comment says so | `automatic_correction: false`; the Correction gate refuses; authors fix findings in their working session |
+| After the shadow phase | `["factory/deterministic", "factory/senior-review"]` | Required: a pending or failed review blocks the merge | Enabled later in a separate reviewed PR |
+
+`settings.py` accepts exactly these two sets, and `factory/github-settings.json` must list the same checks as `factory/config.json`. Each required check is bound to the publisher's `integration_id`. The switch is a reviewed control PR followed by `settings.py diff` and `apply`.
+
+## Feedback, retry and troubleshooting
+
+Ordinary comments, reviews and inline comments of verified humans are read again in the next run. The review answers relevant questions; corrected or disputed findings receive the author report. New feedback invalidates old context. Human threads stay open until humans resolve them. An expanded scope first needs a reviewable work order approved in the repository.
+
+A PR-wide, App-authenticated ledger references real check records and keeps budgets and rounds across rebase and force push. At most three automatic corrections (`limits.max_rounds`) and at most `limits.max_reviews_per_pr` published senior reviews per PR. The same context must not be processed twice. Serialization prevents parallel writers. Only authenticated runs for old heads or bases are actively cancelled; pure title edits do not interrupt a valid run. Fresh state checks before every relevant stage, before publication and before the atomic push remain required as well. Provider requests that already started can incur costs until cancelled.
+
+Without a new commit, a verified maintainer can deliberately start a new run:
 
 ```sh
 gh workflow run factory.yml --ref main -f pr=123 -f retry=true
 ```
 
-`123` durch die konkrete PR-Nummer ersetzen. GitHubs „Re-run jobs“ wird verweigert, damit keine alten Budgetreservierungen erneut benutzt werden. Ein Retry setzt weder Runden noch Budget zurück. Bei ausgeschöpftem Budget, Konflikt, fehlenden Credentials oder fehlendem Fortschritt: `needs-author-action` und der konkrete Launcher-/Skill-Weg im PR. Kein stiller Clientwechsel.
+Replace `123` with the actual PR number. GitHub's "Re-run jobs" is refused so that old budget reservations are not reused. A retry resets neither rounds nor budget. Every new pipeline run leaves a new pending senior review; run `local_review.py --pr 123` again. With exhausted budget, conflicts, missing credentials or no progress: `needs-author-action` and the concrete launcher/skill path in the PR. No silent client switch.
 
-Fehleranalyse: zuerst Run/Check-ID und Head vergleichen, dann Doctor sowie `settings.py inspect/diff`; Providerzugang separat mit `engine.py model-smoke`. Regeländerungen, erhöhte Limits und dauerhaft relevante Entscheidungen benötigen PR und menschliche Freigabe. Keine Schutzregel zum Erzwingen von Grün entfernen.
+Troubleshooting: first compare run/check ID and head, then the doctor and `settings.py inspect/diff`; check reviewer access separately with `python3 tools/factory/local_review.py --smoke` on the reviewer Mac. Rule changes, raised limits and lasting decisions need a PR and human approval. Never remove a protection rule to force a green result.
 
-## Verifizierte Pins und Updates
+## Verified pins and updates
 
-Am 27.10.2026 anhand offizieller Release-/Commitseiten verifiziert:
+Verified on 2026-10-27 against official release and commit pages:
 
-| Action | Version | SHA / Quelle |
+| Action | Version | SHA / source |
 |---|---|---|
 | checkout | v7.0.1 | [`3d3c42e5aac5ba805825da76410c181273ba90b1`](https://github.com/actions/checkout/commit/3d3c42e5aac5ba805825da76410c181273ba90b1) |
 | upload-artifact | v7.0.2 | [`cf430e030ddbb5b0abf93d22962f4752f3646cd9`](https://github.com/actions/upload-artifact/commit/cf430e030ddbb5b0abf93d22962f4752f3646cd9) |
 
-Nur diese beiden Actions werden verwendet. Action-, Docker- und Clientpaket-Updates laufen als Dependabot-PRs. Prüfbinärversionen und SHA256 stehen in `factory/tools.lock.json`; deren Upgrade benötigt einen expliziten Factory-Auftrag und erneute Binary-/Workflow-Prüfung. Keine Produkt-Paketmanager oder Dummy-Prüfungen. Quellen betreffen technische Verträge, keine Produktanforderungen.
+Only these two Actions are used. Action, Docker and client package updates arrive as Dependabot PRs. Check-tool versions and SHA-256 sums are in `factory/tools.lock.json`; upgrading them needs an explicit factory work order and a new binary and workflow check. No product package managers or dummy checks. The sources cover technical contracts, not product requirements.

@@ -17,6 +17,10 @@ on:
         description: Explicit maintainer retry; previous cost/round reservations remain charged
         type: boolean
         default: false
+      wif_smoke:
+        description: Test main-only Anthropic federation and one tiny model call; no PR pipeline
+        type: boolean
+        default: false
 
 permissions: {}
 cache-mode: none
@@ -25,9 +29,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  wif-smoke:
+    name: Anthropic federation smoke
+    if: inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Exchange GitHub identity and verify Claude inference
+        run: python3 tools/factory/wif_smoke.py
+
   snapshot:
     name: Snapshot
-    if: github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10

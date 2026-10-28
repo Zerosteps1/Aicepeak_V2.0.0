@@ -407,6 +407,7 @@ def make_handler(policy: BrokerPolicy, secrets: dict):
             if not hmac.compare_digest(token, "Bearer " + secrets["job"]):
                 self.reply(401, "invalid job credential")
                 return
+            reservation = None
             try:
                 if self.headers.get("Transfer-Encoding") or self.headers.get("Content-Encoding"):
                     raise Denied("encoded requests are not supported")
@@ -455,7 +456,7 @@ def make_handler(policy: BrokerPolicy, secrets: dict):
                 self.reply(403, str(exc))
             except urllib.error.HTTPError as exc:
                 # A rejected request produced no tokens; return its reservation.
-                policy.settle(locals().get("reservation"), {})
+                policy.settle(reservation, {})
                 self.reply(502, f"upstream rejected request ({exc.code})")
             except (urllib.error.URLError, TimeoutError, OSError):
                 self.close_connection = True

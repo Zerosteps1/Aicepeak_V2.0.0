@@ -289,6 +289,20 @@ class SessionBoundaries(unittest.TestCase):
             with self.assertRaisesRegex(Blocked, 'clean|dirty|uncommitted'):
                 session.preflight(self.gh, self.candidate, 'docs/work/TEST.md', [])
 
+    def test_incomplete_review_with_findings_is_shown_as_blocked_not_discarded(self):
+        finding = {'id': 'F-001', 'kind': 'defect', 'confidence': 'high', 'priority': 'P1', 'file': 'tools/factory/example.py',
+                   'line': 1, 'impact': 'wrong value', 'evidence': 'VALUE = 2', 'requirement': 'r', 'minimal_fix': 'm', 'verification': 'v'}
+        def incomplete(*args):
+            review, events = self.model(*args)
+            review.update(outcome='changes_requested', complete=False, limitations=['No tests were executed.'], findings=[finding])
+            return review, events
+        with patch.object(local_review, 'run_codex', side_effect=incomplete):
+            result = session.preflight(self.gh, self.candidate, 'docs/work/TEST.md', [])
+        review = result['review']
+        self.assertEqual((review['outcome'], review['complete'], review['findings']), ('blocked', False, [finding]))
+        self.assertIn('No tests were executed.', review['limitations'])
+        self.assertIn('outcome changes_requested; shown as blocked', review['limitations'][-1])
+
     def test_unverified_human_cannot_spend_model_quota(self):
         self.gh.user['id'] = 1
         with self.assertRaisesRegex(Blocked, 'maintainer|human'):

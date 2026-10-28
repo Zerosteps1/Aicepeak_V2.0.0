@@ -433,7 +433,7 @@ def probe_documentation(token: str):
 
 
 def container_flags(name: str, *, worker=False) -> list[str]:
-    args = ["docker", "run", "--rm", "--name", name, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=256", "--memory=4g", "--cpus=2", "--user", f"{os.getuid()}:{os.getgid()}", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,mode=1777"]
+    args = ["docker", "run", "--rm", "--init", "--name", name, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=256", "--memory=4g", "--cpus=2", "--user", f"{os.getuid()}:{os.getgid()}", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,mode=1777"]
     if worker:
         args += ["--dns", "127.0.0.1", "--workdir", "/work"]
     return args
@@ -637,7 +637,9 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
         try:
             command(["docker", "network", "create", "--internal", network], env=env)
             command(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", f"o=size=512m,uid={os.getuid()},gid={os.getgid()},mode=0700", volume], env=env)
-            work_mount = ["--mount", f"type=volume,source={volume},target=/work"]
+            # volume-nocopy: otherwise each new container copies the image's /work owner
+            # (1000:1000, 0755) onto the empty tmpfs root and the host-uid seed cannot write.
+            work_mount = ["--mount", f"type=volume,source={volume},target=/work,volume-nocopy"]
             # Docker's local tmpfs driver discards data when its final mount is
             # released. Keep one trusted, network-disabled mount alive across
             # seeding, authoring and extraction.

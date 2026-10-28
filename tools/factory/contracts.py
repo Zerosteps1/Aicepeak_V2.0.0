@@ -52,6 +52,8 @@ def validate(value, schema, location="review"):
     if typ == "string":
         require(schema.get("minLength", 0) <= len(value) <= schema.get("maxLength", 100000), f"{location}: string length")
         if "pattern" in schema:
+            # This protocol deliberately validates whole strings. Its generation
+            # schemas must anchor patterns because JSON Schema uses search semantics.
             require(re.fullmatch(schema["pattern"], value) is not None, f"{location}: pattern")
     if typ in ("integer", "number"):
         require(schema.get("minimum", -float("inf")) <= value <= schema.get("maximum", float("inf")), f"{location}: numeric bounds")

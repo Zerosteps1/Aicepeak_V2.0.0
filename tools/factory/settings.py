@@ -138,6 +138,10 @@ def config_blockers(config):
         errors.append("publisher and writer must be different GitHub Apps")
     if config.get("required_checks") not in (SHADOW_CHECKS, CHECKS):
         errors.append("required_checks must be the deterministic check (shadow phase) or both factory App checks")
+    if type(config.get("require_second_human_review", True)) is not bool:
+        errors.append("require_second_human_review must be a boolean")
+    if type(config.get("maintainer_check_bypass", False)) is not bool:
+        errors.append("maintainer_check_bypass must be a boolean")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", str(config.get("environment", ""))):
         errors.append("environment must be an explicit simple name")
     if config.get("workflow") != ".github/workflows/factory.yml":
@@ -151,15 +155,22 @@ def desired_state(config, spec):
         errors.append("unsupported or mismatched github-settings.json")
     if errors:
         raise Blocked("; ".join(errors))
+    # Existing configurations keep their second-review requirement unless the
+    # versioned policy explicitly selects the maintainer's own merge decision.
+    second_review = config.get("require_second_human_review", True)
+    # Checks always run; when the versioned policy allows it, verified human maintainers may
+    # merge a PR without them. GitHub records each bypass; Apps and bots never get one.
+    maintainers = [{"actor_type": "User", "actor_id": m["id"], "bypass_mode": "pull_request"} for m in config["maintainers"]]
     conditions = {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}
     quality = {
-        "name": spec["quality_ruleset_name"], "target": "branch", "enforcement": "active", "bypass_actors": [],
+        "name": spec["quality_ruleset_name"], "target": "branch", "enforcement": "active",
+        "bypass_actors": copy.deepcopy(maintainers) if config.get("maintainer_check_bypass", False) else [],
         "conditions": conditions,
         "rules": [
             {"type": "deletion"}, {"type": "non_fast_forward"},
             {"type": "pull_request", "parameters": {
-                "dismiss_stale_reviews_on_push": True, "require_code_owner_review": True,
-                "require_last_push_approval": True, "required_approving_review_count": 1,
+                "dismiss_stale_reviews_on_push": True, "require_code_owner_review": second_review,
+                "require_last_push_approval": second_review, "required_approving_review_count": int(second_review),
                 "required_review_thread_resolution": True}},
             {"type": "required_status_checks", "parameters": {
                 "do_not_enforce_on_create": False, "strict_required_status_checks_policy": True,
@@ -168,7 +179,7 @@ def desired_state(config, spec):
     human = {
         "name": spec["human_ruleset_name"], "target": "branch", "enforcement": "active",
         "conditions": conditions,
-        "bypass_actors": [{"actor_type": "User", "actor_id": m["id"], "bypass_mode": "pull_request"} for m in config["maintainers"]],
+        "bypass_actors": maintainers,
         "rules": [{"type": "update", "parameters": {"update_allows_fetch_and_merge": False}}]}
     return {"rulesets": [quality, human], "environment": {
         "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}},
@@ -309,6 +320,12 @@ def project(actual, expected):
     """Drop response metadata, but preserve extra security-relevant rule/actor entries."""
     if isinstance(expected, dict):
         actual = actual if isinstance(actual, dict) else {}
+        # GitHub omits this whole optional parameter object when its sole
+        # exception is disabled. Absence of the update rule still remains drift.
+        if (actual.get('type') == expected.get('type') == 'update'
+                and 'parameters' not in actual
+                and expected.get('parameters') == {'update_allows_fetch_and_merge': False}):
+            actual = {**actual, 'parameters': {'update_allows_fetch_and_merge': False}}
         return {key: project(actual.get(key), val) for key, val in expected.items()}
     if isinstance(expected, list):
         if not isinstance(actual, list):

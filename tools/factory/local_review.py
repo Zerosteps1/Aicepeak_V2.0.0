@@ -7,7 +7,10 @@ submits result evidence through the publisher App. The serialized main workflow 
 claims and completes the senior gate. Never run this script on GitHub-hosted runners.
 """
 import argparse
+from contextlib import contextmanager
+import ctypes
 import base64
+import copy
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 import json
 import os
@@ -171,6 +174,47 @@ def check_freshness(freshness, deadline):
     require(time.monotonic() < deadline, 'reviewer deadline exceeded')
 
 
+_review_process_lock = threading.Lock()
+
+
+@contextmanager
+def review_child_scope():
+    """Own orphaned reviewer descendants on Linux, even without a container init."""
+    if sys.platform != 'linux':
+        yield
+        return
+    require(_review_process_lock.acquire(blocking=False), 'another local reviewer process is already supervised')
+    prctl, previous, changed = None, ctypes.c_int(), False
+    try:
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        prctl.restype = ctypes.c_int
+        require(prctl(37, ctypes.addressof(previous), 0, 0, 0) == 0, 'cannot read Linux child supervision state')
+        require(prctl(36, 1, 0, 0, 0) == 0, 'cannot enable Linux child supervision')
+        changed = True
+        yield
+    finally:
+        try:
+            if changed:
+                require(prctl(36, previous.value, 0, 0, 0) == 0, 'cannot restore Linux child supervision state')
+        finally:
+            _review_process_lock.release()
+
+
+def reap_review_children(process):
+    if sys.platform != 'linux':
+        return
+    deadline = time.monotonic() + REVIEW_TERMINATE_SECONDS
+    while True:
+        try:
+            child, _ = os.waitpid(-process.pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if child == 0:
+            require(time.monotonic() < deadline, 'reviewer descendants were not reaped after SIGKILL')
+            time.sleep(0.01)
+
+
 def stop_review_process(process):
     """Stop the complete dedicated process group, including children ignoring SIGTERM."""
     try:
@@ -193,9 +237,15 @@ def stop_review_process(process):
         process.communicate(timeout=REVIEW_TERMINATE_SECONDS)
     except subprocess.TimeoutExpired:
         raise Blocked('reviewer process group did not stop after SIGKILL') from None
+    reap_review_children(process)
 
 
 def run_review_process(args, material, *, env, cwd, timeout, freshness):
+    with review_child_scope():
+        return supervised_review_process(args, material, env=env, cwd=cwd, timeout=timeout, freshness=freshness)
+
+
+def supervised_review_process(args, material, *, env, cwd, timeout, freshness):
     deadline = time.monotonic() + timeout
     check_freshness(freshness, deadline)
     process = None
@@ -219,21 +269,19 @@ def run_review_process(args, material, *, env, cwd, timeout, freshness):
                 pending_input = None  # communicate resumes its previous write; never resend the prompt.
                 check_freshness(freshness, deadline)
             else:
-                if process.returncode:
-                    stop_review_process(process)
                 check_freshness(freshness, deadline)
                 return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
-    except BaseException:
-        if process is not None:
-            stop_review_process(process)
-        raise
     finally:
-        if old_handler is not None:
-            signal.signal(signal.SIGTERM, old_handler)
-        if process is not None:
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
+        try:
+            if process is not None:
+                stop_review_process(process)
+        finally:
+            if old_handler is not None:
+                signal.signal(signal.SIGTERM, old_handler)
+            if process is not None:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
 
 
 def run_codex(instructions, material, schema_path, config, freshness=None):
@@ -269,6 +317,14 @@ def run_codex(instructions, material, schema_path, config, freshness=None):
         return json.loads(raw), events
     except ValueError:
         raise Blocked('reviewer returned no JSON review') from None
+
+
+def file_bound_schema(schema, files):
+    """Generation schema naming the exact changed files: scope and finding paths cannot drift into prose."""
+    bound = copy.deepcopy(schema)
+    bound['properties']['scope']['items']['enum'] = list(files)
+    bound['properties']['findings']['items']['properties']['file']['enum'] = list(files)
+    return bound
 
 
 def pending_review(gh, pr, config):
@@ -384,11 +440,15 @@ def review_pr(gh, pr, config, dispatch, dry_run):
     claim_id = uuid.uuid4().hex
     dispatch_review(config, pr, check['id'], claim_id)
     check, record = wait_for_coordination(gh, config, pr, check['id'], claim_id)
+    schema = json.loads((ROOT / 'factory/review.schema.json').read_text())
     try:
-        review, events = run_codex(instructions, material, ROOT / 'factory/review.schema.json', config,
-                                   freshness=lambda: require_active_claim(gh, config, snapshot, record['claim']))
+        with tempfile.TemporaryDirectory(prefix='factory-review-schema-') as directory:
+            schema_path = Path(directory) / 'schema.json'
+            schema_path.write_text(json.dumps(file_bound_schema(schema, snapshot['files'])))
+            review, events = run_codex(instructions, material, schema_path, config,
+                                       freshness=lambda: require_active_claim(gh, config, snapshot, record['claim']))
         reviewer = {**queue.REVIEWER_IDENTITY, **events}
-        validate_review(review, json.loads((ROOT / 'factory/review.schema.json').read_text()), snapshot)
+        validate_review(review, schema, snapshot)
         queue.validate_reviewer(reviewer)
     except (Blocked, ValueError, OSError, subprocess.SubprocessError):
         # Fixed text only; CLI/provider diagnostics may contain private material.

@@ -64,8 +64,11 @@ def git(root, *args):
     # Object/index reads only. No status/diff of worktree files: those can invoke
     # candidate-configured clean filters. No global config, object fetches or replacements.
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'GIT_CONFIG_GLOBAL': os.devnull,
-           'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0', 'GIT_OPTIONAL_LOCKS': '0', 'GIT_ATTR_NOSYSTEM': '1'}
-    result = subprocess.run(['git', '--no-pager', '--no-lazy-fetch', '--no-replace-objects', '--literal-pathspecs',
+           'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0', 'GIT_OPTIONAL_LOCKS': '0', 'GIT_ATTR_NOSYSTEM': '1',
+           'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': ''}
+    # Bookworm Git 2.39.5 honors the environment guard, but not the CLI flag
+    # introduced in 2.45. The empty transport allowlist independently denies helpers.
+    result = subprocess.run(['git', '--no-pager', '--no-replace-objects', '--literal-pathspecs',
                              '-C', str(root), '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
                              '-c', 'core.attributesfile=/dev/null', *args], env=env, capture_output=True, timeout=30)
     require(result.returncode == 0, 'unsupported Git checkout or missing commit object')
@@ -249,7 +252,7 @@ def preflight(gh, candidate, task, context):
         'No tests were executed by this command; do not claim test success. Assess the available source evidence '
         'and state missing necessary context honestly. No author session/history is available.')
     review, events = model_result(instructions, {'binding': binding, 'files': files, 'sources': sources,
-                                 'test_evidence': {'executed': False}}, advisory_schema(), config)
+                                 'test_evidence': {'executed': False}}, local_review.file_bound_schema(advisory_schema(), files), config)
     require(review['scope'] == list(dict.fromkeys(review['scope'])) and set(review['scope']) == set(files), 'incomplete diff scope')
     require(len({f['id'] for f in review['findings']}) == len(review['findings']), 'duplicate finding ID')
     for finding in review['findings']:
@@ -257,6 +260,11 @@ def preflight(gh, candidate, task, context):
         require(finding.get('kind', 'defect') == 'defect' or finding['priority'] == 'P2',
                 'only defects may have blocking priority; missing evidence belongs in limitations')
     blocking = any(f['priority'] in ('P0', 'P1') for f in review['findings'])
+    if not review['complete'] and review['outcome'] != 'blocked':
+        # Advisory only: show the findings as blocked instead of discarding the whole review.
+        review['limitations'] = review['limitations'][:29] + [
+            f"Reviewer returned an incomplete review with outcome {review['outcome']}; shown as blocked."]
+        review['outcome'] = 'blocked'
     require(review['complete'] or review['outcome'] == 'blocked', 'incomplete review must block')
     if review['outcome'] == 'pass':
         require(review['complete'] and not review['limitations'] and not blocking, 'invalid advisory pass')

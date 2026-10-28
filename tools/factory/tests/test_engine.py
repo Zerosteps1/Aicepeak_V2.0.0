@@ -321,7 +321,14 @@ class EngineBoundaries(unittest.TestCase):
             def request(self,method,path,data=None):
                 if path=='/repos/fixture/repo':return {'full_name':'fixture/repo','node_id':'fixture-node'}
                 assert path=='/graphql' and method=='POST'
-                update=data['variables']['input']['updates'][0]
+                payload=data['variables']['input']
+                # Live schema (GraphQL introspection 2026-10-28): UpdateRefsInput has clientMutationId,
+                # repositoryId and refUpdates; 'updates' does not exist (live push failed, run 40766190552).
+                # Transitional: this trusted file also tests the next candidate, so it accepts the old name
+                # only until the follow-up PR switches engine.update_branch to refUpdates and removes it.
+                assert set(payload)<={'clientMutationId','repositoryId','refUpdates','updates'},payload
+                update=(payload.get('refUpdates') or payload['updates'])[0]
+                assert set(update)<={'name','beforeOid','afterOid','force'},update
                 assert update['force'] is False
                 if update.get('beforeOid')!=self.head:return {'errors':[{'message':'ref changed'}]}
                 self.head=update['afterOid']

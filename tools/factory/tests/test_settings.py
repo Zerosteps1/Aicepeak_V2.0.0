@@ -137,13 +137,28 @@ class SettingsTests(unittest.TestCase):
                 self.assertFalse(pr['require_code_owner_review'])
                 self.assertFalse(pr['require_last_push_approval'])
                 self.assertTrue(pr['required_review_thread_resolution'])
-                self.assertEqual(quality['bypass_actors'], [])
+                # Only the versioned maintainer_check_bypass setting may let verified humans skip checks.
+                expected = [{'actor_type': 'User', 'actor_id': m['id'], 'bypass_mode': 'pull_request'}
+                            for m in candidate['maintainers']] if candidate.get('maintainer_check_bypass') else []
+                self.assertEqual(quality['bypass_actors'], expected)
                 gates = next(r['parameters'] for r in quality['rules'] if r['type'] == 'required_status_checks')
                 self.assertTrue(gates['strict_required_status_checks_policy'])
                 self.assertEqual(gates['required_status_checks'], [
                     {'context': check, 'integration_id': candidate['publisher_app_id']} for check in settings.CHECKS])
                 self.assertTrue(all(a['actor_type'] == 'User' and a['bypass_mode'] == 'pull_request'
                                     for a in human['bypass_actors']))
+
+    def test_maintainer_bypass_keeps_checks_and_never_covers_apps(self):
+        quality, human = settings.desired_state({**config(), 'maintainer_check_bypass': True}, SPEC)['rulesets']
+        self.assertEqual(quality['bypass_actors'], [{'actor_type': 'User', 'actor_id': 101, 'bypass_mode': 'pull_request'}])
+        gates = next(r['parameters'] for r in quality['rules'] if r['type'] == 'required_status_checks')
+        self.assertEqual([c['context'] for c in gates['required_status_checks']], SPEC['required_checks'])
+        self.assertTrue(all(c['integration_id'] == 201 for c in gates['required_status_checks']))
+        self.assertEqual(human['bypass_actors'], quality['bypass_actors'])
+        self.assertEqual(settings.desired_state(config(), SPEC)['rulesets'][0]['bypass_actors'], [])
+        for value in (None, 0, 1, 'true', []):
+            with self.subTest(value=value), self.assertRaises(settings.Blocked):
+                settings.desired_state({**config(), 'maintainer_check_bypass': value}, SPEC)
 
     def test_second_human_review_setting_rejects_non_boolean_values(self):
         for value in (None, 0, 1, 'false', 'true', []):

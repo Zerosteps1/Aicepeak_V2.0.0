@@ -97,10 +97,14 @@ def codex_arguments(schema_path, output_path, workdir, catalog_path, instruction
 
 
 def check_tool_surface(items):
-    """Fail closed unless the model-visible tools are exactly the inert set verified for 0.164.0."""
-    for item in items:
-        if item.get('type') != 'additional_tools':
-            continue
+    """Fail closed unless the model-visible tools are exactly the inert set verified for 0.164.0.
+
+    Nested tools are read from the exec description, which may omit deferred ones; the
+    disabled code-mode host is what makes every exec call fail (regression-tested).
+    """
+    announced = [item for item in items if item.get('type') == 'additional_tools']
+    require(len(announced) == 1, 'reviewer tool surface: expected exactly one tool announcement')
+    for item in announced:
         for group in item.get('tools', []):
             require(group.get('type') == 'namespace' and group.get('name') == 'functions', 'reviewer tool surface: unexpected tool group')
             for tool in group.get('tools', []):

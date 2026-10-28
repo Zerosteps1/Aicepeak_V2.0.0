@@ -1,6 +1,6 @@
 # Build from trusted base only. Runtime resolves this image to its sha256 ID.
 # No provider credentials or host home directories enter the image.
-FROM node:22.21.1-bookworm-slim@sha256:25b3eb23a00590b7499f2a2ce939322727fcce1b15fdd69754fcd09536a3ae2c
+FROM node:26.12.0-bookworm-slim@sha256:742a0fe7320e09e0321222b68165e6ac731d30470e7ea7f98f9bfc3a6e1034fe
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends python3 git ca-certificates ripgrep \

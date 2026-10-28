@@ -43,6 +43,7 @@
     },
     "scope": {
       "type": "array",
+      "description": "Exactly the changed file paths from the binding, verbatim, one path per item; no prose.",
       "items": {
         "type": "string",
         "minLength": 1,

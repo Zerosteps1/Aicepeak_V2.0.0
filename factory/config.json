@@ -1,6 +1,7 @@
 {
   "repository": "Zerosteps1/Aicepeak_V2.0.0",
   "default_branch": "main",
+  "require_second_human_review": false,
   "northstar_path": "AICEPEAK_NORDSTERN.md",
   "northstar_approved": false,
   "product_checks_ready": false,

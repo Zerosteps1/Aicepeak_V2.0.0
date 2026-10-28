@@ -14,7 +14,7 @@ Verbindlich sind dieser Auftrag, `factory/policy.md`, `factory/config.json` und 
 
 ## Nicht-Ziele
 
-Kein Produktstack, Anwendungscode, Datenmodell, Produktdeployment oder vorsorgliche Produktverzeichnisse. Kein Agent-Merge, keine Ausnahmen von Schutzregeln, keine zweite Nordstern-Kopie, kein erfundener Maintainer.
+Kein Produktstack, Anwendungscode, Datenmodell, Produktdeployment oder vorsorgliche Produktverzeichnisse. Kein Agent-Merge, keine eigenmächtigen Ausnahmen von Schutzregeln, keine zweite Nordstern-Kopie, kein erfundener Maintainer. Die ausdrücklich genehmigte einmalige Bootstrap-Reparatur ist unten abgegrenzt.
 
 ## Umsetzung und Abnahme
 
@@ -34,3 +34,7 @@ Das Zielrepository ist per öffentlicher GitHub-API als leer verifiziert (keine 
 ## Arbeitsabgrenzung
 
 Factory-Werkzeuge: Python-Standardbibliothek; Client-CLIs und Prüfwerkzeuge sind getrennt versioniert. Lokale Vorbereitung ist kein Nachweis aktiver GitHub-Durchsetzung. Nicht ausgeführte Integrations-/Abnahmeszenarien bleiben in `factory/evidence.md` offen.
+
+## Bestätigte Merge-Regel vom 28.10.2026
+
+Gabriel hat ausdrücklich entschieden: „Ohne zweite Freigabe, Pflichtchecks bleiben bestehen“. Gabriel oder Felix darf einen PR nach beiden erfolgreichen App-gebundenen Pflichtchecks und geklärten Threads selbst mergen. Eine zusätzliche GitHub-Approval des jeweils anderen entfällt; CODEOWNERS bleibt als Zuständigkeitsnachweis erhalten. Die menschliche Merge-Identität, PR-Pflicht und alle technischen Prüfungen bleiben verbindlich, ohne dauerhaften Check-Bypass für Menschen oder Bots. Prüfkriterien: null erforderliche Zusatz-Approvals, keine verpflichtende Codeowner-/Last-Push-Approval, beide strikten App-Checks, weiterhin ausschließlich menschliche PR-Merges. Ein Terminal-Werkzeug für die ausdrücklich genehmigte einmalige Bootstrap-Reparatur darf nur den geprüften PR-Head nach bewusster menschlicher Eingabe mergen und muss anschließend beide Pflichtchecks wiederherstellen; ein Fehler darf kein falsches Erfolgssignal erzeugen.

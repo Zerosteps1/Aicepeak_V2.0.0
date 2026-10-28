@@ -23,8 +23,20 @@ class Gates(unittest.TestCase):
         self.assertEqual(validate_review(self.review,self.schema,self.snapshot),'pass')
 
     def test_blocking_finding_cannot_be_published_as_pass(self):
-        self.review['findings']=[dict(id='F-1',priority='P1',file='src/math.py',line=2,impact='wrong total',evidence='2+2 yields 5',requirement='sum',minimal_fix='correct addition',verification='2+2 equals 4')]
+        self.review['findings']=[dict(id='F-1',kind='defect',confidence='high',priority='P1',file='src/math.py',line=2,impact='wrong total',evidence='2+2 yields 5',requirement='sum',minimal_fix='correct addition',verification='2+2 equals 4')]
         with self.assertRaises(Blocked): validate_review(self.review,self.schema,self.snapshot)
+
+    def test_confidence_never_hides_a_blocking_defect(self):
+        self.review.update(outcome='changes_requested', findings=[dict(id='F-1', kind='defect', confidence='low', priority='P1', file='src/math.py', line=2, impact='wrong total', evidence='2+2 yields 5', requirement='sum', minimal_fix='correct addition', verification='2+2 equals 4')])
+        self.assertEqual(validate_review(self.review,self.schema,self.snapshot), 'changes_requested')
+        self.review['outcome']='pass'
+        with self.assertRaisesRegex(Blocked,'invalid pass'):
+            validate_review(self.review,self.schema,self.snapshot)
+
+    def test_questions_are_not_disguised_as_blocking_defects(self):
+        self.review.update(outcome='changes_requested', findings=[dict(id='F-1', kind='question', confidence='low', priority='P1', file='src/math.py', line=2, impact='uncertain', evidence='missing context', requirement='sum', minimal_fix='ask for context', verification='inspect requirement')])
+        with self.assertRaisesRegex(Blocked,'only defects'):
+            validate_review(self.review,self.schema,self.snapshot)
 
     def test_missing_scope_api_errors_and_limits_never_green(self):
         for field, value in [('scope',[]),('complete',False),('limitations',['file missing']),('effort','medium'),('run_id',4)]:
@@ -54,9 +66,11 @@ class Gates(unittest.TestCase):
         with self.assertRaises(Blocked):authentic_check(check,self.snapshot,self.config)
 
     def test_no_commands_in_handoff(self):
-        body='```factory-handoff\n'+json.dumps({'runner':'codex','task':'docs/work/A.md','owner':'human-fixture'})+'\n```'
-        self.assertEqual(handoff(body,self.config)['runner'],'codex')
-        with self.assertRaises(Blocked):handoff(body.replace('codex','sh -c evil'),self.config)
+        body='```factory-handoff\n'+json.dumps({'runner':'claude','task':'docs/work/A.md','owner':'human-fixture'})+'\n```'
+        self.assertEqual(handoff(body,self.config)['runner'],'claude')
+        with self.assertRaises(Blocked):handoff(body.replace('claude','sh -c evil'),self.config)
+        # Only the Claude author runs automatically (ADR-0005); a Codex author needs a reviewed change.
+        with self.assertRaisesRegex(Blocked,'allowlisted'):handoff(body.replace('claude','codex'),self.config)
         with self.assertRaises(Blocked):handoff(body+'\n'+body,self.config)
 
 

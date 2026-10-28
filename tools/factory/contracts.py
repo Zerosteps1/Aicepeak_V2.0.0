@@ -66,6 +66,7 @@ def validate_review(review, schema, snapshot):
     require(len(review["scope"]) == len(set(review["scope"])), "duplicate scope")
     require(len({f["id"] for f in review["findings"]}) == len(review["findings"]), "duplicate finding ID")
     for finding in review["findings"]:
+        require(finding["kind"] == "defect" or finding["priority"] == "P2", "only defects may have blocking priority; missing evidence belongs in limitations")
         safe_path(finding["file"])
         require(finding["file"] in snapshot["files"], "finding outside reviewed diff")
     blocking = any(f["priority"] in ("P0", "P1") for f in review["findings"])

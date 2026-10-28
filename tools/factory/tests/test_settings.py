@@ -24,7 +24,7 @@ def config():
     return {"repository": settings.REPOSITORY, "default_branch": "main",
             "maintainers": [{"login": "test-human", "id": 101}],
             "publisher_app_id": 201, "writer_app_id": 202,
-            "required_checks": settings.CHECKS, "environment": "factory-control",
+            "required_checks": SPEC["required_checks"], "environment": "factory-control",
             "workflow": ".github/workflows/factory.yml"}
 
 
@@ -125,6 +125,20 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(pr["required_approving_review_count"], 1)
         self.assertTrue(pr["require_code_owner_review"])
         self.assertTrue(pr["dismiss_stale_reviews_on_push"])
+
+    def test_shadow_phase_requires_only_deterministic_check(self):
+        def required(checks):
+            spec = {**SPEC, "required_checks": checks}
+            desired = settings.desired_state({**config(), "required_checks": checks}, spec)
+            rules = [r for r in desired["rulesets"][0]["rules"] if r["type"] == "required_status_checks"]
+            return [c["context"] for c in rules[0]["parameters"]["required_status_checks"]]
+        self.assertEqual(required(["factory/deterministic"]), ["factory/deterministic"])
+        self.assertEqual(required(settings.CHECKS), settings.CHECKS)
+        for checks in (["factory/senior-review"], [], ["factory/deterministic", "other"]):
+            with self.subTest(checks=checks), self.assertRaises(settings.Blocked):
+                required(checks)
+        with self.assertRaises(settings.Blocked):
+            settings.desired_state({**config(), "required_checks": settings.CHECKS}, {**SPEC, "required_checks": ["factory/deterministic"]})
 
     def test_equal_state_is_idempotent_despite_response_metadata_and_order(self):
         state = report()

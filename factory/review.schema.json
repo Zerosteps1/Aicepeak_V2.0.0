@@ -139,6 +139,22 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 3000
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "defect",
+              "question",
+              "recommendation"
+            ]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
           }
         },
         "required": [
@@ -150,7 +166,9 @@
           "evidence",
           "requirement",
           "minimal_fix",
-          "verification"
+          "verification",
+          "kind",
+          "confidence"
         ],
         "additionalProperties": false
       },

@@ -27,18 +27,18 @@ Paths A–H as evaluated in section 4.4 of the review report; combined into oper
 
 Chosen: **S1 = reviewer through path D plus automatic correction through path A.**
 
-**Reviewer (path D).** GPT-6 Astra, effort `high`, run as `codex exec --ephemeral --sandbox read-only --output-schema factory/review.schema.json` under a **ChatGPT Business access token** (`CODEX_ACCESS_TOKEN`, `codex login --with-access-token`) on the maintainer's **trusted machine**, in a new session: a fresh `CODEX_HOME` that contains only the project trust entry, no personal configuration and no memories. The result is validated against the schema and the SHA binding (`contracts.validate_review`) and published as `factory/senior-review` through the Publisher App. OpenAI documents access tokens for trusted automation under the workspace identity and excludes public GitHub runners, so the reviewer never runs on GitHub Actions. Usage is recorded as message/token counters instead of USD.
+**Reviewer (path D).** GPT-6 Astra, effort `high`, run by `tools/factory/local_review.py` as `codex exec --ephemeral --sandbox read-only --output-schema factory/review.schema.json` under a **ChatGPT Business access token** on the maintainer's **trusted machine**, in a new session: a fresh `CODEX_HOME` and `HOME`, no personal configuration, no memories, an empty working directory. The token reaches Codex only as the `CODEX_ACCESS_TOKEN` environment variable of that one process (no saved login). The session is tool-less: Codex 0.164.0 feature flags alone leave a code-mode `exec` tool with shell and patch access, so the reviewer also generates a model catalog without shell and patch tools, disables agents, and checks the model-visible tool surface with `codex debug prompt-input` before every run (fail closed). The result is validated against the schema and the SHA binding (`contracts.validate_review`) and published as `factory/senior-review` through the Publisher App. OpenAI documents access tokens for trusted automation under the workspace identity and excludes public GitHub runners, so the reviewer never runs on GitHub Actions. Usage is recorded as turn/token counters instead of USD and capped by `limits.max_reviews_per_pr`.
 
-**Author (path A).** Claude Code behind the **existing credential broker**, using the API key of the Console organisation linked to the **Claude Team plan**, funded by the plan's monthly API credit (available since 2026-10-07, "never charged to your Claude plan", pooled up to 500 USD, stops when exhausted). The worker still holds no credential; the USD ledger stays for the author. `--max-turns` and `--max-budget-usd` are added as a second brake. Automatic correction is enabled only after the shadow phase.
+**Author (path A).** Claude Code behind the **existing credential broker**, billed to the Console organisation linked to the **Claude Team plan** and funded by the plan's monthly API credit (available since 2026-10-07, "never charged to your Claude plan", pooled up to 500 USD, stops when exhausted). The pipeline holds **no Anthropic key**: the author job's GitHub OIDC identity is exchanged through **Workload Identity Federation** for a short-lived Anthropic token. The broker performs and refreshes the exchange; the rule is pinned to this repository, the `factory-control` environment, `main` and `factory.yml`, with scope `workspace:inference`. The worker still holds no credential; the USD ledger stays for the author and settles against provider-reported usage. `--max-turns` and `--max-budget-usd` are added as a second brake. Automatic correction is enabled only after the shadow phase.
 
 **No `OPENAI_API_KEY`.** It is removed from the pipeline, the broker configuration and `factory/github-settings.json` (PR B1).
 
 **Credential placement.**
 
-- Reviewer machine keychain: `CODEX_ACCESS_TOKEN` (short lifetime) and a Publisher App private key.
-- Environment `factory-control` (default branch only, branch policy before secrets): `ANTHROPIC_API_KEY` of the Team organisation, `CONTEXT7_API_KEY`, `FACTORY_PUBLISHER_APP_PRIVATE_KEY`, `FACTORY_WRITER_APP_PRIVATE_KEY`.
+- Reviewer machine login keychain: the ChatGPT Business access token (short lifetime) and the Publisher App private key.
+- Environment `factory-control` (default branch only, branch policy before secrets): `FACTORY_PUBLISHER_APP_PRIVATE_KEY`, `FACTORY_WRITER_APP_PRIVATE_KEY`, `CONTEXT7_API_KEY`. No `ANTHROPIC_API_KEY`; the federation IDs in `factory/config.json` are not secret.
 
-**Interlock.** The local reviewer publishes the same receipt format as today. On `changes_requested` it starts the author job with `gh workflow run factory.yml -f pr=N -f correction=<check_id>`; `engine.py author` verifies the authentic check receipt, binding and reservation as today. The GitHub review job disappears; `publish_stage` accepts reviews only from authenticated Publisher receipts.
+**Interlock.** The pipeline leaves `factory/senior-review` in progress with an authenticated receipt; the local reviewer completes that check with the same receipt format as before. On `changes_requested` it starts a separate run with `gh workflow run factory.yml -f pr=N -f correction=<check_id>`. Its Correction gate re-verifies the Publisher receipt, the maintainer actor and the policy revision before it reserves an author round; author and push jobs verify that correction run. The GitHub review job disappears.
 
 ### Consequences
 
@@ -50,8 +50,8 @@ Chosen: **S1 = reviewer through path D plus automatic correction through path A.
 
 Before activation:
 
-- The Console organisation is linked to the Team plan (7-day waiting period), and a test run `claude -p` through the broker appears in the Console as credit usage, not as an invoice.
-- A review run on the smoke PR in a fresh `CODEX_HOME` with the access token produces a schema-valid review that passes the binding check and appears as `factory/senior-review`; `codex login status` in that home shows the workspace sign-in by access token, no API key; the run appears in the Codex usage dashboard.
+- The Console organisation is linked to the Team plan (7-day waiting period); the first author run shows a successful exchange in the Console's workload identity authentication history and appears as credit usage of the rule's workspace, not as an invoice.
+- `python3 tools/factory/local_review.py --smoke` passes with the access token, and a review run on the smoke PR produces a schema-valid review that passes the binding check and appears as `factory/senior-review`; the run appears in the Codex usage dashboard.
 - `grep -r OPENAI_API_KEY` finds no mandatory path after PR B1.
 - `--max-budget-usd` triggers with a deliberately low value.
 

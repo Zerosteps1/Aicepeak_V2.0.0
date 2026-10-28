@@ -2,7 +2,7 @@
 
 Produktquelle: [AICEPEAK_NORDSTERN.md](AICEPEAK_NORDSTERN.md). Der Inhalt bleibt unverändert; `northstar_approved: false` und `product_checks_ready: false` sperren Produktentwicklung bis zur ausdrücklichen Freigabe und passenden Produktprüfungen.
 
-Die Softwarefabrik ist als überprüfbare Kontrolländerung vorbereitet. **Noch nicht als einsatzbereit abgenommen.** Maßgeblich sind [Policy](factory/policy.md), [Konfiguration](factory/config.json) und [echte Prüfnachweise](factory/evidence.md). Keine alten Projekte, privaten Chats, Workbrain-Inhalte oder persönlichen Agenten-Memories als Projektquelle.
+Die Softwarefabrik ist auf `main` installiert; die GitHub-Schutzregeln und benötigten Environment-Secrets sind geprüft aktiv. **Die vollständige Live-Abnahme steht noch aus.** Maßgeblich sind [Policy](factory/policy.md), [Konfiguration](factory/config.json) und [echte Prüfnachweise](factory/evidence.md). Keine alten Projekte, privaten Chats, Workbrain-Inhalte oder persönlichen Agenten-Memories als Projektquelle.
 
 ## Gemeinsamer Einstieg für Gabriel und Felix
 
@@ -11,7 +11,7 @@ Gabriel nutzt `Zerosteps1`; Felix nutzt `truFelix-Zentru` und `ftrutschnig`. Bei
 Ein sauberer Control-Checkout bleibt auf `main`; Codearbeit erfolgt in einer getrennten Arbeitskopie. Kein `git pull` oder Branchwechsel über fremde uncommittete Änderungen hinweg.
 
 ```sh
-git clone git@github.com:Zerosteps1/Aicepeak_V2.0.0.git Aicepeak-factory
+git clone https://github.com/Zerosteps1/Aicepeak_V2.0.0.git Aicepeak-factory
 cd Aicepeak-factory
 git switch main
 python3 tools/factory/doctor.py --root . --runner claude
@@ -71,15 +71,14 @@ Maximal zwei Korrekturrunden und sechs beanspruchte Reviews je PR; Fehler, Abbru
 gh workflow run factory.yml --repo Zerosteps1/Aicepeak_V2.0.0 --ref main -f pr=123 -f retry=true
 ```
 
-Es gibt keine automatische Merge-Berechtigung. Die Zielkonfiguration verlangt beide erfolgreichen App-gebundenen Checks. Gabriel oder Felix entscheidet anschließend selbst über den Merge; eine zweite menschliche Freigabe ist nicht vorgeschrieben. CODEOWNERS hält die Zuständigkeit fest. Rote Pflichtchecks bleiben auch für Menschen blockierend. Die aktuelle Änderung wirkt nach dem Merge und dem geprüften Ruleset-Abgleich.
+Es gibt keine automatische Merge-Berechtigung. Die aktiven Regeln verlangen beide erfolgreichen App-gebundenen Checks. Gabriel oder Felix entscheidet anschließend selbst über den Merge; eine zweite menschliche Freigabe ist nicht vorgeschrieben. CODEOWNERS hält die Zuständigkeit fest. Rote Pflichtchecks bleiben auch für Menschen blockierend. Der vollständige Soll-/Ist-Abgleich vom 28.10.2026 meldete keine Abweichungen; [Nachweis](factory/evidence.md#live-aktivierung-am-28102026).
 
-## Aktivierung nach menschlichem Merge
+## Stand der Aktivierung und verbleibende Abnahme
 
-1. Diesen Kontrolländerungs-PR menschlich prüfen/mergen. Bestehende Schutzregeln nicht umgehen. Die neuen Workflows werden nicht vor ihrem Merge zur eigenen Prüfgrundlage.
-2. Frisches `main` laden. `verify.py` vollständig auf einem Host mit localhost/Docker-Zugriff ausführen. Dann Container-/MCP-Smoke und Reviewer-Smoke auf beiden Geräten. Die Syntax-/Unit-Prüfung ersetzt diese Schritte nicht.
-3. Das Environment `factory-control` ist bereits exakt auf Branch `main` begrenzt; beide App-Secrets sind laut verifiziertem Inspector vorhanden. Noch fehlendes `CONTEXT7_API_KEY` dort interaktiv hinterlegen, niemals als Repository-Secret. Kein OpenAI-API-Key für den Reviewer.
-4. Nach [GitHub-Anleitung](factory/github.md) `settings.py inspect`/`diff` ausführen, den konkreten Diff prüfen und `apply` ausführen. Es richtet beide Pflichtchecks und menschliche Merge-Grenzen ein; danach `inspect`/`diff` erneut prüfen. Keine Behauptung aktiver Regeln vor diesem Schritt.
-5. [Smoke-PR](docs/work/FACTORY-SMOKE.md): sauberer Gegenfall, semantischer Defekt, Reviewer-Finding, Writer-Korrektur, echter Folgetrigger, neues Review, menschliches Feedback; zusätzlich negative SHA/App/Secret/Merge-Grenzen. Ergebnisse mit Run-/Check-/SHA-Bezug festhalten. Erst dann „einsatzbereit“.
+1. Menschlicher Bootstrap und Linux-Reparatur sind mit PR #9 und #11 übernommen. Die einmalig genehmigte Ausnahme für #11 ist geschlossen; beide Pflichtchecks sind wieder aktiv. Keine dauerhafte Bootstrap-Ausnahme übernehmen.
+2. Environment `factory-control`: ausschließlich Branch `main`; Publisher-/Writer-Schlüssel und `CONTEXT7_API_KEY` vorhanden. Die beiden Rulesets entsprechen der versionierten Vorgabe. `settings.py inspect`/`diff` dient dem erneuten Abgleich; `apply` ist nur bei einem tatsächlich geprüften Unterschied nötig. Kein OpenAI-API-Key für den Reviewer.
+3. Host-/Containergrenze und Gabriels Astra-Anmeldung wurden getestet; die authentifizierte Claude-Skill-Erkennung, native MCP-Aufrufe und Felix' eigener Reviewer-Smoke sind gesonderte offene Nachweise. Die Syntax-/Unit-Prüfung ersetzt sie nicht.
+4. [Smoke-PR](docs/work/FACTORY-SMOKE.md): sauberer Gegenfall, semantischer Defekt, Reviewer-Finding, Writer-Korrektur, echter Folgetrigger, neues Review, menschliches Feedback; zusätzlich negative SHA/App/Secret/Merge-Grenzen. Ergebnisse mit Run-/Check-/SHA-Bezug festhalten. Erst nach dieser Abnahme „einsatzbereit“.
 
 ```sh
 python3 tools/factory/verify.py --root .

@@ -1,6 +1,6 @@
 # GitHub operation and technical sources
 
-Status: 2026-10-28. Implementation and desired state are versioned; **no remote enforcement is active yet**. Actual evidence and blockers are in [evidence.md](evidence.md), the activation order is in the [README](../README.md). This file describes the factory, not a product architecture.
+Status: 2026-10-28. The factory is on `main`; both rulesets, App identities and the main-only credential environment are verified active. **The complete live acceptance is still pending.** Actual evidence and blockers are in [evidence.md](evidence.md), the operating entry points are in the [README](../README.md). This file describes the factory, not a product architecture.
 
 ## Inspect and apply settings
 
@@ -12,7 +12,7 @@ von App, Installation und exakten Rechten wurde mit dem korrigierten Inspector
 in Gabriels Terminal erfolgreich ausgeführt; die übermittelte Ausgabe bestätigt
 die Installationen `176168187` (Publisher) und `176168111` (Writer).
 Ein zweiter lesender Lauf nach Gabriels Konfigurationsänderung bestätigte für
-`factory-control` ausschließlich Branch `main`. Der letzte Inspector-Lauf aus Gabriels Terminal bestätigt inzwischen beide App-Secrets. Review-Umstellung und vollständige Aktivierung bleiben separate Abnahmeschritte.
+`factory-control` ausschließlich Branch `main`. Der letzte vollständige Abgleich aus Gabriels Terminal nach PR #11 bestätigt beide App-Secrets und `CONTEXT7_API_KEY`, keine Blocker und keine Konfigurationsabweichungen. Die Review-Umstellung ist auf `main`; die tatsächliche Review-Fix-Abnahme bleibt gesondert nachzuweisen.
 
 Der App-Prüfweg sendet JWTs direkt per HTTPS als `Authorization: Bearer` und
 erlaubt nur die beiden lesenden Identitäts-/Installationsabfragen. `gh` bleibt
@@ -24,11 +24,11 @@ falsch, da gh 2.87.0 das Schema `token` verwendet.
 Vor dem Setzen von App-Secrets zuerst `inspect` ausführen und für `factory-control`
 die ausschließlich auf `main` begrenzte Branch-Policy nachweisen. Nicht pauschal
 `apply` ausführen, um fehlende Secrets zu beheben: es aktiviert auch Pflichtchecks.
-Die aktuell auf `main` vorhandene Server-Review-Implementierung benötigt noch
-einen OpenAI-API-Zugang; der getestete lokale Business-Reviewer aus PR #5 ist noch
-nicht gemergt. Erst die geprüfte Umstellung und den echten Review-Fix-Test
-abschließen, bevor neue Pflichtchecks aktiviert werden. Kein Setup-Schritt
-erzeugt eine Ausnahme von bereits aktiven Schutzregeln.
+Der lokale Business-Reviewer ist über den zusammengeführten PR #9 und die
+Reparatur #11 auf `main`; er benötigt keinen OpenAI-API-Schlüssel. GitHub
+koordiniert und veröffentlicht, der Modelllauf erfolgt auf dem Maintainer-Gerät.
+Die einmalig ausdrücklich genehmigte Installation von #11 ist abgeschlossen;
+beide Pflichtchecks wurden wiederhergestellt. Sie ist kein allgemeiner Bypass.
 
 ```sh
 python3 tools/factory/settings.py codeowners
@@ -72,7 +72,7 @@ The environment `factory-control` allows exactly the default branch of type `bra
 
 `settings.py` does not enforce this order yet: `inspect` reports a missing policy as a pending change, not as a blocker. Follow the order manually.
 
-The public target was verified; plan and administrative endpoints were not. For a private personal repository the current documentation requires Pro for these rulesets/CODEOWNERS and environment features. `settings.py` blocks private activation without a documented matching plan. Additional environment review approvals depend on the plan and are not assumed here. [Availability](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets), [environment plans](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
+The public target and the managed administrative settings were verified through GitHub and the maintainer's authenticated inspection. The reported plan is `null`; no private-plan entitlement is inferred from this public repository. `settings.py` blocks private activation without a documented matching plan. Recheck feature availability before changing visibility; additional environment review approvals are not assumed. [Availability](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets), [environment plans](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
 
 ## Executable review and fix flow
 
@@ -100,7 +100,7 @@ Branch updates use the atomic [`updateRefs`](https://docs.github.com/en/graphql/
 
 The reviewed target configuration requires both `factory/deterministic` and `factory/senior-review`, bound to publisher App 5510081. `automatic_correction: true` enables the validated Claude runner after merge; missing credentials, model errors, invalid evidence and exhausted budgets block rather than becoming skipped approvals. The earlier draft's advisory-only shadow phase is not the target state requested by the maintainer.
 
-The current remote rulesets remain inactive until an authorized human reviews `settings.py diff`, applies the target and verifies it again. Existing controls are not weakened. Before operational acceptance run the genuine review/correction/writer smoke and identity-negative probes. A new trusted workflow cannot validate itself before it exists on the default branch: this completion PR requires the documented bootstrap review, independent local evidence and human merge first.
+The current remote rulesets are active and match the versioned configuration. The maintainer's post-merge `diff` returned `changes: []`, `blockers: []`, no missing environment secrets and `configuration_ready: true`; the two rulesets were also read independently through the connector. This confirms administrative readiness, not full operation. Before operational acceptance complete the genuine review/correction/writer smoke and identity-negative probes. Keep normal checks enabled; the documented one-off bootstrap exception for #11 is closed.
 
 ## Feedback, retry and troubleshooting
 

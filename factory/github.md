@@ -6,6 +6,31 @@ Stand: 27.10.2026. Implementierung und Sollzustand sind versioniert; **keine Rem
 
 `factory/github-settings.json` enthält die Schutzvorgaben; `factory/config.json` die verifizierten Identitäten, App-IDs und den Default-Branch. Noch fehlende App-IDs blockieren die Aktivierung. Gabriel ist als `Zerosteps1` eingetragen; Felix wird erst nach Verifikation ergänzt.
 
+Nachtrag 28.10.2026: Gabriel hat Publisher-App `5510081` und Writer-App `5510093`
+registriert und die Rechte gemäß Tabelle gesetzt. Die authentifizierte Prüfung
+von App, Installation und exakten Rechten wurde mit dem korrigierten Inspector
+in Gabriels Terminal erfolgreich ausgeführt; die übermittelte Ausgabe bestätigt
+die Installationen `176168187` (Publisher) und `176168111` (Writer).
+Ein zweiter lesender Lauf nach Gabriels Konfigurationsänderung bestätigte für
+`factory-control` ausschließlich Branch `main`. App-Secrets, Review-Umstellung
+und die vollständige Aktivierung sind weiterhin separat offen.
+
+Der App-Prüfweg sendet JWTs direkt per HTTPS als `Authorization: Bearer` und
+erlaubt nur die beiden lesenden Identitäts-/Installationsabfragen. `gh` bleibt
+der administrative Transport mit der eigenen menschlichen Anmeldung. JWTs
+gehören nicht in Kommandozeilenargumente; `GH_TOKEN` allein wäre für App-JWTs
+falsch, da gh 2.87.0 das Schema `token` verwendet.
+[Geprüfter CLI-Quellstand](https://github.com/cli/cli/blob/v2.87.0/api/http_client.go).
+
+Vor dem Setzen von App-Secrets zuerst `inspect` ausführen und für `factory-control`
+die ausschließlich auf `main` begrenzte Branch-Policy nachweisen. Nicht pauschal
+`apply` ausführen, um fehlende Secrets zu beheben: es aktiviert auch Pflichtchecks.
+Die aktuell auf `main` vorhandene Server-Review-Implementierung benötigt noch
+einen OpenAI-API-Zugang; der getestete lokale Business-Reviewer aus PR #5 ist noch
+nicht gemergt. Erst die geprüfte Umstellung und den echten Review-Fix-Test
+abschließen, bevor neue Pflichtchecks aktiviert werden. Kein Setup-Schritt
+erzeugt eine Ausnahme von bereits aktiven Schutzregeln.
+
 ```sh
 python3 tools/factory/settings.py codeowners
 python3 tools/factory/settings.py inspect

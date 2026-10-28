@@ -15,6 +15,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from urllib.parse import quote
 
 REPOSITORY = "Zerosteps1/Aicepeak_V2.0.0"
@@ -33,6 +35,11 @@ class APIError(Blocked):
         super().__init__(f"GitHub API {method} {endpoint} failed (HTTP {status or 'unknown'}); verify access and plan support")
 
 
+class NoAppRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, 'App redirect refused', headers, fp)
+
+
 class GitHub:
     def __init__(self, token_env=None):
         self.token_env = token_env
@@ -40,15 +47,13 @@ class GitHub:
     def request(self, method, endpoint, body=None):
         if not endpoint.startswith("/") or endpoint.startswith("//"):
             raise Blocked("Only relative api.github.com endpoints are accepted")
+        if self.token_env:
+            return self.app_request(method, endpoint, body)
         command = ["gh", "api", "--hostname", "github.com", "--method", method,
                    "-H", "Accept: application/vnd.github+json", "-H", f"X-GitHub-Api-Version: {API_VERSION}", endpoint]
         environment = os.environ.copy()
-        if self.token_env:
-            token = environment.get(self.token_env)
-            if not token:
-                raise Blocked(f"Missing {self.token_env}; cannot verify App identity and installation")
-            environment["GH_TOKEN"] = token
-            environment.pop("GITHUB_TOKEN", None)
+        for name in ('FACTORY_PUBLISHER_APP_JWT', 'FACTORY_WRITER_APP_JWT'):
+            environment.pop(name, None)
         if body is not None:
             command += ["--input", "-"]
         result = subprocess.run(command, input=json.dumps(body) if body is not None else None,
@@ -57,6 +62,34 @@ class GitHub:
             match = re.search(r"HTTP (\d{3})", result.stderr)
             raise APIError(method, endpoint, int(match[1]) if match else None)
         return json.loads(result.stdout) if result.stdout.strip() else None
+
+    def app_request(self, method, endpoint, body):
+        """App JWTs require Bearer; gh's GH_TOKEN transport uses the token scheme."""
+        token = os.environ.get(self.token_env)
+        if not token:
+            raise Blocked(f"Missing {self.token_env}; cannot verify App identity and installation")
+        if method != 'GET' or body is not None or endpoint not in (
+                '/app', f'/repos/{REPOSITORY}/installation'):
+            raise Blocked('App inspection permits only identity and target-installation GETs')
+        request = urllib.request.Request('https://api.github.com' + endpoint, headers={
+            'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': API_VERSION})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoAppRedirect())
+        try:
+            with opener.open(request, timeout=60) as response:
+                raw = response.read(8_000_001)
+            if len(raw) > 8_000_000:
+                raise Blocked('App response exceeds inspection limit')
+            result = json.loads(raw)
+            if not isinstance(result, dict):
+                raise Blocked('App inspection expected a JSON object')
+            return result
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            exc.close()
+            raise APIError(method, endpoint, status) from None
+        except (OSError, ValueError):
+            raise APIError(method, endpoint) from None
 
     def pages(self, endpoint, field=None):
         values = []

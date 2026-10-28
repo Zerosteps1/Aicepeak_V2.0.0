@@ -1,11 +1,14 @@
 import copy
 import base64
 import importlib.util
+import io
 import json
 import os
 import sys
 from pathlib import Path
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
@@ -48,6 +51,48 @@ class FakeAPI:
 
 
 class SettingsTests(unittest.TestCase):
+    def test_app_jwt_uses_bearer_without_cli_arguments_or_subprocess_environment(self):
+        def transport(request, timeout):
+            self.assertEqual(request.full_url, 'https://api.github.com/app')
+            self.assertEqual(request.get_method(), 'GET')
+            self.assertEqual(request.get_header('Authorization'), 'Bearer fixture-app-jwt')
+            self.assertIsNone(request.data)
+            return io.BytesIO(b'{"id":201}')
+        with patch.dict(os.environ, {'FACTORY_PUBLISHER_APP_JWT': 'fixture-app-jwt'}), \
+                patch('subprocess.run', side_effect=AssertionError('JWT must not be passed to gh')), \
+                patch('urllib.request.OpenerDirector.open', side_effect=transport):
+            result = settings.GitHub('FACTORY_PUBLISHER_APP_JWT').request('GET', '/app')
+        self.assertEqual(result, {'id': 201})
+
+    def test_app_inspection_refuses_mutations_and_unrelated_endpoints(self):
+        with patch.dict(os.environ, {'FACTORY_PUBLISHER_APP_JWT': 'fixture-app-jwt'}), \
+                patch('subprocess.run', side_effect=AssertionError('no CLI')), \
+                patch('urllib.request.OpenerDirector.open', side_effect=AssertionError('no network')):
+            client = settings.GitHub('FACTORY_PUBLISHER_APP_JWT')
+            for method, path, body in [('POST', '/app', {}), ('GET', '/user', None),
+                                       ('GET', '/repos/other/repo/installation', None)]:
+                with self.subTest(method=method, path=path), self.assertRaises(settings.Blocked):
+                    client.request(method, path, body)
+
+    def test_app_http_error_closes_response_and_hides_credential_bearing_details(self):
+        error = urllib.error.HTTPError('https://api.github.com/app', 401,
+                                       'fixture-app-jwt', {}, io.BytesIO(b'fixture-app-jwt'))
+        with patch.dict(os.environ, {'FACTORY_PUBLISHER_APP_JWT': 'fixture-app-jwt'}), \
+                patch('subprocess.run', side_effect=AssertionError('no CLI')), \
+                patch('urllib.request.OpenerDirector.open', side_effect=error):
+            with self.assertRaises(settings.APIError) as caught:
+                settings.GitHub('FACTORY_PUBLISHER_APP_JWT').request('GET', '/app')
+        self.assertEqual(caught.exception.status, 401)
+        self.assertTrue(error.closed)
+        self.assertNotIn('fixture-app-jwt', str(caught.exception))
+
+    def test_app_redirect_cannot_forward_authorization(self):
+        request = urllib.request.Request('https://api.github.com/app',
+                                         headers={'Authorization': 'Bearer fixture-app-jwt'})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            settings.NoAppRedirect().redirect_request(request, None, 302, 'redirect', {}, 'https://attacker.invalid/')
+        caught.exception.close()
+
     def test_placeholders_refuse_network_and_activation(self):
         blank = json.loads((ROOT / "factory/config.json").read_text())
         blank.update(default_branch=None, maintainers=[], publisher_app_id=None, writer_app_id=None)

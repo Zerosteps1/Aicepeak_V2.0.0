@@ -2,7 +2,7 @@
 
 Produktquelle: [AICEPEAK_NORDSTERN.md](AICEPEAK_NORDSTERN.md). Der Inhalt bleibt unverändert; `northstar_approved: false` und `product_checks_ready: false` sperren Produktentwicklung bis zur ausdrücklichen Freigabe und passenden Produktprüfungen.
 
-Die Softwarefabrik ist auf `main` installiert; die GitHub-Schutzregeln und benötigten Environment-Secrets sind geprüft aktiv. **Die vollständige Live-Abnahme steht noch aus.** Maßgeblich sind [Policy](factory/policy.md), [Konfiguration](factory/config.json) und [echte Prüfnachweise](factory/evidence.md). Keine alten Projekte, privaten Chats, Workbrain-Inhalte oder persönlichen Agenten-Memories als Projektquelle.
+Die Softwarefabrik ist auf `main` installiert; die GitHub-Schutzregeln und benötigten Environment-Secrets sind geprüft aktiv. **Der Review-Fix-Durchlauf ist seit 29.10.2026 live abgenommen (PR #20); die Geräte-, Konkurrenz- und Identitäts-Gegenproben stehen noch aus.** Maßgeblich sind [Policy](factory/policy.md), [Konfiguration](factory/config.json) und [echte Prüfnachweise](factory/evidence.md). Keine alten Projekte, privaten Chats, Workbrain-Inhalte oder persönlichen Agenten-Memories als Projektquelle.
 
 ## Gemeinsamer Einstieg für Gabriel und Felix
 
@@ -93,7 +93,7 @@ Es gibt keine automatische Merge-Berechtigung. Beide App-gebundenen Checks laufe
 1. Menschlicher Bootstrap und Linux-Reparatur sind mit PR #9 und #11 übernommen. Die einmalig genehmigte Ausnahme für #11 ist geschlossen; beide Pflichtchecks sind wieder aktiv. Keine dauerhafte Bootstrap-Ausnahme übernehmen.
 2. Environment `factory-control`: ausschließlich Branch `main`; Publisher-/Writer-Schlüssel und `CONTEXT7_API_KEY` vorhanden. Die beiden Rulesets entsprechen der versionierten Vorgabe. `settings.py inspect`/`diff` dient dem erneuten Abgleich; `apply` ist nur bei einem tatsächlich geprüften Unterschied nötig. Kein OpenAI-API-Key für den Reviewer.
 3. Host-/Containergrenze und Gabriels Astra-Anmeldung wurden getestet; die authentifizierte Claude-Skill-Erkennung, native MCP-Aufrufe und Felix' eigener Reviewer-Smoke sind gesonderte offene Nachweise. Die Syntax-/Unit-Prüfung ersetzt sie nicht.
-4. [Smoke-PR](docs/work/FACTORY-SMOKE.md): sauberer Gegenfall, semantischer Defekt, Reviewer-Finding, Writer-Korrektur, echter Folgetrigger, neues Review, menschliches Feedback; zusätzlich negative SHA/App/Secret/Merge-Grenzen. Ergebnisse mit Run-/Check-/SHA-Bezug festhalten. Erst nach dieser Abnahme „einsatzbereit“.
+4. [Smoke-PR](docs/work/FACTORY-SMOKE.md): sauberer Gegenfall, semantischer Defekt, Reviewer-Finding, Writer-Korrektur, echter Folgetrigger, neues Review und menschliches Feedback sind mit PR #20 live bestanden ([Nachweis](factory/evidence.md#status-on-2026-10-29-live-review-fix-acceptance-passed)). Offen: Felix' eigenes Reviewer-Gerät, zwei Geräte für denselben Claim, neuer Head während eines Reviews, fremde App mit gleichem Checknamen. Erst danach gilt die vollständige Betriebsabnahme.
 
 ```sh
 python3 tools/factory/verify.py --root .

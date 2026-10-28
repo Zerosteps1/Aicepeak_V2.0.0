@@ -238,8 +238,8 @@ Second review: test discovery through candidate imports, base tests without a ca
 | Isolated context | Gabriel-reported container smoke passed: project read allowed; foreign-host read, symlink escape and trusted-rule write denied | Live authenticated author run and resulting patch |
 | Valid PR | Real clean PR #10 passed both App checks; PR #14 also has a bound Astra/high pass | Repeat at each new head; no prior approval is transferable |
 | Maintainer-local reviewer | Gabriel real Business smoke and bound App-gate publication on PRs #10/#14; tool-surface/claim regressions | Felix's own host smoke and workspace usage/entitlement verification |
-| Defect and fix | [Smoke work order](../docs/work/FACTORY-SMOKE.md), real clean counter-example; controlled text defect still present | Valid defect finding, real author fix, App push, new check run and final review |
-| Human feedback | Identity/PR association, re-reading, changed context | Comment, inline comment and review, each with an understandable response |
+| Defect and fix | Passed live on PR #20: valid P1 finding, Claude author fix through WIF, writer App push `88cbf27`, new deterministic run, Astra/high pass (see status section) | Repeat only for changed correction or writer code |
+| Human feedback | PR comment answered live on PR #20 (result `123116575069`); identity/PR association and re-reading | Inline review comment and a submitted review, each with an understandable response |
 | Old head/base/run | Binding regressions and active cancellation with real child processes | New head/feedback during a live review cancels that work; stale results cannot publish |
 | Missing credentials/schema/API | Local fail-closed tests; real malformed finding-ID output left PR #10 blocked, with no author authorization | Live invalid-token/API-failure counterpart remains separate |
 | Control changed in PR | PR #14 schema/context changes reviewed with unchanged ce736a5 policy; both versions supplied as evidence | Continue verifying policy SHA for every control change |

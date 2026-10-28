@@ -1,6 +1,6 @@
 # GitHub operation and technical sources
 
-Status: 2026-10-28. The factory is on `main`; both rulesets, App identities and the main-only credential environment are verified active. **The complete live acceptance is still pending.** Actual evidence and blockers are in [evidence.md](evidence.md), the operating entry points are in the [README](../README.md). This file describes the factory, not a product architecture.
+Status: 2026-10-28. The factory is on `main`; both rulesets, App identities and the main-only credential environment are verified active. **The review-fix loop passed live on 2026-10-29 (PR #20); device, concurrency and identity probes are still pending.** Actual evidence and blockers are in [evidence.md](evidence.md), the operating entry points are in the [README](../README.md). This file describes the factory, not a product architecture.
 
 ## Inspect and apply settings
 

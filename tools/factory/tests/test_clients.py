@@ -333,6 +333,14 @@ class BrokerTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.policy.prepare("/openai/v1/responses", json.dumps({**fixture, field: value}).encode())
 
+    def test_incremental_tool_items_get_the_same_hosted_tool_check(self):
+        # Codex 0.164.0 announces tools as an input item of type additional_tools, not in "tools".
+        native = {"type": "additional_tools", "role": "developer", "tools": [{"type": "namespace", "name": "functions", "tools": [{"type": "function", "name": "exec"}]}]}
+        self.policy.prepare("/openai/v1/responses", self.payload(input=[native]))
+        for hosted in ({"type": "web_search"}, {"type": "namespace", "name": "x", "tools": [{"type": "web_search"}]}):
+            with self.subTest(hosted=hosted), self.assertRaises(proxy.Denied):
+                self.policy.prepare("/openai/v1/responses", self.payload(input=[{**native, "tools": [hosted]}]))
+
     def test_unknown_fields_media_and_expired_job_rejected(self):
         with self.assertRaisesRegex(proxy.Denied, "unsupported"):
             self.policy.prepare("/openai/v1/responses", self.payload(unknown_option=True))

@@ -56,7 +56,8 @@ def check_payload_tree(value):
             raise Denied("remote files and media are not supported by this budget policy")
         if value.get("type") in ("input_image", "image", "input_audio", "audio", "document", "input_file", "item_reference"):
             raise Denied("media inputs are not supported by this budget policy")
-        if value.get("type") == "tool_search_output":
+        # Codex 0.164.0 announces its tools incrementally as additional_tools input items.
+        if value.get("type") in ("tool_search_output", "additional_tools"):
             for tool in value.get("tools", []):
                 check_codex_tool(tool)
         for item in value.values():

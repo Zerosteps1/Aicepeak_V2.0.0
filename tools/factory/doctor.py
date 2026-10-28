@@ -45,6 +45,21 @@ def repository_identity(root):
     except (OSError,subprocess.SubprocessError):return False
 
 
+def codex_version():
+    """The CLI version string is not sensitive; it decides whether the reviewer contract holds."""
+    try:
+        result = subprocess.run(["codex", "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def keychain_item(service, root):
+    """Presence only: `security` without -w never prints the stored value."""
+    return sys.platform == "darwin" and bool(shutil.which("security")) and probe(
+        ["security", "find-generic-password", "-s", service], root=root)
+
+
 def positive_number(value):
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
             and value > 0 and (not isinstance(value, float) or math.isfinite(value)))
@@ -57,14 +72,14 @@ def inspect(root, runner):
         checks.append({"check": name, "status": "passed" if passed else "blocked",
                        "detail": detail, "continuation": "" if passed else continuation})
 
-    add("python", sys.version_info >= (3, 11), "Python >= 3.11 benötigt.", "Python 3.11 oder neuer installieren.")
+    add("python", sys.version_info >= (3, 11), "Python >= 3.11 required.", "Install Python 3.11 or newer.")
     files = ("AGENTS.md", "factory/config.json", "factory/policy.md", "factory/Dockerfile",
              "factory/github-settings.json", "factory/tools.lock.json", "factory/review.schema.json",
              ".github/workflows/factory.yml", ".github/CODEOWNERS", "tools/factory/clients.py",
-             "tools/factory/engine.py", "tools/factory/verify.py", "tools/factory/settings.py")
+             "tools/factory/engine.py", "tools/factory/local_review.py", "tools/factory/verify.py", "tools/factory/settings.py")
     missing = [name for name in files if not regular_file(root, name)]
-    add("checkout", not missing, "Fehlende/unsichere Dateien: " + ", ".join(missing) if missing else "Factory-Dateien vorhanden.",
-        "Vollständigen geprüften Factory-Stand auschecken.")
+    add("checkout", not missing, "Missing or unsafe files: " + ", ".join(missing) if missing else "Factory files present.",
+        "Check out the complete reviewed factory revision.")
     try:
         path = root / "factory/config.json"
         if not regular_file(root, "factory/config.json") or path.stat().st_size > 100000:
@@ -75,51 +90,59 @@ def inspect(root, runner):
     except (OSError, ValueError):
         config = {}
     add("repository_config", config.get("repository") == REPOSITORY and config.get("default_branch") == "main",
-        "Zielrepository und Default-Branch müssen dem geprüften Setup entsprechen.", "factory/config.json prüfen; keine Identität erraten.")
+        "Target repository and default branch must match the reviewed setup.", "Check factory/config.json; never guess an identity.")
     add("reviewer_config", config.get("review_model") == "gpt-6-astra" and config.get("review_effort") == "high",
-        "Erforderlich: gpt-6-astra mit high; Konfiguration beweist keinen API-Zugang.", "Reviewvertrag wiederherstellen.")
+        "Required: gpt-6-astra with effort high; configuration does not prove model access.", "Restore the review contract.")
     # Run only this trusted checkout's adapter checker, never code from --root.
     adapters = regular_file(ROOT, "tools/factory/clients.py") and probe(
         [sys.executable, "-B", str(ROOT / "tools/factory/clients.py"), "check", "--root", str(root)], root=root)
-    add("native_adapters", adapters, "Kanonische Skills und native Adapter auf Drift geprüft.",
-        "python3 tools/factory/clients.py check --root .; bei autorisierter Quellenänderung sync, danach erneut prüfen.")
+    add("native_adapters", adapters, "Canonical skills and native adapters checked for drift.",
+        "python3 tools/factory/clients.py check --root .; after an authorized source change run sync, then check again.")
     for tool in ("git", "gh", "docker", "actionlint", "gitleaks"):
-        add("tool_" + tool, bool(shutil.which(tool)), "Benötigtes Werkzeug: " + tool,
-            "Werkzeug installieren; für Prüfwerkzeuge factory/tools.lock.json verwenden.")
+        add("tool_" + tool, bool(shutil.which(tool)), "Required tool: " + tool,
+            "Install the tool; use factory/tools.lock.json for the check tools.")
     git_ok = bool(shutil.which("git")) and probe(
         ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "rev-parse", "--verify", "HEAD"], root=root)
-    add("git_head", git_ok, "Lokaler Commit vorhanden; Remote-Branch nicht geprüft.", "Geprüften Factory-Commit auschecken.")
-    add("git_identity",repository_identity(root),"Git-Root und Origin müssen exakt zum Zielrepository gehören.",
-        "Im richtigen Checkout starten; Origin gegen git@github.com:Zerosteps1/Aicepeak_V2.0.0.git prüfen.")
+    add("git_head", git_ok, "Local commit present; remote branch not checked.", "Check out the reviewed factory commit.")
+    add("git_identity",repository_identity(root),"Git root and origin must belong exactly to the target repository.",
+        "Start in the right checkout; compare origin with git@github.com:Zerosteps1/Aicepeak_V2.0.0.git.")
     github_ok = bool(shutil.which("gh")) and probe(["gh", "auth", "status", "--hostname", "github.com"], root=root)
-    add("github_auth", github_ok, "GitHub-CLI-Authentifizierung geprüft; Administration/App-Rechte separat offen.",
-        "Als berechtigter Mensch gh auth login --hostname github.com ausführen, danach settings.py inspect.")
+    add("github_auth", github_ok, "GitHub CLI authentication checked; administration and App rights stay open.",
+        "As an authorized human run gh auth login --hostname github.com, then settings.py inspect.")
     # Match launcher isolation: no personal Docker config/context. These calls
     # inspect the daemon/image only; no build, pull, container or model is started.
     docker_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "DOCKER_CONFIG": os.devnull}
     if os.environ.get("FACTORY_DOCKER_HOST"):
         docker_env["DOCKER_HOST"] = os.environ["FACTORY_DOCKER_HOST"]
     daemon = bool(shutil.which("docker")) and probe(["docker", "info", "--format", "{{.ServerVersion}}"], root=root, env=docker_env)
-    add("docker_daemon", daemon, "Docker-Endpunkt ohne persönliche Docker-Konfiguration geprüft.",
-        "Docker starten/Zugriff herstellen; bei Bedarf FACTORY_DOCKER_HOST explizit setzen.")
+    add("docker_daemon", daemon, "Docker endpoint checked without personal Docker configuration.",
+        "Start Docker or grant access; set FACTORY_DOCKER_HOST explicitly if needed.")
     image = daemon and probe(["docker", "image", "inspect", IMAGE], root=root, env=docker_env)
-    add("client_image", image, "Client-Image lokal vorhanden; Ausführung noch nicht geprüft." if image else "Client-Image fehlt oder Dockerzugriff ist blockiert; nicht nachgewiesen.",
-        "docker build -f factory/Dockerfile -t " + IMAGE + " factory; danach clients.py smoke --root .")
-    for name in ("OPENAI_API_KEY", "CONTEXT7_API_KEY", *(("ANTHROPIC_API_KEY",) if runner == "claude" else ())):
-        add("environment_" + name, bool(os.environ.get(name)), "Nur Präsenz im Launcher-Environment geprüft: " + name,
-            name + " über die Secret-Funktion der Ausführungsumgebung bereitstellen; nie ins Repository schreiben.")
+    add("client_image", image, "Client image present locally; execution not yet checked." if image else "Client image missing or Docker access blocked; not proven.",
+        "docker build -f factory/Dockerfile -t " + IMAGE + " factory; then clients.py smoke --root .")
+    # The isolated launcher needs the provider key of its runner; the reviewer needs none (ADR-0005).
+    for name in ("OPENAI_API_KEY" if runner == "codex" else "ANTHROPIC_API_KEY", "CONTEXT7_API_KEY"):
+        add("environment_" + name, bool(os.environ.get(name)), "Presence in the launcher environment only: " + name,
+            "Provide " + name + " through the execution environment's secret facility; never write it to the repository.")
+    version = codex_version()
+    add("reviewer_codex", version == "codex-cli 0.164.0", "Senior reviewer host needs codex-cli 0.164.0; found: " + (version or "none"),
+        "Install the pinned Codex CLI; a different version needs a reviewed tool-surface check first.")
+    for check, name, service in (("reviewer_access_token", "CODEX_ACCESS_TOKEN", "aicepeak-factory-codex-access-token"),
+                                 ("reviewer_publisher_key", "FACTORY_PUBLISHER_APP_PRIVATE_KEY", "aicepeak-factory-publisher-key")):
+        add(check, bool(os.environ.get(name)) or keychain_item(service, root), f"Presence only: {name} or keychain item {service}.",
+            f"Store it in the login keychain item {service} (see factory/clients.md); never in a file or the repository.")
     models = config.get("author_models") or {}
     prices = config.get("author_pricing_usd_per_million") or {}
     price = prices.get(runner) if isinstance(prices, dict) else None
     model = models.get(runner) if isinstance(models, dict) else None
     priced = isinstance(price, dict) and all(positive_number(price.get(key)) for key in ("input", "output"))
     add("author_" + runner, isinstance(model, str) and bool(model.strip()) and priced,
-        "Exaktes Autormodell und positive Input-/Outputpreise erforderlich.",
-        "Modellzugang und aktuelle Herstellerpreise prüfen und autorisiert in factory/config.json festhalten.")
+        "Exact author model and positive input/output prices required.",
+        "Check model access and current vendor prices; record them in factory/config.json through a reviewed change.")
     app_ids = [config.get(role + "_app_id") for role in ("publisher", "writer")]
     apps = all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in app_ids) and app_ids[0] != app_ids[1]
-    add("app_ids", apps, "Zwei unterschiedliche reale App-IDs erforderlich; Installationen hier nicht verifiziert.",
-        "Zwei Apps mit dem exakten Rechtesplit registrieren/installieren; IDs eintragen; settings.py inspect/diff ausführen.")
+    add("app_ids", apps, "Two different real App IDs required; installations are not verified here.",
+        "Register and install two Apps with the exact permission split; record the IDs; run settings.py inspect/diff.")
     northstar = config.get("northstar_path")
     approved = (isinstance(northstar, str) and bool(northstar) and not Path(northstar).is_absolute()
                 and ".." not in Path(northstar).parts and regular_file(root, northstar)
@@ -129,15 +152,15 @@ def inspect(root, runner):
             "read_only": True, "runner": runner,
             "factory": {"local_prerequisites": checks,
                         "live_status": "unverified",
-                        "required_evidence": ["settings.py inspect/diff: Identitäten, Apps, Rulesets und Environment",
-                                              "clients.py smoke: gepinnte CLIs; launch/run: echter Modell-, Context7- und OpenAI-Docs-Zugang",
-                                              "engine.py model-smoke: gpt-6-astra high",
-                                              "realer Smoke-PR mit Review, Korrektur, erneutem Review und menschlicher Freigabe"]},
+                        "required_evidence": ["settings.py inspect/diff: identities, Apps, rulesets and environment",
+                                              "clients.py smoke: pinned CLIs; launch/run: real model, Context7 and OpenAI Docs access",
+                                              "local_review.py --smoke: gpt-6-astra high under the ChatGPT Business access token",
+                                              "real smoke PR with review, correction, new review and human approval"]},
             "product": {"status": "locally_configured_unverified" if approved and product_checks else "blocked",
                         "northstar_configured_and_approved": approved, "product_checks_configured": product_checks,
-                        "continuation": "Kanonischen Nordstern bewusst im Repository ablegen/freigeben, Prüfungen und versionierten Produktauftrag vor Umsetzung genehmigen.",
+                        "continuation": "Store and approve the canonical north star in the repository; approve checks and a versioned product task before implementation.",
                         "blocks_factory_setup": False},
-            "note": "Keine Schlüsselwerte, Modellaufrufe, Containerstarts oder Änderungen. gh auth status kann GitHub lesend kontaktieren. Dieser Report ersetzt keine Abnahme."}
+            "note": "No secret values, model calls, container starts or changes. gh auth status may contact GitHub read-only. This report is not an acceptance."}
 
 
 def main(argv=None):
@@ -151,7 +174,7 @@ def main(argv=None):
             raise ValueError
         result = inspect(root, args.runner)
     except (OSError, ValueError, TypeError):
-        result = {"status": "blocked", "read_only": True, "reason": "Repository oder Konfiguration nicht lesbar/ungültig; Pfad und JSON prüfen."}
+        result = {"status": "blocked", "read_only": True, "reason": "Repository or configuration unreadable or invalid; check path and JSON."}
     print(json.dumps(result, indent=2, ensure_ascii=False))
     # Local presence can never certify active GitHub enforcement or model access.
     return 2

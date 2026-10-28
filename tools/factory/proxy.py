@@ -36,9 +36,6 @@ def author_policy(config: dict, runner: str) -> dict:
     if not isinstance(model, str) or not model or len(model) > 100:
         raise Denied(f"author_models.{runner} is not configured")
     prices = config.get("author_pricing_usd_per_million", {}).get(runner)
-    if prices is None and runner == "codex" and model == config.get("review_model"):
-        source = config.get("pricing_usd_per_million", {})
-        prices = {"input": source.get("review_input"), "output": source.get("review_output")}
     if not isinstance(prices, dict):
         raise Denied(f"author pricing for {runner} is not configured")
     limits = config["limits"]

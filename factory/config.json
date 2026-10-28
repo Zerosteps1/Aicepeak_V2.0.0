@@ -32,20 +32,17 @@
     "codex",
     "claude"
   ],
+  "automatic_correction": false,
   "limits": {
     "max_rounds": 3,
     "timeout_seconds": 900,
     "review_input_bytes": 160000,
-    "review_output_tokens": 12000,
+    "max_reviews_per_pr": 6,
     "author_output_tokens": 32000,
     "max_cost_usd": 25.0,
     "max_run_cost_usd": 5.0,
     "max_patch_bytes": 200000,
     "max_changed_files": 40
-  },
-  "pricing_usd_per_million": {
-    "review_input": 10.0,
-    "review_output": 50.0
   },
   "protected_paths": [
     ".github/",
@@ -63,11 +60,9 @@
     "CONTRIBUTING.md"
   ],
   "required_checks": [
-    "factory/deterministic",
-    "factory/senior-review"
+    "factory/deterministic"
   ],
   "environment": "factory-control",
   "workflow": ".github/workflows/factory.yml",
-  "test_job": "Deterministic tests",
-  "review_job": "Senior review"
+  "test_job": "Deterministic tests"
 }

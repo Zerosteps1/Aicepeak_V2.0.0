@@ -83,8 +83,10 @@ def installation(config, role):
     return GitHub(token["token"])
 
 
-def verify_run(client, snapshot, config, required_jobs):
-    repo, run_id = snapshot["repository"], snapshot["run_id"]
+def verify_run(client, snapshot, config, required_jobs, run_id=None):
+    """Check jobs of the snapshot run, or of the correction run that consumes its review."""
+    repo = snapshot["repository"]
+    run_id = snapshot["run_id"] if run_id is None else run_id
     require(os.environ.get("GITHUB_RUN_ATTEMPT") == str(snapshot["run_attempt"]) == "1", "job rerun must receive a new reservation")
     run = client.request("GET", f"/repos/{repo}/actions/runs/{run_id}")
     require(run["run_attempt"] == snapshot["run_attempt"], "wrong run attempt")

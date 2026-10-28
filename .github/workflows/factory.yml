@@ -17,6 +17,10 @@ on:
         description: Explicit maintainer retry; previous cost/round reservations remain charged
         type: boolean
         default: false
+      correction:
+        description: Authenticated factory/senior-review check ID; starts an author correction for that review
+        type: string
+        default: ''
 
 permissions: {}
 cache-mode: none
@@ -27,7 +31,7 @@ concurrency:
 jobs:
   snapshot:
     name: Snapshot
-    if: github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.correction == ''
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -70,43 +74,15 @@ jobs:
           SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
         run: python3 tools/factory/engine.py test
 
-  review:
-    name: Senior review
-    needs: [snapshot, tests]
-    if: always() && needs.snapshot.result == 'success'
-    runs-on: ubuntu-24.04
-    environment: factory-control
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: read
-    outputs:
-      review: ${{ steps.review.outputs.review }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - id: review
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
-          TESTS_JSON: ${{ needs.tests.outputs.tests || '{}' }}
-        run: python3 tools/factory/engine.py review
-
   publish:
     name: Publish gates
-    needs: [snapshot, tests, review]
+    needs: [snapshot, tests]
     if: always() && needs.snapshot.result == 'success'
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
     permissions:
       contents: read
-    outputs:
-      author: ${{ steps.publish.outputs.author }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -117,15 +93,38 @@ jobs:
           FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
           SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
           TESTS_JSON: ${{ needs.tests.outputs.tests }}
-          REVIEW_JSON: ${{ needs.review.outputs.review }}
           TEST_JOB_RESULT: ${{ needs.tests.result }}
-          REVIEW_JOB_RESULT: ${{ needs.review.result }}
         run: python3 tools/factory/engine.py publish
+
+  # The senior review runs on the maintainer's machine (tools/factory/local_review.py, ADR-0005).
+  # It dispatches this workflow with `correction` when a review requests changes.
+  correction:
+    name: Correction gate
+    if: github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.correction != ''
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      snapshot: ${{ steps.correction.outputs.snapshot }}
+      author: ${{ steps.correction.outputs.author }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: correction
+        env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          PR_NUMBER: ${{ inputs.pr }}
+          CHECK_ID: ${{ inputs.correction }}
+        run: python3 tools/factory/engine.py correction --pr "$PR_NUMBER" --check-id "$CHECK_ID"
 
   author:
     name: Author correction
-    needs: [snapshot, publish]
-    if: needs.publish.result == 'success' && fromJSON(needs.publish.outputs.author).enabled == true
+    needs: [correction]
+    if: needs.correction.result == 'success' && fromJSON(needs.correction.outputs.author).enabled == true
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 25
@@ -144,11 +143,10 @@ jobs:
       - id: author
         env:
           GH_TOKEN: ${{ github.token }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
-          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
-          AUTHOR_JSON: ${{ needs.publish.outputs.author }}
+          SNAPSHOT_JSON: ${{ needs.correction.outputs.snapshot }}
+          AUTHOR_JSON: ${{ needs.correction.outputs.author }}
         run: python3 tools/factory/engine.py author --patch "$RUNNER_TEMP/patch.diff"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -159,7 +157,7 @@ jobs:
 
   push:
     name: Push correction
-    needs: [snapshot, publish, author]
+    needs: [correction, author]
     if: needs.author.result == 'success'
     runs-on: ubuntu-24.04
     environment: factory-control
@@ -178,15 +176,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
           FACTORY_WRITER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_WRITER_APP_PRIVATE_KEY }}
-          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
-          AUTHOR_JSON: ${{ needs.publish.outputs.author }}
+          SNAPSHOT_JSON: ${{ needs.correction.outputs.snapshot }}
+          AUTHOR_JSON: ${{ needs.correction.outputs.author }}
           AUTHOR_REPORT: ${{ needs.author.outputs.report }}
         run: python3 tools/factory/engine.py push --patch "$RUNNER_TEMP/patch.diff"
 
   author-failed:
     name: Author handoff
-    needs: [snapshot, publish, author, push]
-    if: always() && needs.publish.result == 'success' && fromJSON(needs.publish.outputs.author).enabled == true && needs.push.result != 'success'
+    needs: [correction, author, push]
+    if: always() && needs.correction.result == 'success' && fromJSON(needs.correction.outputs.author).enabled == true && needs.push.result != 'success'
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -199,6 +197,6 @@ jobs:
           persist-credentials: false
       - env:
           FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
-          SNAPSHOT_JSON: ${{ needs.snapshot.outputs.snapshot }}
+          SNAPSHOT_JSON: ${{ needs.correction.outputs.snapshot }}
           AUTHOR_REPORT: ${{ needs.author.outputs.report }}
         run: python3 tools/factory/engine.py author-failed

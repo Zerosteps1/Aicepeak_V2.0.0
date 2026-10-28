@@ -24,6 +24,7 @@ class Transport:
         self.checks={}
         self.comments=[]
         self.calls=[]
+        self.runs={}
         self.files=[{'filename':'example.txt','status':'modified'}]
         self.task={'status':'approved','kind':'factory','allowed_paths':['example.txt']}
         self.pr={'number':1,'state':'open','draft':False,'changed_files':1,
@@ -39,6 +40,12 @@ class Transport:
             if path=='/repos/fixture/repo':return {'full_name':'fixture/repo','default_branch':'main'}
             if path.endswith('/pulls/1'):return copy.deepcopy(self.pr)
             if path.endswith('/git/ref/heads/main'):return {'object':{'sha':'b'*40}}
+        if method=='PATCH' and '/check-runs/' in path:
+            self.checks[int(path.rsplit('/',1)[-1])].update(copy.deepcopy(data))
+            return {}
+        if method=='GET' and '/actions/runs/' in path:
+            return copy.deepcopy(self.runs[int(path.rsplit('/',1)[-1])])
+        if path.endswith('/labels'):return {}
         if method=='POST' and path.endswith('/check-runs'):
             item={**data,'id':len(self.checks)+1,'app':{'id':7}}
             self.checks[item['id']]=copy.deepcopy(item)
@@ -102,8 +109,9 @@ class EngineBoundaries(unittest.TestCase):
         self.transport.pr['draft']=False
         ready=self.capture_snapshot()
         self.assertNotEqual(draft['reservation']['key'],ready['reservation']['key'])
+        # The reviewer runs on a subscription seat (ADR-0005); no USD is reserved for it.
         self.assertEqual(draft['reservation']['reserved_usd'],0)
-        self.assertGreater(ready['reservation']['reserved_usd'],0)
+        self.assertEqual(ready['reservation']['reserved_usd'],0)
 
     def test_rename_cannot_escape_task_source_or_control_classification(self):
         self.transport.files=[{'filename':'example.txt','previous_filename':'.github/control.yml','status':'renamed'}]
@@ -113,12 +121,11 @@ class EngineBoundaries(unittest.TestCase):
         self.assertTrue(self.capture_snapshot()['control_changed'])
 
     def test_rerun_cannot_reuse_snapshot_or_model_budget(self):
-        with patch.dict(os.environ,{'GITHUB_RUN_ATTEMPT':'2'}), patch.object(engine,'call_model') as model:
+        with patch.dict(os.environ,{'GITHUB_RUN_ATTEMPT':'2'}):
             with self.assertRaisesRegex(Blocked,'reruns'):
                 engine.current(self.transport,self.snapshot,self.config)
             with self.assertRaisesRegex(Blocked,'fresh retry'):
                 self.capture_snapshot()
-            model.assert_not_called()
         self.assertEqual(self.transport.calls,[])
 
     def test_human_feedback_changed_during_run_blocks_write(self):
@@ -127,11 +134,102 @@ class EngineBoundaries(unittest.TestCase):
             with self.assertRaisesRegex(Blocked,'feedback changed'):
                 engine.current(self.transport,snapshot,self.config)
 
-    def test_missing_api_key_fails_before_request(self):
-        with patch.dict(os.environ,{},clear=True), patch.object(engine.urllib.request,'urlopen') as network:
-            with self.assertRaisesRegex(Blocked,'OPENAI_API_KEY missing'):
-                engine.call_model({},1)
-            network.assert_not_called()
+    def test_pipeline_has_no_api_billed_review_path(self):
+        self.assertFalse(hasattr(engine,'call_model') or hasattr(engine,'review_stage'))
+        workflow=(ROOT/'.github/workflows/factory.yml').read_text()
+        self.assertNotIn('OPENAI_API_KEY',workflow)
+        self.assertNotIn('name: Senior review',workflow)
+        settings=json.loads((ROOT/'factory/github-settings.json').read_text())
+        self.assertNotIn('OPENAI_API_KEY',settings['environment_secrets']+settings['optional_environment_secrets'])
+
+    def publish(self,tests_ok=True):
+        snapshot=self.capture_snapshot()
+        tests={'repository':'fixture/repo','head_sha':'a'*40,'policy_sha':'b'*40,'run_id':1,'ok':tests_ok,'exit_code':0 if tests_ok else 1,'summary':'trusted output'}
+        env={'SNAPSHOT_JSON':json.dumps(snapshot),'TESTS_JSON':json.dumps(tests),'TEST_JOB_RESULT':'success' if tests_ok else 'failure'}
+        with patch.dict(os.environ,env), patch.object(engine,'installation',return_value=self.transport), patch.object(engine,'verify_run') as run:
+            engine.publish_stage(self.config)
+        self.assertEqual(run.call_args.args[3],{self.config['test_job']:['success','failure']})
+        return snapshot,tests
+
+    def test_publish_leaves_senior_review_awaiting_local_reviewer(self):
+        snapshot,tests=self.publish()
+        check=self.transport.checks[snapshot['check_id']]
+        self.assertEqual(check['status'],'in_progress')
+        record=json.loads(check['output']['text'])
+        self.assertEqual((record['phase'],record['snapshot'],record['tests']),('awaiting_review',snapshot,tests))
+        deterministic=[c for c in self.transport.checks.values() if c['name']=='factory/deterministic']
+        self.assertEqual([c['conclusion'] for c in deterministic],['success'])
+        self.assertIn('local_review.py --pr 1',self.transport.comments[-1]['body'])
+
+    def test_failed_tests_complete_review_without_requesting_it(self):
+        snapshot,_=self.publish(tests_ok=False)
+        check=self.transport.checks[snapshot['check_id']]
+        self.assertEqual((check['status'],check['conclusion']),('completed','failure'))
+        self.assertEqual(json.loads(check['output']['text'])['phase'],'completed')
+
+    def reviewed(self,outcome='changes_requested'):
+        snapshot,tests=self.publish()
+        findings=[{'id':'F-1','priority':'P1','file':'example.txt','line':1,'impact':'i','evidence':'e','requirement':'r','minimal_fix':'m','verification':'v'}] if outcome=='changes_requested' else []
+        review={**{k:snapshot[k] for k in ('repository','pr','head_sha','base_sha','policy_sha','run_id','run_attempt')},'model':'gpt-6-astra','effort':'high',
+                'scope':['example.txt'],'evidence':[],'limitations':[],'complete':True,'outcome':outcome,'summary':'s','findings':findings}
+        check=self.transport.checks[snapshot['check_id']]
+        record=json.loads(check['output']['text'])
+        check.update(status='completed',conclusion='failure',output={'text':json.dumps({**record,'phase':'completed','review':review})})
+        self.transport.runs[2]={'triggering_actor':{'type':'User','id':1}}
+        return snapshot
+
+    def correction(self,check_id):
+        captured={}
+        with patch.dict(os.environ,{'GITHUB_RUN_ID':'2'}), patch.object(engine,'installation',return_value=self.transport), patch.object(engine,'emit',side_effect=lambda name,value:captured.update({name:value})):
+            engine.correction_stage(argparse.Namespace(pr=1,check_id=check_id),self.config)
+        return captured
+
+    def test_correction_is_disabled_until_shadow_phase_ends(self):
+        snapshot=self.reviewed()
+        self.assertIs(self.config['automatic_correction'],False)
+        with self.assertRaisesRegex(Blocked,'shadow phase'):
+            self.correction(snapshot['check_id'])
+
+    def test_correction_reserves_author_round_for_authentic_changes_requested(self):
+        snapshot=self.reviewed()
+        self.config['automatic_correction']=True
+        captured=self.correction(snapshot['check_id'])
+        self.assertEqual(captured['snapshot'],snapshot)
+        state=captured['author']
+        self.assertEqual((state['enabled'],state['check_id'],state['run_id']),(True,snapshot['check_id'],2))
+        reservation=self.transport.checks[state['reservation_id']]
+        self.assertEqual((reservation['name'],reservation['external_id']),('factory/author-reservation',engine.bind(snapshot)))
+        with self.assertRaisesRegex(Blocked,'duplicate'):
+            self.correction(snapshot['check_id'])
+
+    def test_correction_rejects_pass_foreign_app_and_unverified_actor(self):
+        self.config['automatic_correction']=True
+        snapshot=self.reviewed(outcome='pass')
+        with self.assertRaisesRegex(Blocked,'does not authorize'):
+            self.correction(snapshot['check_id'])
+        self.setUp();self.config['automatic_correction']=True
+        snapshot=self.reviewed()
+        self.transport.checks[snapshot['check_id']]['app']={'id':8}
+        with self.assertRaisesRegex(Blocked,'publisher App'):
+            self.correction(snapshot['check_id'])
+        self.setUp();self.config['automatic_correction']=True
+        snapshot=self.reviewed()
+        self.transport.runs[2]={'triggering_actor':{'type':'Bot','id':1}}
+        with self.assertRaisesRegex(Blocked,'maintainer'):
+            self.correction(snapshot['check_id'])
+
+    def test_author_stages_verify_the_correction_run(self):
+        snapshot=self.reviewed()
+        self.config['automatic_correction']=True
+        state=self.correction(snapshot['check_id'])['author']
+        env={'SNAPSHOT_JSON':json.dumps(snapshot),'AUTHOR_JSON':json.dumps(state),'GITHUB_RUN_ID':'2'}
+        with patch.dict(os.environ,env), patch.object(engine,'GitHub',return_value=self.transport), patch.object(engine,'verify_run') as run:
+            engine.verified_author_input(self.config)
+        self.assertEqual(run.call_args.kwargs,{'run_id':2})
+        self.assertEqual(run.call_args.args[3],{'Correction gate':['success']})
+        with patch.dict(os.environ,{**env,'GITHUB_RUN_ID':'3'}), patch.object(engine,'GitHub',return_value=self.transport), patch.object(engine,'verify_run'):
+            with self.assertRaisesRegex(Blocked,'another run'):
+                engine.verified_author_input(self.config)
 
     def test_atomic_write_rejects_rewind_and_second_identical_push(self):
         class RefAPI:

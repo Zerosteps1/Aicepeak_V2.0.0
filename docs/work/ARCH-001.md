@@ -1,9 +1,9 @@
 # ARCH-001 – Specification sheet and target architecture for the enterprise editions
 
-Status: ordered by Gabriel on 2026-10-28 (chat session, decisions recorded in the document itself). This task authorizes work only once a human-reviewed PR has merged it to protected `main`; the implementing PR is reviewed against this task on that base.
+Status: ordered by Gabriel on 2026-10-28 (chat session, decisions recorded in the document itself). This task authorizes work only once a human-reviewed PR has merged it to protected `main`; the implementing PR is reviewed against this task on that base. The resulting document is a **non-binding draft**, also after its merge: it informs later work orders but approves no scope, architecture or decision (AC-8).
 
 ```factory-task
-{"status":"approved","kind":"factory","allowed_paths":["docs/architecture/","docs/work/ARCH-001.md"]}
+{"status":"approved","kind":"factory","allowed_paths":["docs/architecture/"]}
 ```
 
 requirements: []
@@ -12,7 +12,7 @@ requirements: []
 
 ## Goal
 
-Maintainers and prospective enterprise customers can read one English document that (a) states what Aicepeak offers in which edition (specification sheet) and (b) defines the target architecture that lets corporations use the product under GDPR, the EU AI Act and related regimes, with every north-star requirement traced to an architecture element and every open product decision marked as a proposal.
+Maintainers and prospective enterprise customers can read one English document that (a) states what Aicepeak offers in which edition (specification sheet) and (b) proposes a target architecture that lets corporations use the product under GDPR, the EU AI Act and related regimes, with every north-star requirement traced to an architecture element and every open product decision marked as a proposal.
 
 ## Non-goals
 
@@ -23,9 +23,9 @@ Maintainers and prospective enterprise customers can read one English document t
 
 ## Context and constraints
 
-- North star: `AICEPEAK_NORDSTERN.md` (chapters 1–11; chapter 12 skeleton in draft PR #4). It explicitly leaves architecture, data model, cloud, providers and calculation methods open (§1, §11.2) and forbids invented defaults (principle 9, §9.1).
+- North star: `AICEPEAK_NORDSTERN.md` (chapters 1–11; a chapter 12 skeleton exists only on the unmerged branch `docs/factory-review-2026-10-28` of closed PR #4). It explicitly leaves architecture, data model, cloud, providers and calculation methods open (§1, §11.2) and forbids invented defaults (principle 9, §9.1).
 - Decisions taken by Gabriel on 2026-10-28: editions = multi-tenant SaaS (EU) and dedicated instances in the customer's cloud account (AWS or Azure); SaaS LLM access through an Aicepeak-operated gateway with zero-retention terms, customer-chosen endpoints for dedicated instances; first customers EU industrial/retail/services groups, financial-sector customers later; AWS EU as reference host, Azure as second target, Entra ID federation.
-- Language: English (ADR-0004, draft PR #4).
+- Language: English.
 - Validation: an independent GPT-6 Astra review at reasoning effort `max` is recorded under `docs/architecture/validation/` with every finding and its resolution.
 
 ## Acceptance criteria
@@ -37,6 +37,7 @@ Maintainers and prospective enterprise customers can read one English document t
 5. AC-5: The compliance section shall map GDPR, EU AI Act, EU Data Act, NIS2, DORA and the Cyber Resilience Act to concrete architecture controls and evidence artefacts, with primary-source references and dates.
 6. AC-6: The validation report `docs/architecture/validation/2026-10-28-gpt-6-astra-max.md` shall list the prompt, the output schema, every finding with severity, and for each finding one of: fixed, disputed with reason, or decision needed.
 7. AC-7: If the document links to another repository file, then the link shall resolve on protected `main` at the time of merge (`verify.py --structure-only` passes).
+8. AC-8: The document shall state at its top, in words that remain true after merging, that it is a non-binding draft: architecture decisions AD-nn are proposals, nothing in it approves product scope, and a later work order may cite it only as background until the maintainers adopt a part through a reviewed decision record.
 
 ## Verification
 
@@ -60,5 +61,5 @@ The PR that implements this task contains exactly one handoff block:
 
 ## Open questions
 
-- Which of the architecture decisions AD-01..AD-12 in the document become ADR-0006 ff. after draft PR #4 (ADR-0001..0005) is merged: Gabriel and Felix.
+- Which of the proposed architecture decisions AD-01..AD-12 the maintainers adopt as decision records, and when: Gabriel and Felix.
 - Timing of the north-star approval (`northstar_approved`) and of decision points D-01..D-11, which several proposals in the document depend on: Gabriel.

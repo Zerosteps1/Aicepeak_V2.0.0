@@ -212,6 +212,11 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("never-forward", str(calls))
         self.assertFalse(any("target=/work," in value and "type=bind" in value for value in worker[0]))
         self.assertTrue(any("volume-keeper" in str(args) and "none" in args for args, _ in calls))
+        # Without volume-nocopy Docker copies the image's /work owner onto the shared tmpfs
+        # when the second container mounts it; the host-uid seed then fails (live run 40762431387).
+        work_mounts = [value for args, _ in calls for value in args if value.startswith("type=volume,") and "target=/work" in value]
+        self.assertGreaterEqual(len(work_mounts), 4)
+        self.assertTrue(all(value.endswith(",volume-nocopy") for value in work_mounts))
         proxy_call = next((args, env) for args, env in calls if "/opt/factory/proxy.py" in args and "--config" in args)
         self.assertEqual(proxy_call[1]["OPENAI_API_KEY"], "upstream-only-test-value")
         self.assertNotIn("upstream-only-test-value", " ".join(proxy_call[0]))

@@ -43,6 +43,7 @@
     },
     "scope": {
       "type": "array",
+      "description": "Exactly the changed file paths from the binding, verbatim, one path per item; no prose.",
       "items": {
         "type": "string",
         "minLength": 1,
@@ -72,7 +73,8 @@
       "maxItems": 30
     },
     "complete": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "false is only valid together with outcome blocked; concrete defects are still listed as findings."
     },
     "outcome": {
       "type": "string",
@@ -94,9 +96,10 @@
         "properties": {
           "id": {
             "type": "string",
+            "description": "Stable ID containing only uppercase ASCII letters, digits, underscores or hyphens, for example F-001.",
             "minLength": 3,
             "maxLength": 64,
-            "pattern": "[A-Z0-9_-]+"
+            "pattern": "^[A-Z0-9_-]+$"
           },
           "priority": {
             "type": "string",

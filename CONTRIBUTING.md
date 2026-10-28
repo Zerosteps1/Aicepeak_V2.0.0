@@ -10,8 +10,10 @@ Lies `AGENTS.md`, [Policy](factory/policy.md) und `factory/config.json`. Starte 
 4. Patch außerhalb des Modellworkers prüfen, auf dem Aufgabenbranch übernehmen und PR öffnen. Im PR Änderung, Nachweise und offene Grenzen beschreiben; genau einen Übergabeblock mit realem Auftrag und verifiziertem Maintainer verwenden:
 
 ```factory-handoff
-{"runner":"codex","task":"docs/work/FACTORY-001.md","owner":"Zerosteps1"}
+{"runner":"claude","task":"docs/work/FACTORY-001.md","owner":"Zerosteps1"}
 ```
+
+`runner` muss in `runners` von `factory/config.json` stehen; derzeit ist nur `claude` zugelassen, `codex` blockiert den PR. Ein neuer Auftrag in `docs/work/` braucht einen eigenen, vorher gemergten PR (Vorlage: [TEMPLATE](docs/work/TEMPLATE.md)); erst danach kann ein Umsetzungs-PR auf ihn verweisen.
 
 Regeln, Skills, Anforderungen, Tests und Budgets werden aus dem fixierten geschützten Basis-Commit geladen. Änderungen an dieser Grundlage sind eigene menschlich geprüfte Factory-/Anforderungsänderungen; der aktuelle PR kann seine Prüfung nicht durch eigene Regelrevisionen abschwächen. Automatische Korrekturen dürfen geschützte Dateien nicht ändern.
 
@@ -26,11 +28,11 @@ Gewöhnliche PR-Kommentare, Reviews und Inline-Kommentare konfigurierter menschl
 Zur Wiederaufnahme die im PR genannte Ursache beheben, aktuellen Branch frisch auschecken und den dort angegebenen Runner starten:
 
 ```sh
-python3 tools/factory/doctor.py --root . --runner codex
-python3 tools/factory/clients.py launch --root . --runner codex
+python3 tools/factory/doctor.py --root . --runner claude
+python3 tools/factory/clients.py launch --root . --runner claude
 # Im Client: factory-fix-review für PR #<Nummer>, aktuellen Auftrag und Findings.
 ```
 
 Launcher-Secret-Präsenz ersetzt keine gültigen API-Rechte. Bei fehlendem Zugang die in [README](README.md) genannten Secrets/Modelle herstellen; bei Konflikt zuerst menschliche Entscheidung im Auftrag festhalten. Patch prüfen, Branch aktualisieren; der neue Head startet frische Prüfungen. Ohne Codeänderung kann ein verifizierter Maintainer einen neuen Lauf mit `gh workflow run factory.yml --ref main -f pr=<Nummer> -f retry=true` starten. GitHubs „Re-run jobs“ wird abgewiesen, weil es alte Budgetreservierungen wiederverwenden würde. Alte Checks geben einen neuen Head oder Basisstand nicht frei.
 
-Merge erst nach beiden App-gebundenen Pflichtchecks, menschlicher CODEOWNER-Freigabe und geklärten Threads. Ein Mensch entscheidet und merged. Modelle haben keine GitHub-Zugangsdaten; keine Direktpushes auf `main`, automatischen Merges oder eigenmächtigen Schutzregeländerungen.
+Normalfall: Merge nach beiden erfolgreichen App-gebundenen Pflichtchecks und geklärten Threads. Gabriel oder Felix entscheidet selbst und merged; eine zweite menschliche Freigabe ist nicht nötig. CODEOWNERS bleibt der Wegweiser für Zuständigkeit und freiwillige Reviews. Hängt ein PR (kein Reviewer-Gerät, Modellfehler, ausgeschöpfte Limits), dürfen Gabriel und Felix bewusst per Bypass mergen („Merge without waiting for requirements“); vorher den Grund als PR-Kommentar festhalten. Modelle haben keine GitHub-Zugangsdaten; keine Direktpushes auf `main`, automatischen Merges oder eigenmächtigen Schutzregeländerungen.

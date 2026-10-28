@@ -34,6 +34,42 @@ class Context(unittest.TestCase):
             with self.subTest(truncated=truncated), self.assertRaises(Blocked):
                 context_sections(Source(), {'repository':'fixture/repo','head_sha':'a'*40,'policy_sha':'b'*40,'files':['tools/job.py']}, {})
 
+    def test_parent_directory_import_is_included_without_executing_path_setup(self):
+        sources = {
+            'tools/factory/tests/test_protocol.py':
+                'import sys\nfrom pathlib import Path\n'
+                'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n'
+                'from contracts import validate_review\nraise RuntimeError("must not execute")\n',
+            'tools/factory/contracts.py': 'def validate_review(): return "local contract evidence"\n',
+        }
+        class Source:
+            def request(self, method, path):
+                return {'truncated': False, 'tree': [{'path': p, 'type': 'blob', 'mode': '100644'} for p in sources]}
+            def text(self, repo, path, sha):
+                self_outer.assertEqual(sha, 'a' * 40)
+                return sources[path]
+        self_outer = self
+        sections = context_sections(Source(), {'repository':'fixture/repo','head_sha':'a'*40,'policy_sha':'b'*40,
+                                              'files':['tools/factory/tests/test_protocol.py']}, {})
+        text = '\n'.join(sections)
+        self.assertIn('UNTRUSTED UNCHANGED DEPENDENCY tools/factory/contracts.py', text)
+        self.assertIn('local contract evidence', text)
+
+    def test_ambiguous_ancestor_imports_remain_visible_as_evidence(self):
+        sources = {'tools/factory/tests/test_protocol.py': 'from rules import verdict\n',
+                   'tools/factory/rules.py': 'verdict = "nearest"\n',
+                   'tools/rules.py': 'verdict = "outer"\n'}
+        class Source:
+            def request(self, method, path):
+                return {'truncated': False, 'tree': [{'path': p, 'type': 'blob', 'mode': '100644'} for p in sources]}
+            def text(self, repo, path, sha):
+                return sources[path]
+        sections = context_sections(Source(), {'repository':'fixture/repo','head_sha':'a'*40,'policy_sha':'b'*40,
+                                              'files':['tools/factory/tests/test_protocol.py']}, {})
+        text = '\n'.join(sections)
+        self.assertIn('verdict = "nearest"', text)
+        self.assertIn('verdict = "outer"', text)
+
     def test_non_python_change_does_not_fetch_a_language_tree(self):
         class Source:
             def request(self,*args): raise AssertionError('unnecessary tree fetch')

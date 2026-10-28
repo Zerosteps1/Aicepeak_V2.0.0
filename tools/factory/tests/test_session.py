@@ -1,6 +1,7 @@
 """Local session boundaries: real Git data; only GitHub/model/process edges are fake."""
 import copy
 import json
+import shlex
 import signal
 import time
 import os
@@ -105,6 +106,43 @@ class GitHubFixture:
         return {'id': ident, 'name': 'factory/senior-review', 'status': 'in_progress',
                 'head_sha': binding['head_sha'], 'app': {'id': 77}, 'external_id': engine.bind(binding),
                 'output': {'text': json.dumps(receipt)}}
+
+
+class ReviewInputBudget(unittest.TestCase):
+    def test_real_factory_repair_sources_fit_without_truncation(self):
+        paths = ['tools/factory/' + name for name in (
+            'clients.py', 'engine.py', 'local_review.py', 'session.py', 'settings.py',
+            'tests/test_local_review.py', 'tests/test_session.py', 'tests/test_settings.py')]
+
+        class RepositoryFiles:
+            def text(self, repo, path, sha):
+                return (ROOT / path).read_text()
+            def pages(self, path, field=None):
+                if path.endswith('/files'):
+                    return [{'filename': p, 'status': 'modified'} for p in paths]
+                return []
+            def request(self, method, path):
+                if '/git/trees/' not in path:
+                    raise AssertionError(path)
+                return {'truncated': False, 'tree': [
+                    {'path': str(p.relative_to(ROOT)), 'type': 'blob', 'mode': '100644'}
+                    for p in (ROOT / 'tools/factory').rglob('*.py')]}
+
+        config = json.loads((ROOT / 'factory/config.json').read_text())
+        snapshot = {'repository': config['repository'], 'pr': 1, 'head_sha': 'a' * 40,
+                    'base_sha': 'b' * 40, 'policy_sha': 'b' * 40, 'files': paths,
+                    'handoff': {'task': 'docs/work/FACTORY-001.md'}}
+        sources = RepositoryFiles()
+        material = engine.review_material(sources, snapshot, config, {'ok': True})
+        for path in paths:
+            for version in ('BASE', 'HEAD'):
+                self.assertIn(f'UNTRUSTED {version} FILE {path}\n' + (ROOT / path).read_text(), material)
+        self.assertIn((ROOT / config['northstar_path']).read_text(), material)
+        # A larger complete packet is accepted; exceeding its exact byte budget
+        # still blocks. No summaries, dropped files or untrusted success evidence.
+        config['limits']['review_input_bytes'] = len(material.encode()) + 18000 - 1
+        with self.assertRaisesRegex(Blocked, 'review input budget exceeded'):
+            engine.review_material(sources, snapshot, config, {'ok': True})
 
 
 class SessionBoundaries(unittest.TestCase):
@@ -250,6 +288,20 @@ class SessionBoundaries(unittest.TestCase):
         with patch.object(local_review, 'run_codex', side_effect=changed):
             with self.assertRaisesRegex(Blocked, 'clean|dirty|uncommitted'):
                 session.preflight(self.gh, self.candidate, 'docs/work/TEST.md', [])
+
+    def test_incomplete_review_with_findings_is_shown_as_blocked_not_discarded(self):
+        finding = {'id': 'F-001', 'kind': 'defect', 'confidence': 'high', 'priority': 'P1', 'file': 'tools/factory/example.py',
+                   'line': 1, 'impact': 'wrong value', 'evidence': 'VALUE = 2', 'requirement': 'r', 'minimal_fix': 'm', 'verification': 'v'}
+        def incomplete(*args):
+            review, events = self.model(*args)
+            review.update(outcome='changes_requested', complete=False, limitations=['No tests were executed.'], findings=[finding])
+            return review, events
+        with patch.object(local_review, 'run_codex', side_effect=incomplete):
+            result = session.preflight(self.gh, self.candidate, 'docs/work/TEST.md', [])
+        review = result['review']
+        self.assertEqual((review['outcome'], review['complete'], review['findings']), ('blocked', False, [finding]))
+        self.assertIn('No tests were executed.', review['limitations'])
+        self.assertIn('outcome changes_requested; shown as blocked', review['limitations'][-1])
 
     def test_unverified_human_cannot_spend_model_quota(self):
         self.gh.user['id'] = 1
@@ -438,6 +490,65 @@ class SessionBoundaries(unittest.TestCase):
             self.preflight()
         self.assertFalse(marker.exists(), 'candidate Git must never lazy-fetch through its configured helper')
         self.assertEqual(self.model_calls, [])
+
+    def test_missing_promisor_objects_keep_both_git_guards_effective(self):
+        oid = git(self.candidate, 'rev-parse', 'HEAD:tools/factory/example.py')
+        (self.candidate / '.git/objects' / oid[:2] / oid[2:]).unlink()
+        git(self.candidate, 'config', 'core.repositoryformatversion', '1')
+        git(self.candidate, 'config', 'extensions.partialClone', 'origin')
+        git(self.candidate, 'config', 'remote.origin.promisor', 'true')
+        git(self.candidate, 'config', 'protocol.allow', 'always')
+        bindir = Path(self.temp.name) / 'helpers'
+        bindir.mkdir()
+        native_run = subprocess.run
+
+        for protocol in ('ssh', 'factoryprobe'):
+            marker = Path(self.temp.name) / (protocol + '-was-run')
+            script = 'touch ' + shlex.quote(str(marker)) + '\nexit 1\n'
+            # The container keeps /tmp noexec. An installed interpreter can
+            # still read scripts there: do not let mount policy mask a Git bug.
+            git(self.candidate, 'config', 'protocol.' + protocol + '.allow', 'always')
+            if protocol == 'ssh':
+                helper = bindir / 'ssh-helper'
+                helper.write_text(script)
+                git(self.candidate, 'config', 'core.sshCommand', '/bin/sh ' + shlex.quote(str(helper)))
+            else:
+                # Git passes the remote name first. /bin/sh reads that script
+                # relative to the repository, through an executable system binary.
+                (bindir / 'git-remote-factoryprobe').symlink_to('/bin/sh')
+                (self.candidate / 'origin').write_text(script)
+                git(self.candidate, 'config', 'remote.origin.vcs', protocol)
+
+            for guard in ('both', 'no_lazy_fetch_only', 'transport_only', 'positive_control'):
+                with self.subTest(protocol=protocol, guard=guard):
+                    observed = []
+
+                    def probe(arguments, **kwargs):
+                        # Keep real Git and its children: only disable guards to
+                        # prove that each protection and the malicious fixture work.
+                        self.assertNotIn('--no-lazy-fetch', arguments,
+                                         'Bookworm Git rejects this newer CLI option')
+                        env = dict(kwargs['env'])
+                        if guard in ('transport_only', 'positive_control'):
+                            env['GIT_NO_LAZY_FETCH'] = '0'
+                        if guard in ('no_lazy_fetch_only', 'positive_control'):
+                            env.pop('GIT_ALLOW_PROTOCOL', None)
+                        result = native_run(arguments, **{**kwargs, 'env': env})
+                        observed.append(result)
+                        return result
+
+                    with patch.dict(os.environ, {'PATH': str(bindir) + os.pathsep + os.environ['PATH']}), \
+                         patch.object(session.subprocess, 'run', side_effect=probe):
+                        with self.assertRaises(Blocked):
+                            session.git(self.candidate, 'cat-file', 'blob', oid)
+                    self.assertEqual(len(observed), 1)
+                    self.assertNotEqual(observed[0].returncode, 0)
+                    self.assertEqual(marker.exists(), guard == 'positive_control',
+                                     'only the unguarded positive control may execute the helper: '
+                                     + observed[0].stderr.decode(errors='replace'))
+                    if guard == 'transport_only':
+                        self.assertIn(("transport '%s' not allowed" % protocol).encode(), observed[0].stderr)
+                    marker.unlink(missing_ok=True)
 
     def test_reviewer_cleanup_stops_descendants_even_if_the_wrapper_already_exited(self):
         for wrapper_exits in (False, True):

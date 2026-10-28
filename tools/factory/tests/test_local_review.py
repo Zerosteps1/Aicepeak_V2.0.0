@@ -249,6 +249,69 @@ class ActiveCancellation(unittest.TestCase):
                 os.kill(pid, signal.SIGKILL)
                 self.fail('child survived failed reviewer process')
 
+    def test_successful_parent_exit_also_cleans_up_its_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pidfile = Path(directory) / 'child.pid'
+            source = ("import pathlib,subprocess,sys; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],"
+                      "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); pathlib.Path(" + repr(str(pidfile))
+                      + ").write_text(str(child.pid))")
+            result = self.run_child(source, lambda: None)
+            self.assertEqual(result.returncode, 0)
+            pid = int(pidfile.read_text())
+            for _ in range(30):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.02)
+            else:
+                os.kill(pid, signal.SIGKILL)
+                self.fail('child survived successful reviewer process')
+
+    def test_cleanup_preserves_an_unrelated_child_exit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'unrelated-exited'
+            other = subprocess.Popen([sys.executable, '-c',
+                'import pathlib,sys; pathlib.Path(' + repr(str(marker)) + ').write_text("exiting"); sys.exit(17)'])
+            try:
+                for _ in range(200):
+                    if marker.exists():
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(marker.exists())
+                time.sleep(0.05)
+                self.assertEqual(self.run_child('pass', lambda: None).returncode, 0)
+                self.assertEqual(other.wait(timeout=5), 17)
+            finally:
+                if other.poll() is None:
+                    other.kill()
+                    other.wait(timeout=5)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux kernel child-subreaper state')
+    def test_linux_subreaper_state_is_restored_and_overlap_rejected(self):
+        import ctypes
+        prctl = ctypes.CDLL(None).prctl
+        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        def state():
+            value = ctypes.c_int()
+            self.assertEqual(prctl(37, ctypes.addressof(value), 0, 0, 0), 0)
+            return value.value
+        original = state()
+        try:
+            for prior in (0, 1):
+                self.assertEqual(prctl(36, prior, 0, 0, 0), 0)
+                with self.assertRaisesRegex(RuntimeError, 'scope fixture'):
+                    with local_review.review_child_scope():
+                        self.assertEqual(state(), 1)
+                        with self.assertRaisesRegex(Blocked, 'already supervised'):
+                            with local_review.review_child_scope():
+                                self.fail('overlapping scope was admitted')
+                        self.assertEqual(state(), 1)
+                        raise RuntimeError('scope fixture')
+                self.assertEqual(state(), prior)
+        finally:
+            self.assertEqual(prctl(36, original, 0, 0, 0), 0)
+
     def test_controller_sigterm_reaches_the_separate_reviewer_process_group(self):
         with tempfile.TemporaryDirectory() as directory:
             pidfile = Path(directory) / 'child.pid'
@@ -398,6 +461,7 @@ class Publication(unittest.TestCase):
 
     def test_published_review_feeds_the_correction_gate(self):
         snapshot = self.pending()
+        self.assertEqual(self.transport.labels, {'awaiting-senior-review'})
         check, record = self.claim(snapshot)
         reviewer = reviewer_metadata()
         with patch.object(local_review.subprocess, 'run') as run:
@@ -408,6 +472,7 @@ class Publication(unittest.TestCase):
         saved = json.loads(published['output']['text'])
         self.assertEqual((published['status'], published['conclusion'], saved['phase'], saved['reviewer']), ('completed', 'failure', 'completed', reviewer))
         self.assertIn('needs-author-action', self.transport.comments[-1]['body'])
+        self.assertEqual(self.transport.labels, {'needs-author-action'})
         self.config['automatic_correction'] = True
         self.transport.runs[2] = {'triggering_actor': {'type': 'User', 'id': 1}}
         captured = {}
@@ -464,13 +529,19 @@ class Publication(unittest.TestCase):
         snapshot = self.pending()
         prompts = []
 
+        schemas = []
+
         def fake_codex(instructions, material, schema_path, config, freshness=None):
             freshness()
             prompts.append((instructions, material))
+            schemas.append(json.loads(Path(schema_path).read_text()))
             return review_for(snapshot, 'pass'), {'thread_id': 't', 'turns': 1, 'usage': {}}
         with patch.object(local_review, 'require_trusted_checkout'), patch.object(local_review, 'run_codex', side_effect=fake_codex):
             outcome = local_review.review_pr(self.transport, 1, self.config, dispatch=False, dry_run=False)
         self.assertEqual(outcome, 'pass')
+        # Live Astra/high twice returned a prose scope (PR #20); generation now names the exact files.
+        self.assertEqual(schemas[0]['properties']['scope']['items']['enum'], snapshot['files'])
+        self.assertEqual(schemas[0]['properties']['findings']['items']['properties']['file']['enum'], snapshot['files'])
         self.assertIn('APPROVED WORK ORDER', prompts[0][1])
         self.assertIn('trusted_test_evidence', prompts[0][1])
         self.assertEqual(self.transport.checks[snapshot['check_id']]['conclusion'], 'success')

@@ -325,6 +325,21 @@ class DispatcherTests(unittest.TestCase):
             dispatcher.cancel_obsolete(config(),4,{'head':{'sha':'c'*40},'base':{'sha':'b'*40}})
         self.assertEqual([(m,p) for m,p in calls if m=='POST'],[('POST',prefix+'/actions/runs/9/cancel')])
 
+    def test_push_dispatches_only_prs_on_the_pushed_base(self):
+        prefix = dispatcher.PREFIX
+        pushed, outdated = "c" * 40, "d" * 40
+        event = {"ref": "refs/heads/main", "after": pushed}
+        responses = {prefix: {"id": 77, "full_name": settings.REPOSITORY, "default_branch": "main"},
+                     prefix + "/pulls?state=open&base=main&per_page=100&page=1": [{"number": 4}, {"number": 5}],
+                     prefix + "/pulls/4": {"state": "open", "base": {"ref": "main", "sha": pushed, "repo": {"id": 77}}},
+                     prefix + "/pulls/5": {"state": "open", "base": {"ref": "main", "sha": outdated, "repo": {"id": 77}}}}
+        calls = self.run_dispatcher("push", event, responses)
+        posts = [call[2]["inputs"]["pr"] for call in calls if call[0] == "POST"]
+        self.assertEqual(posts, ["4"])
+        self.assertFalse(any(call[1].startswith(prefix + "/issues/5/") for call in calls))
+        with self.assertRaises(RuntimeError):
+            self.run_dispatcher("push", {"ref": "refs/heads/main", "after": "not-a-sha"}, responses)
+
     def test_wrong_default_ref_and_forged_comment_author_fail(self):
         with self.assertRaises(RuntimeError):
             self.run_dispatcher("workflow_dispatch", {}, {}, ref="refs/heads/attacker")

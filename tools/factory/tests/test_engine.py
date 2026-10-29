@@ -315,6 +315,18 @@ class EngineBoundaries(unittest.TestCase):
             with self.assertRaisesRegex(Blocked,'another run'):
                 engine.verified_author_input(self.config)
 
+    def test_author_failure_publishes_only_fixed_launcher_reasons(self):
+        blocked=lambda reason:(json.dumps({'status':'blocked','reason':reason})+'\n').encode()
+        self.assertEqual(engine.author_failure(blocked('docker failed (1): mkdir /work/x: Permission denied sk-ant-secret')),'docker failed (1)')
+        self.assertEqual(engine.author_failure(b'model chatter\n'+blocked('credential broker did not become ready')),'credential broker did not become ready')
+        self.assertEqual(engine.author_failure(blocked("Command '['docker', '--env', 'TOKEN=ghs_secret']' timed out after 900 seconds")),'launcher command timed out')
+        self.assertEqual(engine.author_failure(blocked('expected bounded regular file: /home/runner/secret')),'unclassified launcher error (details withheld)')
+        self.assertEqual(engine.author_failure(b'',b'{"status":"passed"}\n'),'no launcher report')
+        self.assertEqual(engine.author_failure(b'',blocked('worker CLI version mismatch')),'worker CLI version mismatch')
+        for leaked in ('docker failed (1): token','missing proxy-only environment: X=1','unclassified',42):
+            self.assertFalse(engine.publishable_failure(leaked))
+        self.assertTrue(engine.publishable_failure('missing proxy-only environment: ANTHROPIC_API_KEY, CONTEXT7_API_KEY'))
+
     def test_atomic_write_rejects_rewind_and_second_identical_push(self):
         class RefAPI:
             def __init__(self):self.head='a'*40

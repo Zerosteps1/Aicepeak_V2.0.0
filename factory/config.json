@@ -90,9 +90,15 @@
   "review_context_rules": [
     {
       "changed_paths": ["README.md", "factory/clients.md", "factory/github.md", "factory/evidence.md", "factory/review-2026-10-29.md"],
-      "paths": ["tools/factory/session.py", "tools/factory/clients.py", "tools/factory/verify.py", "tools/factory/engine.py", "tools/factory/doctor.py", "tools/factory/local_review.py", "tools/factory/local_review_queue.py", "tools/factory/github_api.py", ".github/scripts/dispatch_factory.py", "factory/clients.md", "factory/github.md", "CONTRIBUTING.md"],
+      "paths": ["tools/factory/session.py", "tools/factory/merge_safety.py", "tools/factory/clients.py", "tools/factory/verify.py", "tools/factory/engine.py", "tools/factory/doctor.py", "tools/factory/local_review.py", "tools/factory/local_review_queue.py", "tools/factory/github_api.py", ".github/scripts/dispatch_factory.py", "factory/clients.md", "factory/github.md", "CONTRIBUTING.md"],
       "checks": [123115715391, 123115197638, 123246708660, 123246320463, 123241711436],
       "runs": [40772159725, 40812619503]
+    },
+    {
+      "changed_paths": ["factory/evidence.md"],
+      "paths": [],
+      "checks": [123428683684, 123429145036, 123433030748, 123433506193, 123449497386, 123450236720, 123431207739],
+      "runs": [40868312156, 40869597828, 40874403001, 40868924016]
     }
   ],
   "review_context_paths": [

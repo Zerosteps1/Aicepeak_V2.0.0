@@ -32,15 +32,18 @@ class MergeFixture(test_session.GitHubFixture):
         if arguments[:2] == ['api', 'graphql']:
             nodes = [{'isResolved': resolved} for resolved in self.threads]
             return json.dumps({'data': {'repository': {'pullRequest': {'reviewThreads': {'totalCount': len(nodes), 'nodes': nodes}}}}})
-        if arguments[:2] == ['pr', 'merge']:
-            self.merges.append(arguments)
-            self.pr.update(state='closed', merged=True, merge_commit_sha='c' * 40)
-            return ''
         return super().command(arguments, data)
+
+    def gh_merge(self, pr, head, outcome='sent', merged=True):
+        """Stands in for `gh pr merge --admin --match-head-commit` run with the maintainer's login."""
+        self.merges.append((pr, head))
+        if merged:
+            self.pr.update(state='closed', merged=True, merge_commit_sha='c' * 40)
+        return outcome
 
     def request(self, method, path, data=None):
         prefix = '/repos/' + REPOSITORY
-        if method == 'GET' and path == prefix + '/compare/' + self.main + '...' + self.pr['head']['sha'] + '?per_page=1':
+        if method == 'GET' and path.startswith(prefix + '/compare/' + self.case.base + '...' + self.pr['head']['sha']):
             return copy.deepcopy(self.compare)
         if method == 'GET' and path == prefix + '/commits/' + 'c' * 40:
             return {'parents': [{'sha': sha} for sha in (self.merge_parents or [self.main, self.pr['head']['sha']])]}
@@ -111,6 +114,9 @@ class MergeSafety(unittest.TestCase):
                  'external_id': f'{REPOSITORY}:1:{self.head}:{self.base}:5:1', 'output': {'text': receipt}, **change}
                 for ident, name in enumerate(self.config['required_checks'], 1)]
 
+    def merging(self, outcome='sent', merged=True):
+        return patch.object(merge_safety, 'gh_merge', side_effect=lambda pr, head: self.gh.gh_merge(pr, head, outcome, merged))
+
     def body(self):
         path = Path(self.temp.name) / 'body.md'
         path.write_text('Change with its evidence.')
@@ -124,23 +130,26 @@ class MergeSafety(unittest.TestCase):
         self.other_pr(4, 'feature/four', {'AGENTS.md': 'SAME TASK\n'})
         self.other_pr(5, 'feature/five', {'tools/factory/example.py': 'VALUE = 9\n'})
         self.gh.open_prs[-1]['body'] = '```factory-handoff\n["runner", "task", "owner"]\n```'  # malformed, still a PR
-        self.gh.open_prs.append({'number': 6, 'draft': False, 'base': {'ref': 'main'}, 'body': '```factory-handoff\n5\n```',
-                                 'head': {'sha': 'f' * 40, 'ref': 'fork-branch', 'repo': {'full_name': 'someone/fork'}}})
+        self.other_pr(6, 'fork-branch', {'AGENTS.md': 'FORK\n'})
+        self.gh.open_prs[-1].update(body='```factory-handoff\n5\n```')
+        self.gh.open_prs[-1]['head']['repo'] = {'full_name': 'someone/fork'}
         before = self.git_state()
         with patch.object(merge_safety, 'fetch_pulls', side_effect=self.fetch) as fetched:
             report = merge_safety.collisions(self.gh, self.candidate, 'docs/work/TEST.md')
         self.assertEqual(self.git_state(), before)
-        self.assertEqual(fetched.call_args.args[1], [2, 4, 5])
+        # Disjoint files do not prove a clean merge: every open PR, forks included, is trial-merged.
+        self.assertEqual(fetched.call_args.args[1], [2, 3, 4, 5, 6])
         self.assertEqual(report['main'], {'sha': self.base, 'contains': True, 'conflicts': []})
         self.assertEqual([(o['pr'], o['same_task'], o['overlap'], o['conflicts']) for o in report['open_prs']],
-                         [(2, True, ['tools/factory/example.py'], ['tools/factory/example.py']), (4, True, [], []),
-                          (5, False, ['tools/factory/example.py'], ['tools/factory/example.py'])])
+                         [(2, True, ['tools/factory/example.py'], ['tools/factory/example.py']), (3, False, [], []), (4, True, [], []),
+                          (5, False, ['tools/factory/example.py'], ['tools/factory/example.py']), (6, False, [], [])])
         self.assertEqual(report['limitations'], [])
         summary = merge_safety.collision_summary(report)
         self.assertIn('- #2 (same work order): overlapping files `tools/factory/example.py`; '
                       'trial merge conflicts in `tools/factory/example.py`.', summary)
         self.assertIn('- #4 (same work order): overlapping files none; trial merge clean.', summary)
         self.assertNotIn('#3', summary)
+        self.assertIn('2 further open PR(s) share no file and merge cleanly.', summary)
         with patch.object(merge_safety, 'fetch_pulls', return_value=False):
             unfetched = merge_safety.collisions(self.gh, self.candidate, 'docs/work/TEST.md')
         self.assertIsNone(unfetched['open_prs'][0]['conflicts'])
@@ -199,9 +208,9 @@ class MergeSafety(unittest.TestCase):
         self.gh.head_checks, self.gh.threads = self.gates(), [True]
         verdict = merge_safety.merge(self.gh, 1, dry_run=True)
         self.assertEqual((verdict['mergeable'], verdict['problems'], self.gh.merges, self.gh.locks), (True, [], [], []))
-        result = merge_safety.merge(self.gh, 1)
-        self.assertEqual(self.gh.merges, [['pr', 'merge', '1', '--repo', REPOSITORY, '--merge', '--admin',
-                                           '--match-head-commit', self.head]])
+        with self.merging():
+            result = merge_safety.merge(self.gh, 1)
+        self.assertEqual(self.gh.merges, [(1, self.head)])
         self.assertEqual((self.gh.locks, self.gh.lock), ([{'ref': 'refs/tags/factory-merge-lock', 'sha': self.base}], None))
         self.assertEqual((result['merged'], result['merge_commit_sha'], len(self.gh.posts)), (True, 'c' * 40, 1))
         self.assertIn(f'head `{self.head}` onto main `{self.base}`', self.gh.posts[0]['body'])
@@ -228,7 +237,7 @@ class MergeSafety(unittest.TestCase):
                 self.gh.pr['draft'] = False
                 arrange()
                 self.assertIn(expected, ' '.join(merge_safety.merge(self.gh, 1, dry_run=True)['problems']))
-                with self.assertRaisesRegex(Blocked, 'not merged: .*' + expected):
+                with self.assertRaisesRegex(Blocked, 'not merged: .*' + expected), self.merging():
                     merge_safety.merge(self.gh, 1)
                 self.assertEqual((self.gh.merges, self.gh.posts, self.gh.locks), ([], [], []))
 
@@ -236,22 +245,59 @@ class MergeSafety(unittest.TestCase):
         self.fixture()
         self.gh.head_checks, self.gh.threads = self.gates(), []
         self.gh.lock = {'ref': 'refs/tags/factory-merge-lock', 'sha': self.base}  # the other maintainer is merging
-        with self.assertRaisesRegex(Blocked, 'merge lock .* is held'):
+        with self.assertRaisesRegex(Blocked, 'merge lock .* is held'), self.merging():
             merge_safety.merge(self.gh, 1)
         self.assertEqual((self.gh.merges, self.gh.posts), ([], []))
         self.assertIsNotNone(self.gh.lock, 'a refused merge must not release somebody else\'s lock')
         self.gh.lock = None
         # The other merge landed between our verification and taking the lock: refuse, release, merge nothing.
         self.gh.on_lock = lambda: setattr(self.gh, 'main', 'e' * 40)
-        with self.assertRaisesRegex(Blocked, 'main or the PR changed before the merge'):
+        with self.assertRaisesRegex(Blocked, 'changed before the merge; nothing was merged'), self.merging():
             merge_safety.merge(self.gh, 1)
         self.assertEqual((self.gh.merges, self.gh.posts, self.gh.lock), ([], [], None))
+
+    def test_checks_and_threads_are_validated_again_while_the_lock_is_held(self):
+        self.fixture()
+        rerun = {**self.gates()[1], 'id': 3, 'status': 'in_progress', 'conclusion': None}
+        for name, change in (('1 unresolved review thread', lambda: setattr(self.gh, 'threads', [False])),
+                             ('factory/senior-review: in_progress', lambda: self.gh.head_checks.append(rerun))):
+            with self.subTest(name=name):
+                self.gh.head_checks, self.gh.threads, self.gh.on_lock = self.gates(), [], change
+                with self.assertRaisesRegex(Blocked, 'changed before the merge; nothing was merged; .*' + name), self.merging():
+                    merge_safety.merge(self.gh, 1)
+                self.assertEqual((self.gh.merges, self.gh.posts, self.gh.lock), ([], [], None))
+
+    def test_an_unanswered_merge_keeps_the_lock_and_a_refusal_releases_it(self):
+        self.fixture()
+        self.gh.head_checks, self.gh.threads = self.gates(), []
+        with self.assertRaisesRegex(Blocked, 'GitHub refused the merge'), self.merging('refused', merged=False):
+            merge_safety.merge(self.gh, 1)
+        self.assertIsNone(self.gh.lock)
+        with self.assertRaisesRegex(Blocked, 'outcome of PR #1 unknown; the lock stays'), self.merging('unknown', merged=False):
+            merge_safety.merge(self.gh, 1)
+        self.assertEqual(self.gh.lock, {'ref': 'refs/tags/factory-merge-lock', 'sha': self.base})
+        self.gh.lock = None
+        with self.merging('unknown', merged=True):
+            self.assertTrue(merge_safety.merge(self.gh, 1)['merged'])  # GitHub did merge: verified as usual
+        self.assertIsNone(self.gh.lock)
+
+    def test_only_an_answer_from_github_counts_as_a_refusal(self):
+        cases = [(subprocess.CompletedProcess([], 0, '', ''), 'sent'),
+                 (subprocess.CompletedProcess([], 1, '', 'GraphQL: Pull Request is not mergeable (mergePullRequest)'), 'refused'),
+                 (subprocess.CompletedProcess([], 1, '', 'Head branch was modified. Review and try the merge again.'), 'refused'),
+                 (subprocess.CompletedProcess([], 1, '', 'connection reset by peer'), 'unknown'),
+                 (subprocess.TimeoutExpired(['gh'], 120), 'unknown')]
+        for result, expected in cases:
+            with self.subTest(expected=expected, result=result), \
+                    patch.object(merge_safety.subprocess, 'run', **({'side_effect': result} if isinstance(result, Exception) else {'return_value': result})) as run:
+                self.assertEqual(merge_safety.gh_merge(1, 'a' * 40), expected)
+            self.assertEqual(run.call_args.args[0][-4:], ['--merge', '--admin', '--match-head-commit', 'a' * 40])
 
     def test_a_merge_outside_the_helper_is_reported_as_an_error(self):
         self.fixture()
         self.gh.head_checks, self.gh.threads = self.gates(), []
         self.gh.merge_parents = ['e' * 40, self.head]
-        with self.assertRaisesRegex(Blocked, 'main moved outside session.py merge'):
+        with self.assertRaisesRegex(Blocked, 'main moved outside session.py merge'), self.merging():
             merge_safety.merge(self.gh, 1)
         self.assertEqual((len(self.gh.merges), self.gh.lock), (1, None))
         self.assertIn('WARNING: main was `' + 'e' * 40 + '`', self.gh.posts[0]['body'])

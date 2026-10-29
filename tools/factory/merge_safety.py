@@ -79,28 +79,30 @@ def collisions(gh, candidate, task=None):
         require(listed.returncode == 0, 'candidate objects missing; fetch them fully')
         changed = {name.decode('utf-8') for name in listed.stdout.split(b'\0') if name}
         for pr in gh.pages(f'/repos/{session.REPOSITORY}/pulls?state=open&base={config["default_branch"]}'):
-            if (pr['head'].get('repo') or {}).get('full_name') != session.REPOSITORY:
-                continue  # forks are unsupported by the factory and cannot block the sweep
-            if pr['head']['ref'] == branch:
+            if pr['head']['ref'] == branch and (pr['head'].get('repo') or {}).get('full_name') == session.REPOSITORY:
                 continue  # the candidate's own PR
+            # Disjoint file lists do not prove a clean merge (directory renames), so every open PR,
+            # forks included through the base repository's pull refs, gets a trial merge.
             try:
                 files = gh.pages(f'/repos/{session.REPOSITORY}/pulls/{pr["number"]}/files')
+                touched = {f['filename'] for f in files} | {f['previous_filename'] for f in files if f.get('previous_filename')}
+                overlap = sorted(changed & touched)
             except Blocked:
                 limitations.append(f"#{pr['number']}: its file list could not be read; overlap unknown.")
-                continue
-            touched = {f['filename'] for f in files} | {f['previous_filename'] for f in files if f.get('previous_filename')}
+                overlap = None
             try:
                 other_task = handoff(pr.get('body'), config)['task']
             except (Blocked, TypeError, ValueError, KeyError):
                 other_task = None
-            same = task is not None and other_task == task
-            if same or changed & touched:
-                others.append({'pr': pr['number'], 'draft': pr['draft'], 'head_sha': pr['head']['sha'], 'same_task': same,
-                               'overlap': sorted(changed & touched), 'conflicts': None})
-        if others and not fetch_pulls(trial, [other['pr'] for other in others]):
-            limitations.append('Could not fetch the overlapping PR heads; their trial merges did not run.')
-        elif others:
-            for other in others:
+            others.append({'pr': pr['number'], 'draft': pr['draft'], 'head_sha': pr['head']['sha'],
+                           'same_task': task is not None and other_task == task, 'overlap': overlap, 'conflicts': None})
+        if len(others) > 40:
+            limitations.append(f'{len(others) - 40} more open PRs were not trial-merged.')
+        merged_into = others[:40]
+        if merged_into and not fetch_pulls(trial, [other['pr'] for other in merged_into]):
+            limitations.append('Could not fetch the other open PR heads; their trial merges did not run.')
+        elif merged_into:
+            for other in merged_into:
                 ref = trial_git(trial, 'rev-parse', '--verify', '--quiet', f"refs/factory/pull/{other['pr']}^{{commit}}")
                 if ref.returncode or ref.stdout.decode().strip() != other['head_sha']:
                     limitations.append(f"#{other['pr']} changed during the sweep; its trial merge was skipped.")
@@ -120,12 +122,15 @@ def collision_summary(report):
     state = ('contains current main' if main['contains'] else 'does NOT contain current main; '
              + ('conflicts in ' + names(main['conflicts']) if main['conflicts'] else 'merge it in'))
     lines = [f"Collision check at `{report['candidate']['head_sha'][:12]}` against main `{main['sha'][:12]}`: {state}."]
-    for other in report['open_prs'][:20]:
+    quiet = [o for o in report['open_prs'] if o['conflicts'] == [] and o['overlap'] == [] and not o['same_task']]
+    for other in [o for o in report['open_prs'] if o not in quiet][:20]:
         merge = ('trial merge not run' if other['conflicts'] is None else 'trial merge clean' if not other['conflicts']
                  else 'trial merge conflicts in ' + names(other['conflicts']))
-        lines.append(f"- #{other['pr']}{' (same work order)' if other['same_task'] else ''}: "
-                     f"overlapping files {names(other['overlap']) or 'none'}; {merge}.")
-    if report['open_prs']:
+        files = 'unknown' if other['overlap'] is None else names(other['overlap']) or 'none'
+        lines.append(f"- #{other['pr']}{' (same work order)' if other['same_task'] else ''}: overlapping files {files}; {merge}.")
+    if quiet:
+        lines.append(f'{len(quiet)} further open PR(s) share no file and merge cleanly.')
+    if len(quiet) < len(report['open_prs']):
         lines.append('Merge one PR at a time. The PR merged second updates its branch and resolves its own conflicts '
                      'with main; nothing is resolved against unmerged PRs.')
     else:
@@ -145,12 +150,24 @@ def unresolved_threads(gh, pr):
     return sum(not node['isResolved'] for node in threads['nodes'])
 
 
-MERGE_LOCK = 'tags/factory-merge-lock'
+REFUSED = re.compile(r'GraphQL:|HTTP [45][0-9][0-9]|not mergeable|was modified|[Rr]equired status|[Rr]epository rule')
 
 
-def merge(gh, pr, dry_run=False):
-    """Human merge of exactly the verified head onto exactly the verified main; never run by a model."""
-    config, policy, user = session.control(gh)
+def gh_merge(pr, head):
+    """'sent', 'refused' (GitHub answered no) or 'unknown' (no answer, so GitHub may still merge)."""
+    try:
+        result = subprocess.run(['gh', 'pr', 'merge', str(pr), '--repo', session.REPOSITORY, '--merge', '--admin',
+                                 '--match-head-commit', head], cwd=session.ROOT, env=session.human_env(),
+                                capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError, KeyboardInterrupt):
+        return 'unknown'
+    if result.returncode == 0:
+        return 'sent'
+    return 'refused' if REFUSED.search(result.stderr or '') else 'unknown'
+
+
+def verify(gh, pr, config, policy):
+    """The PR's state and every reason not to merge it onto `policy` now."""
     snapshot, _, _ = session.pr_state(gh, pr, config, policy)
     head = snapshot['head_sha']
     problems = ['PR is a draft'] if snapshot['draft'] else []
@@ -173,38 +190,54 @@ def merge(gh, pr, dry_run=False):
     unresolved = unresolved_threads(gh, pr)
     if unresolved:
         problems.append(f'{unresolved} unresolved review thread(s)')
+    return snapshot, problems
+
+
+MERGE_LOCK = 'tags/factory-merge-lock'
+
+
+def merge(gh, pr, dry_run=False):
+    """Human merge of exactly the verified head onto exactly the verified main; never run by a model."""
+    config, policy, user = session.control(gh)
+    snapshot, problems = verify(gh, pr, config, policy)
+    head = snapshot['head_sha']
     verdict = {'pr': pr, 'head_sha': head, 'main_sha': policy, 'mergeable': not problems, 'problems': problems}
     if dry_run:
         return verdict
     require(not problems, 'not merged: ' + '; '.join(problems))
     # GitHub pins only the head of a merge, never its base: merges through this helper are
-    # serialized by a ref that GitHub creates atomically, and re-validated while it is held.
+    # serialized by a ref that GitHub creates atomically, and fully re-validated while it is held.
     release = f'gh api -X DELETE repos/{session.REPOSITORY}/git/refs/{MERGE_LOCK}'
     try:
         gh.request('POST', f'/repos/{session.REPOSITORY}/git/refs', {'ref': 'refs/' + MERGE_LOCK, 'sha': policy})
     except Blocked:
         raise Blocked(f'merge lock refs/{MERGE_LOCK} is held or could not be created; nothing was merged. '
                       f'If no merge is running, remove it with: {release}') from None
-    released = False
+    keep, released = False, False
     try:
         current = gh.request('GET', f'/repos/{session.REPOSITORY}/git/ref/heads/main')['object']['sha']
-        again, _, _ = session.pr_state(gh, pr, config, policy)
-        require(current == policy and not again['draft'] and all(again[k] == snapshot[k] for k in ('head_sha', 'handoff', 'feedback_digest')),
-                'main or the PR changed before the merge; nothing was merged')
-        try:
-            gh.command(['pr', 'merge', str(pr), '--repo', session.REPOSITORY, '--merge', '--admin', '--match-head-commit', head])
-        except Blocked:
-            raise Blocked(f'GitHub refused the merge (changed head, conflict or permission); inspect PR #{pr}') from None
+        again, still = verify(gh, pr, config, policy)
+        require(current == policy and again['head_sha'] == head and not still,
+                'main, the PR, its checks or threads changed before the merge; nothing was merged' + ''.join('; ' + p for p in still))
+        outcome = gh_merge(pr, head)
         merged = gh.request('GET', f'/repos/{session.REPOSITORY}/pulls/{pr}')
+        if merged.get('merged') is not True:
+            if outcome == 'refused':
+                raise Blocked(f'GitHub refused the merge (changed head, conflict or permission); nothing was merged; inspect PR #{pr}')
+            # No answer is no refusal: GitHub may still merge against the main this run verified.
+            keep = True
+            raise Blocked(f'merge outcome of PR #{pr} unknown; the lock stays so nobody merges against an unverified main. '
+                          f'Check PR #{pr}: once it is merged (verify main) or certainly not merged, remove the lock with: {release}')
         commit = merged.get('merge_commit_sha') or ''
-        require(merged.get('merged') is True and re.fullmatch('[0-9a-f]{40}', commit), f'GitHub did not report the merge; inspect PR #{pr}')
+        require(re.fullmatch('[0-9a-f]{40}', commit), f'GitHub did not report the merge commit; inspect PR #{pr}')
         parents = [p['sha'] for p in gh.request('GET', f'/repos/{session.REPOSITORY}/commits/{commit}')['parents']]
     finally:
-        try:
-            gh.request('DELETE', f'/repos/{session.REPOSITORY}/git/refs/{MERGE_LOCK}')
-            released = True
-        except Blocked:
-            pass
+        if not keep:
+            try:
+                gh.request('DELETE', f'/repos/{session.REPOSITORY}/git/refs/{MERGE_LOCK}')
+                released = True
+            except Blocked:
+                pass
     # With the lock held, only a merge outside this helper (the manual bypass) can change the base.
     exact = parents == [policy, head]
     note = ('both required checks were verified for exactly this head and main' if exact else

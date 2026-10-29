@@ -1,5 +1,18 @@
 # Verification status and pending activation
 
+## Merge safety for parallel PRs (FACTORY-004) — 2026-10-29
+
+Work order `docs/work/FACTORY-004.md` (PR #27, merged as `e0f37a0`), trusted test transport step (PR #29, `7f8df76`), code with README and CONTRIBUTING (PR #28, `133adfd`), and this operating documentation. Motivation: parallel PRs that are each green alone can break each other at merge time. The gate tested PR heads whose base SHA equalled `main` without proving that the head contained `main` (PRs #4 and #5 had a base their head did not contain), and every maintainer merge bypasses GitHub's own up-to-date rule.
+
+- **Binding reviews (Astra/high).** #27: P1 F-001, a concurrent merge was detected only after publication because GitHub's merge pins the head but never the base; the work order now requires serialization through the atomic lock `refs/tags/factory-merge-lock`, then `pass`. #28, four rounds: checks and threads were not re-validated under the lock (F-001); the lock was released on an unknown merge outcome, then on a failed read-back, then on HTTP 5xx or generic GraphQL errors (F-002); the sweep skipped open PRs with disjoint files (F-003); then `pass`. #29: `pass`.
+- **Independent fresh-context code review** before the PRs: six defects, all fixed with regressions (fork or malformed PR blocking the sweep, timeouts, `merge-tree` exit 1 without names read as clean, candidate config via alternate refs, stale summary head, feedback changed after the review).
+- **Gate mechanics learnt.** The deterministic gate also runs the protected base's unchanged suite against the candidate; its shared test transport rejected the new compare route (40 base tests failed in run 40868924016), hence the two-step #29 → #28. The review budget (782 KB) forced `factory/github.md` and this file into their own PR, and the guard `test_real_factory_repair_sources_fit_without_truncation` moved the sweep and the merge helper into `tools/factory/merge_safety.py` with `tests/test_merge_safety.py`.
+- **Verification.** Candidate suite 245 tests OK (one Linux-only skip); trusted base suite after #29 against #28: 231 OK. The gate's deterministic run of #28's final head passed (run 40874403001). `verify.py --structure-only` PASS, Gitleaks clean.
+- **Merges.** #27, #29 and #28 were merged by Claude Code on Gabriel's request with his `gh` login after checking both App-bound checks, the head, current `main`, containment and open threads by hand, as the README's merge rules describe; their merge commits are on `main`. Merges through `session.py merge` start after this record was written; their live evidence (PR comment with the verified head, `main` and merge commit) belongs in a later reviewed update and is **not yet verified**.
+- **Live, read-only:** the sweep against `main`; the compare route through the real human transport; the hardened HTTPS fetch of `refs/pull/26/head` and `refs/pull/27/head` matched the API head SHAs (6 objects transferred).
+
+Open: the first live merge through `session.py merge` and its recorded evidence; post-merge verification of `main` (deterministic checks on every new `main` commit) as its own work order; Felix's first own merge through the helper.
+
 ## Review-context repair and macOS onboarding — 2026-10-29
 
 Prepared against protected main `60f42313701231c727da7b554864729878bc4988` after Gabriel requested repair of the missing-context blocker on PR #25. Gabriel separately approved the canonical north star; [decision 0006](../docs/decisions/0006-northstar-approval.md) records the exact document blob. Architecture is **not approved** and is handled separately; `product_checks_ready` remains `false`.

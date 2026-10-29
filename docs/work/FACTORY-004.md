@@ -3,7 +3,7 @@
 Status: requested by Gabriel on 2026-10-29 after reviewing how parallel agent pull requests break each other; it authorizes work only after this file is merged to protected `main` in its own reviewed PR.
 
 ```factory-task
-{"status":"approved","kind":"factory","allowed_paths":["tools/factory/engine.py","tools/factory/github_api.py","tools/factory/session.py","tools/factory/tests/test_engine.py","tools/factory/tests/test_session.py","tools/factory/tests/test_local_review.py","tools/factory/tests/test_local_review_queue.py","README.md","CONTRIBUTING.md","factory/github.md","factory/evidence.md"]}
+{"status":"approved","kind":"factory","allowed_paths":["tools/factory/engine.py","tools/factory/github_api.py","tools/factory/session.py","tools/factory/merge_safety.py","tools/factory/tests/test_engine.py","tools/factory/tests/test_session.py","tools/factory/tests/test_merge_safety.py","tools/factory/tests/test_local_review.py","tools/factory/tests/test_local_review_queue.py","README.md","CONTRIBUTING.md","factory/github.md","factory/evidence.md"]}
 ```
 
 requirements: []
@@ -26,6 +26,7 @@ When Gabriel, Felix and their agents have several pull requests open at the same
 - Every maintainer merge uses the ruleset bypass, which also skips the strict up-to-date rule (README, merge rules). The manual check sequence verifies head and policy but not containment, and cannot notice a concurrent merge by the other maintainer. GitHub's merge API pins only the head (`--match-head-commit`, `expectedHeadOid`), never the base, so merges by different maintainers must be serialized before the merge, not detected after it.
 - README step 8 asks to update all open PRs after every merge. Each update starts a fresh run and senior review, and every claimed review counts against `limits.max_reviews_per_pr` (`local_review_queue.py`), so a PR that waits while others merge can exhaust its limit.
 - Both GitHub transports reject every API path containing `..` as unsafe; the compare route `base...head` needs a narrow, tested exception.
+- `session.py` and `tests/test_session.py` are close to the regression guard that keeps a typical factory repair within the review input budget; the sweep and the merge helper live in `tools/factory/merge_safety.py` with their own tests, and `session.py` only wires them into its commands and `submit`.
 - Author containers have no GitHub or network access. A collision sweep therefore runs in `session.py` on the maintainer host, identically for Claude and Codex sessions, and only reads the candidate and control checkouts.
 
 ## Acceptance criteria

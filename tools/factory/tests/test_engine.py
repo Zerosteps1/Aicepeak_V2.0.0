@@ -28,6 +28,7 @@ class Transport:
         self.runs={}
         self.files=[{'filename':'example.txt','status':'modified'}]
         self.task={'status':'approved','kind':'factory','allowed_paths':['example.txt']}
+        self.compare={'status':'ahead','behind_by':0}
         self.pr={'number':1,'state':'open','draft':False,'changed_files':1,
                  'head':{'sha':'a'*40,'repo':{'full_name':'fixture/repo'}},
                  'base':{'ref':'main','sha':'b'*40},
@@ -41,6 +42,7 @@ class Transport:
             if path=='/repos/fixture/repo':return {'full_name':'fixture/repo','default_branch':'main'}
             if path.endswith('/pulls/1'):return copy.deepcopy(self.pr)
             if path.endswith('/git/ref/heads/main'):return {'object':{'sha':'b'*40}}
+            if '/compare/' in path:return copy.deepcopy(self.compare)
         if method=='PATCH' and '/check-runs/' in path:
             self.checks[int(path.rsplit('/',1)[-1])].update(copy.deepcopy(data))
             return {}

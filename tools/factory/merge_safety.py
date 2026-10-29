@@ -213,21 +213,28 @@ def merge(gh, pr, dry_run=False):
     except Blocked:
         raise Blocked(f'merge lock refs/{MERGE_LOCK} is held or could not be created; nothing was merged. '
                       f'If no merge is running, remove it with: {release}') from None
+    unknown = (f'merge outcome of PR #{pr} unknown; the lock stays so nobody merges against an unverified main. '
+               f'Check PR #{pr}: once it is merged (verify main) or certainly not merged, remove the lock with: {release}')
     keep, released = False, False
     try:
         current = gh.request('GET', f'/repos/{session.REPOSITORY}/git/ref/heads/main')['object']['sha']
         again, still = verify(gh, pr, config, policy)
         require(current == policy and again['head_sha'] == head and not still,
                 'main, the PR, its checks or threads changed before the merge; nothing was merged' + ''.join('; ' + p for p in still))
-        outcome = gh_merge(pr, head)
-        merged = gh.request('GET', f'/repos/{session.REPOSITORY}/pulls/{pr}')
+        # From the merge request on, only GitHub's confirmation or refusal may release the lock:
+        # without one (no answer, failed read-back, abort) GitHub may still merge against this main.
+        keep = True
+        try:
+            outcome = gh_merge(pr, head)
+            merged = gh.request('GET', f'/repos/{session.REPOSITORY}/pulls/{pr}')
+        except BaseException:
+            raise Blocked(unknown) from None
         if merged.get('merged') is not True:
-            if outcome == 'refused':
-                raise Blocked(f'GitHub refused the merge (changed head, conflict or permission); nothing was merged; inspect PR #{pr}')
-            # No answer is no refusal: GitHub may still merge against the main this run verified.
-            keep = True
-            raise Blocked(f'merge outcome of PR #{pr} unknown; the lock stays so nobody merges against an unverified main. '
-                          f'Check PR #{pr}: once it is merged (verify main) or certainly not merged, remove the lock with: {release}')
+            if outcome != 'refused':
+                raise Blocked(unknown)
+            keep = False
+            raise Blocked(f'GitHub refused the merge (changed head, conflict or permission); nothing was merged; inspect PR #{pr}')
+        keep = False
         commit = merged.get('merge_commit_sha') or ''
         require(re.fullmatch('[0-9a-f]{40}', commit), f'GitHub did not report the merge commit; inspect PR #{pr}')
         parents = [p['sha'] for p in gh.request('GET', f'/repos/{session.REPOSITORY}/commits/{commit}')['parents']]

@@ -27,6 +27,7 @@ class MergeFixture(test_session.GitHubFixture):
         self.open_prs, self.pr_files, self.head_checks, self.threads = [], {}, [], []
         self.compare = {'status': 'ahead', 'behind_by': 0}
         self.merges, self.merge_parents, self.lock, self.locks, self.on_lock = [], None, None, [], None
+        self.read_back_fails, self.answered = None, False
 
     def command(self, arguments, data=None):
         if arguments[:2] == ['api', 'graphql']:
@@ -37,12 +38,17 @@ class MergeFixture(test_session.GitHubFixture):
     def gh_merge(self, pr, head, outcome='sent', merged=True):
         """Stands in for `gh pr merge --admin --match-head-commit` run with the maintainer's login."""
         self.merges.append((pr, head))
+        self.answered = True
         if merged:
             self.pr.update(state='closed', merged=True, merge_commit_sha='c' * 40)
         return outcome
 
     def request(self, method, path, data=None):
         prefix = '/repos/' + REPOSITORY
+        if method == 'GET' and path == prefix + '/pulls/1' and self.answered:
+            self.answered = False  # only the read-back right after the merge request can fail
+            if self.read_back_fails:
+                raise self.read_back_fails
         if method == 'GET' and path.startswith(prefix + '/compare/' + self.case.base + '...' + self.pr['head']['sha']):
             return copy.deepcopy(self.compare)
         if method == 'GET' and path == prefix + '/commits/' + 'c' * 40:
@@ -276,7 +282,13 @@ class MergeSafety(unittest.TestCase):
         with self.assertRaisesRegex(Blocked, 'outcome of PR #1 unknown; the lock stays'), self.merging('unknown', merged=False):
             merge_safety.merge(self.gh, 1)
         self.assertEqual(self.gh.lock, {'ref': 'refs/tags/factory-merge-lock', 'sha': self.base})
-        self.gh.lock = None
+        for failure in (Blocked('GitHub GET /repos: HTTP 502'), KeyboardInterrupt()):
+            with self.subTest(read_back=type(failure).__name__):
+                self.gh.lock, self.gh.read_back_fails = None, failure
+                with self.assertRaisesRegex(Blocked, 'outcome of PR #1 unknown; the lock stays'), self.merging('unknown', merged=False):
+                    merge_safety.merge(self.gh, 1)
+                self.assertIsNotNone(self.gh.lock, 'a merge GitHub never confirmed must keep the lock')
+        self.gh.lock, self.gh.read_back_fails = None, None
         with self.merging('unknown', merged=True):
             self.assertTrue(merge_safety.merge(self.gh, 1)['merged'])  # GitHub did merge: verified as usual
         self.assertIsNone(self.gh.lock)

@@ -1,14 +1,58 @@
 # Aicepeak
 
-Produktquelle: [AICEPEAK_NORDSTERN.md](AICEPEAK_NORDSTERN.md). Der Inhalt bleibt unverändert; `northstar_approved: false` und `product_checks_ready: false` sperren Produktentwicklung bis zur ausdrücklichen Freigabe und passenden Produktprüfungen.
+This repository holds two things: the product north star for Aicepeak ([AICEPEAK_NORDSTERN.md](AICEPEAK_NORDSTERN.md), German, unchanged) and the **AI software factory** that builds the product. The factory turns an approved work order into a reviewed pull request. An isolated AI author writes the change, deterministic tests and an independent GPT-6 Astra reviewer check it, a bounded automatic correction loop fixes blocking findings, and a human decides the merge.
 
-Die Softwarefabrik ist auf `main` installiert; die GitHub-Schutzregeln und benötigten Environment-Secrets sind geprüft aktiv. **Der Review-Fix-Durchlauf ist seit 29.10.2026 live abgenommen (PR #20); die Geräte-, Konkurrenz- und Identitäts-Gegenproben stehen noch aus.** Maßgeblich sind [Policy](factory/policy.md), [Konfiguration](factory/config.json) und [echte Prüfnachweise](factory/evidence.md). Keine alten Projekte, privaten Chats, Workbrain-Inhalte oder persönlichen Agenten-Memories als Projektquelle.
+Only this repository, its work orders and review evidence, and official vendor documentation are project sources. Old projects, private chats, Workbrain content and personal agent memories are not.
 
-## Gemeinsamer Einstieg für Gabriel und Felix
+## Status on 2026-10-29
 
-Gabriel nutzt `Zerosteps1`; Felix nutzt `truFelix-Zentru` und `ftrutschnig`. Beide Felix-Konten sind verifiziert und gleichberechtigt konfiguriert. Jeder verwendet seine eigene GitHub-Anmeldung und einen eigenen zeitlich begrenzten ChatGPT-Business-Codex-Token. Eine Freigabe über das zweite eigene Konto ist keine unabhängige menschliche Freigabe.
+| Area | State |
+|---|---|
+| Factory | Installed on `main`; rulesets, environment secrets and both Apps verified active. The review-fix loop passed live on PR #20 and again on PR #13 (2026-10-29: Astra finding F-006, automatic Claude correction, re-review `pass`). Ready for factory and documentation work. |
+| Full operational acceptance | Open: Felix's own reviewer device, two devices racing for one claim, a new head during a running review, a foreign App with the same check name, authenticated skill/MCP calls inside the author container. See [evidence](factory/evidence.md). |
+| Product development | Blocked by design: `northstar_approved: false` and `product_checks_ready: false` in [factory/config.json](factory/config.json). Only `factory` and `smoke` work orders run. |
+| Architecture | Non-binding draft proposal v0.4 (merged with PR #13): [specification sheet and target architecture](docs/architecture/AICEPEAK_SPEC_AND_ARCHITECTURE.md). Its AD-01..AD-12 bind only after adoption through decision records. |
 
-Ein sauberer Control-Checkout bleibt auf `main`; Codearbeit erfolgt in einer getrennten Arbeitskopie. Kein `git pull` oder Branchwechsel über fremde uncommittete Änderungen hinweg.
+The start-readiness review with measured times, friction and recommendations is in [factory/review-2026-10-29.md](factory/review-2026-10-29.md).
+
+## How the factory works
+
+```mermaid
+flowchart LR
+  T[Work order<br/>docs/work] --> A[Isolated author<br/>Claude Code]
+  A --> P[Pull request<br/>with handoff]
+  P --> D[Deterministic tests<br/>no secrets, no network]
+  D --> R[Senior review<br/>GPT-6 Astra high<br/>maintainer device]
+  R -->|pass| M[Human merge<br/>Gabriel or Felix]
+  R -->|P0 or P1| C[Automatic correction<br/>Claude in GitHub Actions]
+  C -->|writer App push| D
+```
+
+1. **Work order.** `docs/work/<ID>.md` states goal, non-goals, acceptance criteria and the allowed paths. It is merged in its own PR first, because the factory reads tasks only from the protected base.
+2. **Author.** Claude Code works in a fresh, isolated container with the four canonical skills `factory-start`, `factory-change`, `factory-review` and `factory-fix-review`, no personal configuration and only proxied provider access. `runners` allows only `claude`; the optional Codex author has only an API-key path and stays disabled for automatic corrections.
+3. **Pull request.** `session.py submit` runs an advisory Astra preflight, opens the PR with exactly one `factory-handoff` block and marks it ready only after a `pass`.
+4. **Deterministic gate.** The trusted pipeline on `main` takes a snapshot bound to PR, head, base and policy, then runs syntax, contract, workflow, link and secret checks plus the regression suite without secrets or network.
+5. **Senior review.** GPT-6 Astra at effort `high` reviews the snapshot in a fresh, tool-less session on a maintainer device (`session.py watch`). GitHub assigns one owner per review; only the publisher App writes the required check.
+6. **Correction.** P0/P1 findings on non-control paths start one automatic correction: Claude Sonnet 5.5 in GitHub Actions through Workload Identity Federation; the writer App pushes the verified patch, which starts fresh tests and a fresh review. Control paths (`.github/`, `factory/`, `tools/factory/`, `docs/work/`, README and others in `protected_paths`) are never auto-corrected.
+7. **Merge.** With both required checks green and threads resolved, Gabriel or Felix decides. No second human approval is required; agents and bots never merge.
+
+A typical PR needs 6 to 10 minutes from push to two green checks (tests 3 to 5, review 2 to 3), plus about 5 minutes per automatic correction, as long as a maintainer device runs the watcher.
+
+## Roles
+
+| Role | Who | May | May not |
+|---|---|---|---|
+| Maintainer | Gabriel (`Zerosteps1`), Felix (`truFelix-Zentru`, `ftrutschnig`) | Write work orders, open PRs, run the reviewer, give feedback, merge | Push to `main`; approve their own work through a second own account |
+| Author | Claude Code in the isolated container | Change files inside the work order's allowed paths and deliver a patch | Push, merge, see GitHub or provider credentials |
+| Senior reviewer | GPT-6 Astra `high` on a maintainer device | Read the snapshot and return structured findings | Use tools, edit, approve a merge |
+| Publisher App | `aicepeak-publisher-zerosteps1` (5510081) | Publish the required checks and summaries | Change code |
+| Writer App | `aicepeak-writer-zerosteps1` (5510093) | Push a verified correction to the PR branch | Change `main` or merge |
+
+Both Felix accounts belong to the same person: an approval through the second account is not an independent human review. Felix has write access, is in CODEOWNERS and is a bypass actor of both rulesets; repository settings, rulesets, environments and App keys stay with the repository owner.
+
+## Prerequisites and one-time device setup
+
+Needed: Python 3.11 or newer, Git, `gh` with your own login, Docker (only for isolated author sessions), Codex CLI exactly `0.164.0`, and a ChatGPT Business seat with Codex. Verifier versions and hashes are pinned in [factory/tools.lock.json](factory/tools.lock.json); `actionlint` and `gitleaks` are needed only for a full local `verify.py` run.
 
 ```sh
 git clone https://github.com/Zerosteps1/Aicepeak_V2.0.0.git Aicepeak-factory
@@ -18,48 +62,55 @@ python3 tools/factory/doctor.py --root . --runner claude
 python3 tools/factory/clients.py check --root .
 ```
 
-Benötigt: Python >=3.11, Git, gh mit persönlicher Anmeldung, Docker für isolierte Autoren/Tests, Codex CLI exakt 0.164.0 für den lokalen Reviewer. Prüfer-Versionen und Hashes: [tools.lock.json](factory/tools.lock.json). Der Doctor prüft Voraussetzungen; auch ein positiver Befund ist keine Live-Abnahme. Persönliche globale Konfiguration wird nicht verändert.
+Keep this clone as a clean control checkout on `main`; do code work in a separate working copy or worktree. Never pull or switch branches over someone else's uncommitted changes. The doctor checks prerequisites only; a positive result is no live acceptance. Personal global configuration is not changed.
 
-Auf jedem Reviewer-Gerät einmal den eigenen Token interaktiv im Schlüsselbund hinterlegen:
+Store your own Codex token once per reviewer device and run the reviewer smoke:
 
 ```sh
 security add-generic-password -a "$USER" -s aicepeak-factory-codex-access-token -w
 python3 tools/factory/local_review.py --smoke
 ```
 
-Der Publisher-App-Schlüssel wird getrennt und nur auf vertrauenswürdigen Maintainer-Geräten benötigt: Schlüsselbund-Dienst `aicepeak-factory-publisher-key`, Inhalt base64-kodierter PEM; alternativ `FACTORY_PUBLISHER_APP_PRIVATE_KEY` im vertrauenswürdigen Prozess. Den Writer-Schlüssel nicht an den Reviewer verteilen. Keine Tokens oder PEM-Inhalte in Chat, Git, PR-Text oder Modell-Shell. Details und Token-Grenzen: [Clients](factory/clients.md#senior-reviewer-maintainer-local).
+The smoke must report `"status": "passed"` with `gpt-6-astra` and effort `high`. No `OPENAI_API_KEY` is needed for reviews.
 
-## Arbeiten und PR-Feedback
+Maintainer devices that publish review results also need the publisher App key, ideally a new key per device generated on the App page. Store it base64-encoded from an absolute path (a wrong path creates an empty entry):
 
-Autor-Container und native Skills:
+```sh
+security add-generic-password -U -a "$USER" -s aicepeak-factory-publisher-key \
+  -w "$(base64 < /absolute/path/key.pem | tr -d '\n')"
+```
+
+Never put tokens or PEM contents into chat, Git, PR text or a model shell, and never distribute the writer key. Details and token limits: [clients](factory/clients.md#senior-reviewer-maintainer-local).
+
+Isolated author sessions additionally need the client image and, locally, `ANTHROPIC_API_KEY` and `CONTEXT7_API_KEY` in the launcher environment (Anthropic API usage, billed per use):
 
 ```sh
 export FACTORY_DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
 docker build -f factory/Dockerfile -t aicepeak-factory-clients:codex-0.164.0-claude-2.1.311 factory
 python3 tools/factory/clients.py smoke --root .
-python3 tools/factory/clients.py launch --root . --runner claude
 ```
 
-Bei `docker-credential-desktop: executable file not found` den `Contents/Resources/bin`-Ordner der tatsächlichen Docker-App temporär in PATH aufnehmen; auf Gabriels Mac heißt sie `Docker 2.app`. Keine Credential-Store-Einstellungen löschen. Der Launcher übernimmt bewusst keine persönliche Docker-Konfiguration; `FACTORY_DOCKER_HOST` bezeichnet den eigenen lokalen Docker-Endpunkt.
+If Docker reports `docker-credential-desktop: executable file not found`, add the `Contents/Resources/bin` folder of the actual Docker app temporarily to `PATH` (on Gabriel's Mac it is `Docker 2.app`); do not delete credential-store settings.
 
-Die Factory nutzt `factory-start`, `factory-change`, `factory-review`, `factory-fix-review`. Kanonischer Inhalt liegt in `.agents/skills`; die Claude-Adapter werden daraus erzeugt und auf Drift geprüft. Der Container startet mit leerem persönlichen Kontext, expliziten MCPs und schreibgeschützten Regeln. Ein gewöhnlicher Host-Start ist nicht technisch gleichwertig isoliert. Insbesondere `codex` direkt im Repository kann die internen Broker-MCP-Adressen nicht erreichen.
+## Daily use, step by step
 
-Der lokale Claude-Autor benötigt einen Console-API-Zugang im Broker; die GitHub-Korrektur authentifiziert sich über die bereits live geprüfte Workload Identity Federation. Der **Codex-Reviewer** verwendet Business und benötigt keinen `OPENAI_API_KEY`. Der optionale isolierte **Codex-Autor** hat bisher nur einen API-Key-Pfad; Business-Auth mit sicheren Broker-Limits ist noch nicht nachgewiesen. Deshalb bleibt er für automatische Korrekturen gesperrt. Kein stiller Wechsel des Autor-Clients. Siehe [offene Grenzen](factory/evidence.md).
+1. **Write a work order.** Copy [docs/work/TEMPLATE.md](docs/work/TEMPLATE.md), fill in goal, non-goals, acceptance criteria and allowed paths, set `status` to `approved` and merge it in its own PR (handoff task `docs/work/FACTORY-001.md` allows `docs/work/`). One work order per feature, not per commit.
+2. **Implement.** In a separate candidate checkout on a feature branch: `python3 tools/factory/clients.py launch --root . --runner claude`, then the `factory-change` skill.
+3. **Submit.** Push the candidate branch, then from the control checkout:
 
-Aus dem sauberen Control-Checkout, mit separatem sauberen Kandidaten-Branch:
+   ```sh
+   python3 tools/factory/session.py submit --candidate /path/to/candidate \
+     --task docs/work/TASK.md --runner claude \
+     --title 'Concrete change' --body-file /path/to/pr-body.md
+   ```
 
-```sh
-python3 tools/factory/session.py preflight --candidate /pfad/zum/kandidaten --task docs/work/AUFTRAG.md
-python3 tools/factory/session.py submit --candidate /pfad/zum/kandidaten --task docs/work/AUFTRAG.md --runner claude --title 'Konkrete Änderung' --body-file /pfad/zur/pr-beschreibung.md
-python3 tools/factory/session.py watch --pr 123
-python3 tools/factory/session.py response --pr 123 --question 'Welche Voraussetzung fehlt für diesen Test?' --post
-```
+   `submit` reruns the advisory preflight, creates a draft, marks it ready only after `pass` and a fresh head/base check, and then watches the PR. If the preflight lacks context (for example an unchanged module the change relies on), add `--context <path>`.
+4. **Review.** Every ready PR waits for the binding review until a maintainer device runs `python3 tools/factory/session.py watch --pr <n>`. Without a running watcher nothing reviews on a laptop.
+5. **Act on findings.** P0/P1 block and start the automatic correction where allowed; otherwise the PR gets `needs-author-action` and you continue with `factory-fix-review`. P2 findings are hints.
+6. **Give feedback.** Ordinary PR comments, reviews and inline comments by Gabriel or Felix start a fresh review that takes them into account. `session.py response --pr <n> --question '…' --post` answers questions with citations and changes nothing.
+7. **Merge.** See [merge rules](#merge-rules). After every merge, update the control checkout (`git pull --ff-only`) and bring open PRs up to date with "Update branch"; their fresh run follows automatically.
 
-Pfade und PR-Nummer ersetzen. `preflight` ist eine quellbasierte Beratung und behauptet keine ausgeführten Tests. `submit` prüft den Stand erneut, erstellt zunächst einen Draft und markiert ihn nur nach vollständigem `pass` und erneuter Head-/Base-Prüfung als bereit. Bei einem Standwechsel bleibt er Draft; ausdrücklich erlaubte unvollständige Vorprüfungen ebenfalls. `watch` läuft auf dem jeweiligen eingeschalteten Gerät, nicht heimlich in GitHub. Es verarbeitet neue authentifizierte Reviewaufträge und erhält die konfigurierte automatische Korrektur. Ohne laufenden lokalen Watcher startet GitHub keinen Prozess auf einem Laptop; manueller Einstieg ist `local_review.py --pr 123`.
-
-Normale Kommentare, Inline-Kommentare und Reviews bestätigter Maintainer lösen über die GitHub-Dispatcher eine erneute Prüfung aus. Geändertes Feedback macht den alten Kontext ungültig. Der Reviewer beantwortet Fragen und trennt Defekte von Erweiterungswünschen; berechtigte Findings gehen an denselben Autor-Runner. Sachliche Einwände und fehlende Voraussetzungen werden sichtbar an Menschen übergeben. Threads werden nicht automatisch geschlossen. `response` verändert keinen Code und keinen Gate-Status; ohne `--post` bleibt die Antwort lokal. Es gibt keinen vorgetäuschten automatischen `/ai response`-Slash-Befehl.
-
-**Alle wartenden PRs prüfen.** Auf einem eingerichteten Maintainer-Gerät, aus dem sauberen Control-Checkout auf aktuellem `main`; mit Ctrl-C beenden:
+Review all waiting PRs on a set-up maintainer device (stop with Ctrl-C):
 
 ```sh
 while true; do
@@ -70,46 +121,58 @@ while true; do
 done
 ```
 
-Nach jedem Merge auf `main` den Control-Checkout aktualisieren (`git pull --ff-only`) und offene PRs per „Update branch“ auf den neuen Stand bringen; erst dann prüft die Fabrik sie erneut.
+## Status labels and limits
 
-## Review und Korrektur
+| Signal | Meaning |
+|---|---|
+| `awaiting-senior-review` | Deterministic checks passed; the binding Astra review has not run yet. A maintainer starts it with `session.py watch --pr <n>`. |
+| `needs-author-action` | Tests or review block, a limit is exhausted, or a control path needs a human-driven fix. The PR comment names the next step and, for a failed author run, a classified launcher reason. |
+| No label, two green checks | A human decides about the merge. |
 
-PR → vertrauenswürdiger Snapshot → secretfreie deterministische Tests → Reviewauftrag → exklusiver GitHub-Claim → frische werkzeuglose Astra/high-Sitzung auf einem Maintainer-Gerät → serialisierte GitHub-Veröffentlichung → gegebenenfalls isolierter Claude-Autor → geprüfter Writer-Push → neue Tests und neues Review → menschliche Freigabe/Merge.
+Per PR (from [factory/config.json](factory/config.json)): at most 2 automatic correction rounds, 6 claimed reviews, USD 25 author budget (USD 12 per run), 40 changed files, about 800 KB of review material and a 15-minute timeout per run. Exhausted limits, conflicts and missing credentials always end in `needs-author-action`, never in a silent pass.
 
-Zwei Geräte dürfen denselben Auftrag beobachten; nur eines erhält die Zuständigkeit und startet das Modell. Das andere überschreibt kein Ergebnis. Nur die vorgesehene Publisher-App veröffentlicht die Pflichtchecks. Ergebnis und Freigabe sind an PR, Head, Base, Policy und echte GitHub-Läufe gebunden. Persönliche Business-Tokens bleiben lokal. Der Reviewer bekommt keine Shell-/Schreibwerkzeuge.
-
-Maximal zwei Korrekturrunden und sechs beanspruchte Reviews je PR; Fehler, Abbruch und Dry-run erstatten keinen Reviewplatz. Fehlgeschlagene Veröffentlichungen geben genaue Wiederaufnahme-IDs aus. Eine aufgegebene Zuständigkeit wird nicht automatisch gestohlen: nach Prüfung bewusst einen neuen Lauf starten, der alte Ergebnisse und Korrekturfreigaben widerruft:
+A stuck run is restarted deliberately, which revokes earlier results; GitHub's "Re-run jobs" is refused because it would reuse old reservations:
 
 ```sh
 gh workflow run factory.yml --repo Zerosteps1/Aicepeak_V2.0.0 --ref main -f pr=123 -f retry=true
 ```
 
-Es gibt keine automatische Merge-Berechtigung. Beide App-gebundenen Checks laufen bei jedem PR; mit zwei grünen Checks entscheidet Gabriel oder Felix selbst über den Merge, eine zweite menschliche Freigabe ist nicht vorgeschrieben. CODEOWNERS hält die Zuständigkeit fest. Gabriel und Felix können einen hängenden PR bewusst per Bypass mergen (nur über den PR, von GitHub protokolliert, Grund als PR-Kommentar); Agents und Bots haben keinen Bypass. Der vollständige Soll-/Ist-Abgleich vom 28.10.2026 meldete keine Abweichungen; [Nachweis](factory/evidence.md#live-aktivierung-am-28102026).
+## Merge rules
 
-**Status auf einen Blick.** `awaiting-senior-review`: deterministische Prüfungen bestanden, das verbindliche Astra-Review ist noch nicht gelaufen; ein Maintainer startet es mit `session.py watch --pr <Nummer>`. `needs-author-action`: Tests oder Review blockieren, der Autor ist am Zug. Ohne diese Labels und mit zwei grünen Pflichtchecks entscheidet ein Mensch über den Merge. Drafts haben rote Pflichtchecks, aber kein `needs-author-action`. Offene Reviews: `gh pr list --repo Zerosteps1/Aicepeak_V2.0.0 --label awaiting-senior-review`. Die Labels zeigen den letzten Pipeline-Lauf; verbindlich bleiben die Pflichtchecks.
+- Normal case: both App-bound required checks `factory/deterministic` and `factory/senior-review` are green and all threads are resolved; then Gabriel or Felix merges. The "updates by humans only" ruleset lets `main` change only through a maintainer's PR merge, so on the command line the merge is `gh pr merge <n> --merge --admin`. That flag also skips the check rule, so use it only after confirming both checks are green.
+- Stuck PR (no reviewer device, model failure, exhausted limits): a maintainer may merge deliberately through the ruleset bypass. Write the reason as a PR comment first; GitHub records every bypass. A bypassed PR has no independent review, so use this sparingly.
+- Never: direct pushes to `main`, auto-merge, agent or bot merges, or changing protection rules to force a green result.
 
-## Stand der Aktivierung und verbleibende Abnahme
+## Costs
 
-1. Menschlicher Bootstrap und Linux-Reparatur sind mit PR #9 und #11 übernommen. Die einmalig genehmigte Ausnahme für #11 ist geschlossen; beide Pflichtchecks sind wieder aktiv. Keine dauerhafte Bootstrap-Ausnahme übernehmen.
-2. Environment `factory-control`: ausschließlich Branch `main`; Publisher-/Writer-Schlüssel und `CONTEXT7_API_KEY` vorhanden. Die beiden Rulesets entsprechen der versionierten Vorgabe. `settings.py inspect`/`diff` dient dem erneuten Abgleich; `apply` ist nur bei einem tatsächlich geprüften Unterschied nötig. Kein OpenAI-API-Key für den Reviewer.
-3. Host-/Containergrenze und Gabriels Astra-Anmeldung wurden getestet; die authentifizierte Claude-Skill-Erkennung, native MCP-Aufrufe und Felix' eigener Reviewer-Smoke sind gesonderte offene Nachweise. Die Syntax-/Unit-Prüfung ersetzt sie nicht.
-4. [Smoke-PR](docs/work/FACTORY-SMOKE.md): sauberer Gegenfall, semantischer Defekt, Reviewer-Finding, Writer-Korrektur, echter Folgetrigger, neues Review und menschliches Feedback sind mit PR #20 live bestanden ([Nachweis](factory/evidence.md#status-on-2026-10-29-live-review-fix-acceptance-passed)). Offen: Felix' eigenes Reviewer-Gerät, zwei Geräte für denselben Claim, neuer Head während eines Reviews, fremde App mit gleichem Checknamen. Erst danach gilt die vollständige Betriebsabnahme.
+| Item | Cost |
+|---|---|
+| Senior reviews and preflights | ChatGPT Business Codex quota of the maintainer running them; no API billing |
+| Automatic corrections | Anthropic API usage in the Console workspace of the WIF federation, capped per run and per PR; check balance and auto-reload in the Console |
+| Local isolated author sessions | Anthropic API usage through `ANTHROPIC_API_KEY` |
+| GitHub Actions | Watch usage and the plan; the repository is currently public |
+
+No additional review platform or memory database is used. There is no promise of free use.
+
+## Repository map
+
+| Path | Content |
+|---|---|
+| [AICEPEAK_NORDSTERN.md](AICEPEAK_NORDSTERN.md) | Canonical product goal (German); never copied |
+| [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md), [CONTRIBUTING.md](CONTRIBUTING.md) | Shared agent rules and the contribution flow |
+| [factory/policy.md](factory/policy.md), [factory/config.json](factory/config.json) | Binding policy, models, maintainers, limits, protected paths |
+| [factory/evidence.md](factory/evidence.md), [factory/review-2026-10-29.md](factory/review-2026-10-29.md) | Real verification evidence and the start-readiness review |
+| [factory/github.md](factory/github.md), [factory/clients.md](factory/clients.md) | GitHub operation, rulesets, isolated clients and the local reviewer |
+| `.agents/`, `.claude/`, `.codex/` | Canonical skills and roles; generated native adapters (`clients.py sync`, checked by `clients.py check`) |
+| `.github/` | Trusted pipeline, dispatcher, feedback ingress, CODEOWNERS, templates |
+| `tools/factory/` | Factory tools and their regression tests |
+| [docs/work/](docs/work/TEMPLATE.md) | Approved work orders |
+| [docs/decisions/](docs/decisions/0005-maintainer-local-senior-review.md) | Decision records |
+| [docs/architecture/](docs/architecture/AICEPEAK_SPEC_AND_ARCHITECTURE.md) | Non-binding architecture proposal and its validation |
+
+Full local verification (needs `actionlint` and `gitleaks`):
 
 ```sh
 python3 tools/factory/verify.py --root .
-python3 tools/factory/clients.py smoke --root .
-python3 tools/factory/local_review.py --smoke
+python3 -I -B -m unittest discover -s tools/factory/tests
 ```
-
-## Wegweiser
-
-| Bereich | Verbindlicher Inhalt |
-|---|---|
-| `AICEPEAK_NORDSTERN.md` | Kanonisches Produktziel; keine inhaltliche Kopie |
-| `AGENTS.md`, `factory/` | Regeln, Konfiguration, Reviewvertrag, Betrieb und Nachweise |
-| `.agents/`, `.claude/`, `.codex/` | Gemeinsame Skills und native Adapter |
-| `docs/work/` | Autorisierte Aufgaben mit überprüfbarer Abnahme |
-| `.github/` | Dispatcher, getrennte Workflow-Rechte, CODEOWNERS und Templates |
-| `tools/factory/` | Kleine ausführbare Werkzeuge und Regressionen |
-
-Werkzeuge und Kosten: vorhandene Python-Standardbibliothek, gh, Docker und die zwei vorhandenen Clients genügen. Keine zusätzliche KI-Review-Plattform oder Memory-Datenbank. Business-Reviews teilen das persönliche Codex-Kontingent; Claude-WIF-Läufe bleiben API-Verbrauch, der nur soweit vorhanden durch Team-Guthaben gedeckt wird. Actions-Verbrauch und vorhandene Tarife separat beobachten; keine Zusicherung kostenloser Nutzung.

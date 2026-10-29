@@ -1,18 +1,5 @@
 # Verification status and pending activation
 
-## Merge safety for parallel PRs (FACTORY-004) — prepared 2026-10-29
-
-Prepared against protected main `92a5c25a734d053c07d83768d790f07045dc6b3d` under work order `docs/work/FACTORY-004.md`, which is merged in its own PR first. Motivation: parallel PRs that are each green alone can break each other at merge time. Here the gate tested PR heads whose base SHA equalled `main` without proving that the head contained `main` (PRs #4 and #5 had a base their head did not contain), and every maintainer merge bypasses GitHub's own up-to-date rule.
-
-Executed locally on the candidate:
-
-- Full suite: **241 tests, OK, one Linux-only skip**. New regressions cover a head behind `main` (both gates `failure`, `needs-author-action`, no review request), the exact compare-route exception in both GitHub transports (traversal and two-dot forms stay rejected), the collision sweep on real temporary repositories (overlap, shared work order, trial-merge conflicts, unfetchable heads as limitation, no writes to candidate or control), `submit` stopping before any model call when the candidate is behind `main`, and `merge` refusing missing, failed, running, foreign-App or stale-bound checks, unresolved threads, drafts and heads behind `main` without calling GitHub's merge, plus reporting a concurrent `main` change.
-- An independent fresh-context code review found six defects, all fixed with regressions: a fork or malformed open PR could block every sweep (now skipped or a limitation); fetch and trial-merge timeouts blocked instead of reporting a limitation; a `merge-tree` exit 1 without file names read as clean (now unknown); the fetch let Git list the candidate's refs with the candidate's own config (alternate refs off, local scratch refs instead); the PR body could describe an older head than the submitted one; and `merge` did not notice human feedback or a handoff changed after the passing review.
-- `verify.py --structure-only` PASS, `git diff --check` clean, Gitleaks no leaks. Actionlint is not installed on this macOS host; no workflow file changes, and the trusted Linux gate runs it.
-- Live, read-only, with Gabriel's own `gh` login: the sweep on the work-order branch reported `main` contained and no open PRs; the compare route through the real human transport reported PR #26's head as not containing current `main` and `main` as containing it; the hardened HTTPS fetch of `refs/pull/26/head` and `refs/pull/13/head` into the scratch repository matched the API head SHAs (the hardened fetch transferred 6 objects), and their trial merge was clean.
-
-Not executed: `session.py merge` against a real open PR (none existed while preparing) and the binding Astra/high review. The first merge with the new command records its PR comment as live evidence in a later update.
-
 ## Review-context repair and macOS onboarding — 2026-10-29
 
 Prepared against protected main `60f42313701231c727da7b554864729878bc4988` after Gabriel requested repair of the missing-context blocker on PR #25. Gabriel separately approved the canonical north star; [decision 0006](../docs/decisions/0006-northstar-approval.md) records the exact document blob. Architecture is **not approved** and is handled separately; `product_checks_ready` remains `false`.

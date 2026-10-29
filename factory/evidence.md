@@ -1,5 +1,21 @@
 # Verification status and pending activation
 
+## Review-context repair and macOS onboarding — 2026-10-29
+
+Prepared against protected main `60f42313701231c727da7b554864729878bc4988` after Gabriel requested repair of the missing-context blocker on PR #25. Gabriel separately approved the canonical north star; [decision 0006](../docs/decisions/0006-northstar-approval.md) records the exact document blob. Architecture is **not approved** and is handled separately; `product_checks_ready` remains `false`.
+
+The repair adds protected-policy context rules for operating documents, selected head-revision source, and bounded historical GitHub check/run evidence. New rules apply only after their control PR is merged; this PR remains subject to the unchanged base. The macOS README now includes the owner access handoff, pinned CLI setup, personal GitHub and Codex authentication, validated publisher-key import, local author credentials, and a concrete Felix smoke PR. Device acceptance requires Felix's own review claim, not merely green checks produced by another maintainer.
+
+Executed locally on the proposed repair:
+
+- Context tests were first run against the old implementation: the four added behavior tests failed as expected (13 failing assertions including subcases). The implementation then passed them. After the independent review's added boundary coverage, all 14 context tests and all 26 engine tests pass.
+- Full candidate suite: **231 tests executed, 229 passed, one Linux-only skip, one environment error**. Unchanged protected-base suite against the candidate: **221 executed, 219 passed, the same skip and error**. The error is `test_local_review.ToolLessSession.test_reviewer_session_cannot_execute_code_requested_by_the_model`: this agent sandbox denies `bind(127.0.0.1, 0)` before the fake model server starts (`PermissionError: Operation not permitted`). This is not a full local green run; tests and protections were not weakened or skipped to hide it.
+- Structure, syntax, adapter drift, internal links, Actionlint/workflow/cache/Action-SHA checks, Gitleaks and `git diff --check` passed.
+- Historical check records were freshly fetched via the GitHub connector's commit check-run collections, and run/job records via Actions endpoints. Their actual App/binding/workflow identities passed the new evidence assembler. A PR-25-shaped documentation packet, including selected source, both document revisions, north star and the existing 18 KB reserve, remains below the unchanged 800 KB limit. This is a source-material check, not a newly executed model review.
+- An independent fresh-context code reviewer inspected the implementation, tests and final macOS commands. Its two findings (missing doctor/reviewer source and ambiguous first-device acceptance when another watcher wins) were corrected and rechecked; no remaining concrete blocker was reported. This advisory review is not the binding GitHub gate.
+
+Not executed here: Felix's device setup, new authenticated author/MCP calls, container smoke, or a fresh binding Astra review of the repaired documentation packet. The local author launcher reports missing `ANTHROPIC_API_KEY` and `CONTEXT7_API_KEY`; no credentials were read or invented. This is a manually prepared protected-control change, not automatic remediation of control paths. Prior live acceptance records below remain historical evidence only.
+
 ## Status on 2026-10-29: live review-fix acceptance passed
 
 Checked by Claude Code on Gabriel's machine with his explicit authorization to edit and merge. Only this repository, its GitHub runs and checks, and official vendor documentation were used. The full assessment, PR decisions and start checklist are in [review-2026-10-29.md](review-2026-10-29.md).

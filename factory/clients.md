@@ -138,3 +138,11 @@ Local correction evidence from that Codex session: 71 unit tests passed, adapter
 ## Limits of the billing estimate
 
 Federation changes authentication, not billing. The Claude author consumes API usage in the configured Console organization. Plan credits may cover it; purchased credits, auto-reload and contracts can create charges. The broker uses configured prices and conservative text reservations, not an independent invoice meter or a guarantee against undocumented provider context/price changes. The live federation smoke proves identity and inference, not credit eligibility. No seven-day delay is inferred merely from linking accounts.
+
+## Source context for binding reviews
+
+The protected base configuration may define `review_context_rules`. Each rule has `changed_paths` (exact files or prefixes ending in `/`), `paths` (exact repository files), `checks` (historical publisher check IDs), and `runs` (historical factory workflow IDs). A matching rule adds unchanged source from the **candidate head**, while the rule selection itself comes only from the **protected policy**. Changed files already have complete base/head evidence. The reviewer never executes these sources. The existing fixed `review_context_paths` remain base-revision manifests.
+
+The operating-document rule supplies the launcher, session, verifier, engine and dispatcher implementation plus the relevant operating documents. Explicit historical records for PRs #20/#13/#24 are read through the GitHub API, including check App/SHA bindings and run/job outcomes; failures remain visible. These are historical facts, never approval of the current PR. No URLs from document prose are fetched.
+
+Limits are 20 rules, 30 selected source files, 20 checks and 10 runs across matching rules. Missing files, symlinks, wrong publisher/workflow identity, incomplete trees, or oversized review material block without truncation. Update the narrowly scoped selectors or historical IDs through a reviewed control PR when new context is needed. Avoid adding product-wide context to every PR. `session.py --context` still supplements the advisory preflight only; binding context is maintained in these protected rules. New rules become active **after merge**; the PR introducing them is still reviewed under its unchanged base.

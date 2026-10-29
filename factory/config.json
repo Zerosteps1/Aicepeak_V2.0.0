@@ -99,6 +99,12 @@
       "paths": [],
       "checks": [123428683684, 123429145036, 123433030748, 123433506193, 123449497386, 123450236720, 123431207739],
       "runs": [40868312156, 40869597828, 40874403001, 40868924016]
+    },
+    {
+      "changed_paths": ["factory/config.json"],
+      "paths": ["tools/factory/review_context.py"],
+      "checks": [],
+      "runs": []
     }
   ],
   "review_context_paths": [

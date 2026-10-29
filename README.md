@@ -97,8 +97,8 @@ If Docker reports `docker-credential-desktop: executable file not found`, add th
 ## Daily use, step by step
 
 1. **Write a work order.** Copy [docs/work/TEMPLATE.md](docs/work/TEMPLATE.md), fill in goal, non-goals, acceptance criteria and allowed paths, set `status` to `approved` and merge it in its own PR (handoff task `docs/work/FACTORY-001.md` allows `docs/work/`). One work order per feature, not per commit.
-2. **Implement.** In a separate candidate checkout on a feature branch, start the isolated author with `python3 tools/factory/clients.py launch --root . --runner claude` and use the `factory-change` skill. `launch` does not modify your checkout: it returns a patch artifact plus only a generic completion note, so keep the author's explanation from the interactive session. When you need a saved author report, use the unattended `clients.py run` interface with `--prompt-file` and `--output-patch` ([clients](factory/clients.md#build-and-run)).
-3. **Apply and verify the patch yourself.** Inspect the patch and the author's explanation, apply only the changes the work order allows to the candidate branch (`git apply`), run the verification the work order names (at least `python3 tools/factory/verify.py --root .`), then commit and push. The container keeps control files (`.agents/`, native adapters, `AGENTS.md`, `CLAUDE.md`, `factory/`, `tools/factory/`) read-only; for those the author only proposes a change, and a maintainer applies it in an ordinary checkout, runs `clients.py sync` and `clients.py check` plus the test harness, and submits a manually managed PR ([protected factory changes](factory/clients.md#protected-factory-changes)).
+2. **Implement.** From the clean control checkout on current `main`, start the isolated author with `python3 tools/factory/clients.py launch --root . --runner claude` and use the `factory-change` skill. The launcher copies the trusted checkout into a fresh container, applies the trusted control overlays and does not modify your checkout; it returns a patch artifact plus only a generic completion note, so keep the author's explanation from the interactive session. For a saved author report use the unattended `clients.py run` interface, which takes the candidate (`--root`) and the trusted base (`--policy-root`) separately ([clients](factory/clients.md#build-and-run)).
+3. **Apply the patch to a candidate branch.** In a separate candidate checkout on a feature branch, inspect the patch and the author's explanation, apply only the changes the work order allows (`git apply`), commit and push. Do not run candidate scripts on your credential-bearing host: the trusted pipeline runs the tests in an isolated job without secrets or network. A local structural check uses only the control checkout's verifier: `python3 tools/factory/verify.py --root /path/to/candidate --trusted-root . --structure-only`. The container keeps control files (`.agents/`, native adapters, `AGENTS.md`, `CLAUDE.md`, `factory/`, `tools/factory/`) read-only; for those the author only proposes a change, and a maintainer applies it in an ordinary checkout, regenerates adapters and submits a manually managed PR ([protected factory changes](factory/clients.md#protected-factory-changes)).
 4. **Submit.** From the control checkout:
 
    ```sh
@@ -145,11 +145,12 @@ gh workflow run factory.yml --repo Zerosteps1/Aicepeak_V2.0.0 --ref main -f pr=1
 - Normal case: both App-bound required checks `factory/deterministic` and `factory/senior-review` are green on the current head and all threads are resolved; then Gabriel or Felix merges. The "updates by humans only" ruleset lets `main` change only through a maintainer's PR merge, so the command-line merge uses the maintainer bypass, which also skips the check rule. Bind it to the head whose checks you verified, and note the merge in a short PR comment:
 
   ```sh
-  gh pr view <n> --repo Zerosteps1/Aicepeak_V2.0.0 --json headRefOid,statusCheckRollup
+  gh pr view <n> --repo Zerosteps1/Aicepeak_V2.0.0 --json headRefOid,baseRefOid,statusCheckRollup
+  git ls-remote https://github.com/Zerosteps1/Aicepeak_V2.0.0.git refs/heads/main
   gh pr merge <n> --repo Zerosteps1/Aicepeak_V2.0.0 --merge --admin --match-head-commit <verified-head-sha>
   ```
 
-  If the head changed in between, the merge is refused; wait for the fresh checks and verify again.
+  Merge only if both checks are green for that head and `baseRefOid` equals the current `main` commit. `--match-head-commit` refuses a changed head but does not detect a moved `main`; if `main` moved, use "Update branch" and wait for the fresh checks and review.
 - Stuck PR (no reviewer device, model failure, exhausted limits): a maintainer may merge deliberately through the ruleset bypass. Write the reason as a PR comment first; GitHub records every bypass. A bypassed PR has no independent review, so use this sparingly.
 - Never: direct pushes to `main`, auto-merge, agent or bot merges, or changing protection rules to force a green result.
 

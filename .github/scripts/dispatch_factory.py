@@ -87,6 +87,7 @@ def main():
     if repository.get("full_name", "").lower() != TARGET.lower() or repository.get("default_branch") != config["default_branch"]:
         raise RuntimeError("Repository/default branch identity changed")
     jobs = []
+    pushed_base = None
     if kind == "pull_request_target":
         jobs.append((number(event["pull_request"]["number"]), "none", "0"))
     elif kind == "issue_comment":
@@ -122,6 +123,9 @@ def main():
     elif kind == "push":
         if event.get("ref") != "refs/heads/" + config["default_branch"]:
             return
+        pushed_base = event.get("after", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", pushed_base):
+            raise RuntimeError("Invalid pushed commit identifier")
         for page in range(1, 101):
             prs = api("GET", PREFIX + "/pulls?state=open&base=" + quote(config["default_branch"], safe="") + f"&per_page=100&page={page}")
             jobs.extend((number(pr["number"]), "none", "0") for pr in prs)
@@ -135,6 +139,11 @@ def main():
         pr = api("GET", PREFIX + "/pulls/" + str(pr_number))
         if not valid_pr(pr, config, repository["id"]):
             print("Ignored closed PR or different target branch")
+            continue
+        if pushed_base is not None and pr["base"].get("sha") != pushed_base:
+            # The pipeline only reviews PRs on the current protected base. Its "Update branch"
+            # push starts the fresh run, so dispatching now would only produce a failed run.
+            print(f"Skipped PR {pr_number}: base is not the pushed {config['default_branch']}; update the branch")
             continue
         cancel_obsolete(config,pr_number,pr)
         api("POST", PREFIX + "/actions/workflows/factory.yml/dispatches", {

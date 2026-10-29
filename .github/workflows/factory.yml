@@ -193,6 +193,7 @@ jobs:
       id-token: write
     outputs:
       report: ${{ steps.author.outputs.report }}
+      failure: ${{ steps.author.outputs.failure }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -256,4 +257,5 @@ jobs:
           FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
           SNAPSHOT_JSON: ${{ needs.correction.outputs.snapshot }}
           AUTHOR_REPORT: ${{ needs.author.outputs.report }}
+          AUTHOR_FAILURE: ${{ needs.author.outputs.failure }}
         run: python3 tools/factory/engine.py author-failed

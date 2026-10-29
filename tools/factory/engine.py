@@ -438,11 +438,46 @@ def author_stage(config,args):
             report=report_path.read_text()
             require(len(report.encode())<=8192,'author report limit')
             emit('report',report)
-        require(result.returncode==0,'author runner failed or credentials missing; needs-author-action')
+        if result.returncode:
+            failure=author_failure(result.stderr,result.stdout)
+            emit('failure',failure)
+            require(False,f'author runner failed or credentials missing ({failure}); needs-author-action')
     require(Path(args.patch).stat().st_size > 0,'author produced no progress or disputed finding; needs-author-action')
     require(Path(args.patch).stat().st_size <= config['limits']['max_patch_bytes'],'patch size limit')
     current(gh,snapshot,config)
     emit('patch',{'head_sha':snapshot['head_sha'],'sha256':digest(base64.b64encode(Path(args.patch).read_bytes()).decode())})
+
+
+# Fixed launcher reasons (tools/factory/clients.py) that carry no secret, path or model text.
+# Anything else, including timeouts that echo the command line, stays withheld.
+AUTHOR_FAILURES=re.compile(r'(?:docker|git|claude|codex) failed \([0-9]{1,3}\)|missing proxy-only environment: [A-Z0-9_]+(?:, [A-Z0-9_]+)*|'
+    r'Docker CLI not installed|prompt too large|expected a content-addressed Docker image|credential broker did not become ready|'
+    r'credential broker unreachable from the worker|Claude did not return a successful result|author returned no final report|'
+    r'author report contains control characters|worker produced a symlink or special file|worker output exceeds file/byte limits|'
+    r'worker patch exceeds configured limit|worker CLI version mismatch|candidate exceeds file/byte limits|'
+    r'fresh candidate unexpectedly contains Git metadata')
+TIMED_OUT,WITHHELD,NO_REPORT='launcher command timed out','unclassified launcher error (details withheld)','no launcher report'
+
+
+def publishable_failure(reason):
+    return isinstance(reason,str) and (AUTHOR_FAILURES.fullmatch(reason) is not None or reason in (TIMED_OUT,WITHHELD,NO_REPORT))
+
+
+def author_failure(*streams):
+    """Classify the launcher's last blocked reason without publishing its free text."""
+    for stream in streams:
+        for line in reversed((stream or b'').decode(errors='replace').splitlines()):
+            try:report=json.loads(line)
+            except ValueError:continue
+            reason=report.get('reason') if isinstance(report,dict) and report.get('status')=='blocked' else None
+            if not isinstance(reason,str):continue
+            if AUTHOR_FAILURES.fullmatch(reason):return reason
+            # Captured commands append bounded stderr ("docker failed (1): ..."); keep only the fixed prefix.
+            tool=re.match(r'((?:docker|git|claude|codex) failed \([0-9]{1,3}\)):',reason)
+            if tool:return tool[1]
+            if re.fullmatch(r'Command .* timed out after [0-9.]+ seconds',reason,re.S):return TIMED_OUT
+            return WITHHELD
+    return NO_REPORT
 
 
 def staged_paths(tree):
@@ -564,7 +599,9 @@ def main():
         elif args.stage=='push':push_stage(config,args)
         else:
             report=author_report()
-            needs_author(installation(config,'publisher'),env_json('SNAPSHOT_JSON'),'Author run/patch verification did not complete. Inspect the linked run; fix credentials or provide counter-evidence.'+ ('\n\nUnverified author explanation (not a waiver):\n'+report if report else ''))
+            failure=json.loads(os.environ.get('AUTHOR_FAILURE') or '""')
+            failure=failure if publishable_failure(failure) else ''
+            needs_author(installation(config,'publisher'),env_json('SNAPSHOT_JSON'),'Author run/patch verification did not complete. Inspect the linked run; fix credentials or provide counter-evidence.'+ (f'\n\nLauncher reason: `{failure}`' if failure else '') + ('\n\nUnverified author explanation (not a waiver):\n'+report if report else ''))
     except (Blocked,KeyError,ValueError,subprocess.SubprocessError,OSError) as exc:
         print('BLOCKED: '+str(exc),file=sys.stderr)
         return 1

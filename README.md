@@ -30,11 +30,11 @@ flowchart LR
 
 1. **Work order.** `docs/work/<ID>.md` states goal, non-goals, acceptance criteria and the allowed paths. It is merged in its own PR first, because the factory reads tasks only from the protected base.
 2. **Author.** Claude Code works in a fresh, isolated container with the four canonical skills `factory-start`, `factory-change`, `factory-review` and `factory-fix-review`, no personal configuration and only proxied provider access. `runners` allows only `claude`; the optional Codex author has only an API-key path and stays disabled for automatic corrections.
-3. **Pull request.** `session.py submit` runs an advisory Astra preflight, opens the PR with exactly one `factory-handoff` block and marks it ready only after a `pass`.
-4. **Deterministic gate.** The trusted pipeline on `main` takes a snapshot bound to PR, head, base and policy, then runs syntax, contract, workflow, link and secret checks plus the regression suite without secrets or network.
+3. **Pull request.** `session.py submit` first runs a collision sweep (the candidate must contain current `main`; overlaps with other open PRs go into the PR body), then an advisory Astra preflight. It opens the PR with exactly one `factory-handoff` block and marks it ready only after a `pass`.
+4. **Deterministic gate.** The trusted pipeline on `main` takes a snapshot bound to PR, head, base and policy, then runs syntax, contract, workflow, link and secret checks plus the regression suite without secrets or network. A head that does not contain current `main` fails, so a green check always describes the state a merge produces.
 5. **Senior review.** GPT-6 Astra at effort `high` reviews the snapshot in a fresh, tool-less session on a maintainer device (`session.py watch`). GitHub assigns one owner per review; only the publisher App writes the required check.
 6. **Correction.** P0/P1 findings on non-control paths start one automatic correction: Claude Sonnet 5.5 in GitHub Actions through Workload Identity Federation; the writer App pushes the verified patch, which starts fresh tests and a fresh review. Control paths (`.github/`, `factory/`, `tools/factory/`, `docs/work/`, README and others in `protected_paths`) are never auto-corrected.
-7. **Merge.** With both required checks green and threads resolved, Gabriel or Felix decides. No second human approval is required; agents and bots never merge.
+7. **Merge.** With both required checks green and threads resolved, Gabriel or Felix decides and merges with `session.py merge`, one PR at a time. No second human approval is required; agents and bots never merge.
 
 A typical PR needs 6 to 10 minutes from push to two green checks (tests 3 to 5, review 2 to 3), plus about 5 minutes per automatic correction, as long as a maintainer device runs the watcher.
 
@@ -184,7 +184,7 @@ Also inspect the final senior check receipt (`output.text` JSON) and confirm `cl
 1. **Write a work order.** Copy [docs/work/TEMPLATE.md](docs/work/TEMPLATE.md), fill in goal, non-goals, acceptance criteria and allowed paths, set `status` to `approved` and merge it in its own PR (handoff task `docs/work/FACTORY-001.md` allows `docs/work/`). One work order per feature, not per commit.
 2. **Implement.** From the clean control checkout on current `main`, start the isolated author with `python3 tools/factory/clients.py launch --root . --runner claude` and use the `factory-change` skill. The launcher copies the trusted checkout into a fresh container, applies the trusted control overlays and does not modify your checkout; it returns a patch artifact plus only a generic completion note, so keep the author's explanation from the interactive session. For a saved author report use the unattended `clients.py run` interface, which takes the candidate (`--root`) and the trusted base (`--policy-root`) separately ([clients](factory/clients.md#build-and-run)).
 3. **Apply the patch to a candidate branch.** In a separate candidate checkout on a feature branch, inspect the patch and the author's explanation, apply only the changes the work order allows (`git apply`), commit and push. Do not run candidate scripts on your credential-bearing host: the trusted pipeline runs the tests in an isolated job without secrets or network. A local structural check uses only the control checkout's verifier: `python3 tools/factory/verify.py --root /path/to/candidate --trusted-root . --structure-only`. The container keeps control files (`.agents/`, native adapters, `AGENTS.md`, `CLAUDE.md`, `factory/`, `tools/factory/`) read-only; for those the author only proposes a change, and a maintainer applies it in an ordinary checkout, regenerates adapters and submits a manually managed PR ([protected factory changes](factory/clients.md#protected-factory-changes)).
-4. **Submit.** From the control checkout:
+4. **Check for collisions, then submit.** From the control checkout, `python3 tools/factory/session.py collisions --candidate /path/to/candidate --task docs/work/TASK.md` reports whether the candidate contains current `main`, which files a merge of `main` would conflict in, and which other open PRs touch the same files or work order, with the files a trial merge would conflict in. It only reads both checkouts. If you code with your own Claude Code or Codex session, let it run this command before you submit. Resolve conflicts with `main` in the candidate (merge `main`, fix, commit, push); never adapt the candidate to an unmerged PR. `submit` repeats the sweep, refuses a candidate behind `main` before any model call and records the result in the PR body:
 
    ```sh
    python3 tools/factory/session.py submit --candidate /path/to/candidate \
@@ -196,7 +196,7 @@ Also inspect the final senior check receipt (`output.text` JSON) and confirm `cl
 5. **Review.** Every ready PR waits for the binding review until a maintainer device runs `python3 tools/factory/session.py watch --pr <n>`. Without a running watcher nothing reviews on a laptop.
 6. **Act on findings.** P0/P1 block and start the automatic correction where allowed; otherwise the PR gets `needs-author-action` and you continue with `factory-fix-review`. P2 findings are hints.
 7. **Give feedback.** Ordinary PR comments, reviews and inline comments by Gabriel or Felix start a fresh review that takes them into account. `session.py response --pr <n> --question '…' --post` answers questions with citations and changes nothing.
-8. **Merge.** See [merge rules](#merge-rules). After every merge, update the control checkout (`git pull --ff-only`) and bring open PRs up to date with "Update branch"; their fresh run follows automatically.
+8. **Merge one PR at a time.** Update only the PR you merge next ("Update branch"), wait for its fresh checks and review, then run `session.py merge` (see [merge rules](#merge-rules)) and update the control checkout (`git pull --ff-only`). Leave the other open PRs until it is their turn: every update costs a fresh review, and every claimed review counts against the per-PR limit.
 
 Review all waiting PRs on a set-up maintainer device (stop with Ctrl-C):
 
@@ -208,6 +208,14 @@ while true; do
   sleep 60
 done
 ```
+
+### Working in parallel
+
+Gabriel, Felix and their agents can work on several PRs at once. Parallel PRs break each other when they were each tested alone but merged together, mostly through shared files such as test modules, registries or lockfiles. The factory keeps that visible and safe:
+
+- **Before the PR:** `session.py collisions` (and `submit`) shows overlaps with other open PRs and a shared work order. Agree on the order instead of coding against unmerged changes; keep PRs small and away from shared hotspots where possible.
+- **While open:** the gate fails any head that does not contain current `main`, so stale heads never look mergeable.
+- **At merge time:** one merge at a time with `session.py merge`. The PR merged second updates its branch, resolves its own conflicts with `main` (with `factory-fix-review` or your own session), and gets a fresh run and review before its merge. If both maintainers merge at the same moment, the command flags it in the PR comment and exits with an error.
 
 ## Status labels and limits
 
@@ -227,17 +235,14 @@ gh workflow run factory.yml --repo Zerosteps1/Aicepeak_V2.0.0 --ref main -f pr=1
 
 ## Merge rules
 
-- Normal case: both App-bound required checks `factory/deterministic` and `factory/senior-review` are green on the current head and all threads are resolved; then Gabriel or Felix merges. The "updates by humans only" ruleset lets `main` change only through a maintainer's PR merge, so the command-line merge uses the maintainer bypass, which also skips the check rule. Bind it to the head whose checks you verified, and note the merge in a short PR comment:
+- Normal case: both App-bound required checks `factory/deterministic` and `factory/senior-review` are green on the current head and all threads are resolved; then Gabriel or Felix merges from the clean control checkout on current `main`, with their own `gh` login:
 
   ```sh
-  gh pr view <n> --repo Zerosteps1/Aicepeak_V2.0.0 --json headRefOid
-  gh api "repos/Zerosteps1/Aicepeak_V2.0.0/commits/<head-sha>/check-runs?per_page=50" \
-    --jq '.check_runs[] | select(.name|startswith("factory/")) | [.name, .conclusion, .app.id, .external_id] | @tsv'
-  git ls-remote https://github.com/Zerosteps1/Aicepeak_V2.0.0.git refs/heads/main
-  gh pr merge <n> --repo Zerosteps1/Aicepeak_V2.0.0 --merge --admin --match-head-commit <head-sha>
+  python3 tools/factory/session.py merge --pr <n> --dry-run   # verdict only
+  python3 tools/factory/session.py merge --pr <n>
   ```
 
-  Each factory check's `external_id` reads `repository:PR:head:policy:run:attempt`, where `policy` is the protected base the run used. Merge only if `factory/deterministic` and `factory/senior-review` from App 5510081 are `success`, their head equals the PR head and their policy equals the current `main` commit. `--match-head-commit` refuses a changed head but does not detect a moved `main`; if `main` moved, use "Update branch" and wait for the fresh checks and review.
+  The "updates by humans only" ruleset lets `main` change only through a maintainer's PR merge, so every merge uses the maintainer bypass, which also skips GitHub's check and up-to-date rules. `merge` therefore verifies them itself and refuses unless the PR is ready, its head contains current `main`, both checks from App 5510081 are `success` with an `external_id` (`repository:PR:head:policy:run:attempt`) bound to exactly this head and current `main`, and no review thread is open. It merges with `--admin --match-head-commit <head>`, compares the merge commit's parents with the verified `main` and head, and records the result as a PR comment. `--match-head-commit` alone does not notice a moved `main`; if the other maintainer merged in between, `merge` reports an error and that combination was never tested. If `main` moved before the merge, use "Update branch" and wait for the fresh checks and review.
 - Stuck PR (no reviewer device, model failure, exhausted limits): a maintainer may merge deliberately through the ruleset bypass. Write the reason as a PR comment first; GitHub records every bypass. A bypassed PR has no independent review, so use this sparingly.
 - Never: direct pushes to `main`, auto-merge, agent or bot merges, or changing protection rules to force a green result.
 

@@ -159,6 +159,18 @@ def unchanged(gh, snapshot, config):
     return pr
 
 
+BEHIND_MAIN = ('PR head does not contain the current main commit, so a merge would combine code that was never '
+               'tested together. Use "Update branch" (or merge main into the branch); the new head gets a fresh run.')
+
+
+def contains_base(gh, repo, base, head):
+    """True when head already includes base: merging it then yields exactly the tested head tree."""
+    require(all(re.fullmatch('[0-9a-f]{40}', sha) for sha in (base, head)), 'invalid commit identifier')
+    # pr.base.sha follows main on every push, even without a merge of main; only ancestry proves inclusion.
+    compare = gh.request('GET', f'/repos/{repo}/compare/{base}...{head}?per_page=1')
+    return compare.get('status') in ('ahead', 'identical') and compare.get('behind_by') == 0
+
+
 def snapshot_stage(args, config):
     require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'dispatch a fresh retry; GitHub job reruns cannot reuse the budget')
     gh = installation(config, 'publisher')
@@ -296,6 +308,7 @@ def publish_stage(config):
     reason = 'Draft PR: checks are blocked until ready for review.' if snapshot['draft'] else ''
     try:
         current(gh, snapshot, config)
+        require(contains_base(gh, snapshot['repository'], snapshot['policy_sha'], snapshot['head_sha']), BEHIND_MAIN)
         verify_run(gh, snapshot, config, {config['test_job']:['success','failure']})
         require(tests.get('head_sha') == snapshot['head_sha'] and tests.get('policy_sha') == snapshot['policy_sha'] and tests.get('run_id') == snapshot['run_id'], 'test evidence binding missing')
         require(os.environ.get('TEST_JOB_RESULT') == ('success' if tests.get('ok') else 'failure'), 'test job contradicts evidence')

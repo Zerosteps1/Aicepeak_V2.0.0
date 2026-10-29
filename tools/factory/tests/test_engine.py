@@ -28,6 +28,7 @@ class Transport:
         self.runs={}
         self.files=[{'filename':'example.txt','status':'modified'}]
         self.task={'status':'approved','kind':'factory','allowed_paths':['example.txt']}
+        self.compare={'status':'ahead','behind_by':0}
         self.pr={'number':1,'state':'open','draft':False,'changed_files':1,
                  'head':{'sha':'a'*40,'repo':{'full_name':'fixture/repo'}},
                  'base':{'ref':'main','sha':'b'*40},
@@ -41,6 +42,7 @@ class Transport:
             if path=='/repos/fixture/repo':return {'full_name':'fixture/repo','default_branch':'main'}
             if path.endswith('/pulls/1'):return copy.deepcopy(self.pr)
             if path.endswith('/git/ref/heads/main'):return {'object':{'sha':'b'*40}}
+            if '/compare/' in path:return copy.deepcopy(self.compare)
         if method=='PATCH' and '/check-runs/' in path:
             self.checks[int(path.rsplit('/',1)[-1])].update(copy.deepcopy(data))
             return {}
@@ -195,6 +197,42 @@ class EngineBoundaries(unittest.TestCase):
         self.assertEqual((check['status'],check['conclusion']),('completed','failure'))
         self.assertEqual(json.loads(check['output']['text'])['phase'],'completed')
         self.assertEqual(self.transport.labels,{'needs-author-action'})
+
+    def test_head_without_current_main_is_not_published_as_tested_merge_state(self):
+        # GitHub moves pr.base.sha on a push that never merged main (PRs #4/#5): base equality is not inclusion.
+        self.transport.compare={'status':'diverged','behind_by':2}
+        snapshot=self.capture_snapshot()
+        tests={'repository':'fixture/repo','head_sha':'a'*40,'policy_sha':'b'*40,'run_id':1,'ok':True,'exit_code':0,'summary':'trusted output'}
+        env={'SNAPSHOT_JSON':json.dumps(snapshot),'TESTS_JSON':json.dumps(tests),'TEST_JOB_RESULT':'success'}
+        with patch.dict(os.environ,env), patch.object(engine,'installation',return_value=self.transport), patch.object(engine,'verify_run'):
+            engine.publish_stage(self.config)
+        self.assertIn(('GET','/repos/fixture/repo/compare/'+'b'*40+'...'+'a'*40+'?per_page=1',None),self.transport.calls)
+        deterministic=[c for c in self.transport.checks.values() if c['name']=='factory/deterministic']
+        self.assertEqual([c['conclusion'] for c in deterministic],['failure'])
+        check=self.transport.checks[snapshot['check_id']]
+        self.assertEqual((check['status'],check['conclusion'],json.loads(check['output']['text'])['phase']),('completed','failure','completed'))
+        self.assertIn('Update branch',check['output']['summary'])
+        self.assertEqual(self.transport.labels,{'needs-author-action'})
+        self.assertFalse(any('local_review.py' in c['body'] for c in self.transport.comments))
+        self.transport.compare={'status':'identical','behind_by':0}
+        self.assertTrue(engine.contains_base(self.transport,'fixture/repo','b'*40,'b'*40))
+        with self.assertRaisesRegex(Blocked,'invalid commit identifier'):
+            engine.contains_base(self.transport,'fixture/repo','main','a'*40)
+
+    def test_installation_transport_allows_only_the_exact_compare_route_with_dots(self):
+        import github_api
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*args):return False
+            def read(self,limit):return b'{"status":"identical","behind_by":0}'
+        with patch.object(github_api.urllib.request,'urlopen',return_value=Response()) as opened:
+            self.assertTrue(engine.contains_base(github_api.GitHub('token'),'fixture/repo','b'*40,'b'*40))
+        self.assertEqual(opened.call_args.args[0].full_url,'https://api.github.com/repos/fixture/repo/compare/'+'b'*40+'...'+'b'*40+'?per_page=1')
+        for unsafe in ('/repos/fixture/repo/contents/../x','/repos/fixture/repo/compare/'+'b'*40+'..'+'a'*40,'//evil',
+                       '/repos/../repo/compare/'+'b'*40+'...'+'a'*40+'?per_page=1'):
+            with self.subTest(unsafe=unsafe), patch.object(github_api.urllib.request,'urlopen') as opened, self.assertRaisesRegex(Blocked,'unsafe API path'):
+                github_api.GitHub('token').request('GET',unsafe)
+            opened.assert_not_called()
 
     def test_review_prompt_names_the_policy_and_the_incomplete_review_rule(self):
         # A real Astra/high review reported factory/policy.md as missing and returned

@@ -41,6 +41,13 @@ class GitHubFixture:
         self.posts = []
         self.creates = []
         self.readiness = []
+        self.open_prs = []
+        self.pr_files = {}
+        self.compare = {'status': 'ahead', 'behind_by': 0}
+        self.head_checks = []
+        self.threads = []
+        self.merges = []
+        self.merge_parents = None
         self.pr = {'number': 1, 'state': 'open', 'draft': False, 'changed_files': 1,
                    'head': {'sha': case.head, 'ref': 'feature/one', 'repo': {'full_name': REPOSITORY}},
                    'base': {'sha': case.base, 'ref': 'main', 'repo': {'full_name': REPOSITORY}},
@@ -48,6 +55,13 @@ class GitHubFixture:
                            'task': 'docs/work/TEST.md', 'owner': 'Zerosteps1'}) + '\n```'}
 
     def command(self, arguments, data=None):
+        if arguments[:2] == ['api', 'graphql']:
+            nodes = [{'isResolved': resolved} for resolved in self.threads]
+            return json.dumps({'data': {'repository': {'pullRequest': {'reviewThreads': {'totalCount': len(nodes), 'nodes': nodes}}}}})
+        if arguments[:2] == ['pr', 'merge']:
+            self.merges.append(arguments)
+            self.pr.update(state='closed', merged=True, merge_commit_sha='c' * 40)
+            return ''
         if arguments[:2] == ['pr', 'ready']:
             self.readiness.append(arguments)
             self.pr['draft'] = '--undo' in arguments
@@ -77,14 +91,23 @@ class GitHubFixture:
                 return copy.deepcopy(self.pr)
             if '/issues/comments/' in path:
                 return copy.deepcopy(next(c for c in self.comments if c['id'] == int(path.rsplit('/', 1)[1])))
+            if path == prefix + '/compare/' + self.main + '...' + self.pr['head']['sha'] + '?per_page=1':
+                return copy.deepcopy(self.compare)
+            if path == prefix + '/commits/' + 'c' * 40:
+                return {'parents': [{'sha': sha} for sha in (self.merge_parents or [self.main, self.pr['head']['sha']])]}
         if method == 'POST' and path == prefix + '/issues/1/comments':
             self.posts.append(copy.deepcopy(data))
             return {'html_url': 'https://github.com/' + REPOSITORY + '/pull/1#issuecomment-9'}
         raise AssertionError((method, path, data))
 
     def pages(self, path, field=None):
+        if '/pulls?state=open&base=main' in path:
+            return copy.deepcopy(self.open_prs)
+        if '/check-runs?' in path:
+            return copy.deepcopy(self.head_checks)
         if path.endswith('/files'):
-            return [{'filename': 'tools/factory/example.py', 'status': 'modified'}]
+            number = int(path.rsplit('/pulls/', 1)[1].split('/')[0])
+            return copy.deepcopy(self.pr_files.get(number, [{'filename': 'tools/factory/example.py', 'status': 'modified'}]))
         if path.endswith('/issues/1/comments'):
             return copy.deepcopy(self.comments)
         return []
@@ -203,6 +226,171 @@ class SessionBoundaries(unittest.TestCase):
     def preflight(self):
         with patch.object(local_review, 'run_codex', side_effect=self.model):
             return session.preflight(self.gh, self.candidate, 'docs/work/TEST.md', [])
+
+    def other_pr(self, number, branch, changes, task='docs/work/TEST.md'):
+        """Another maintainer's PR that started from the same main as the candidate."""
+        other = Path(self.temp.name) / f'other-{number}'
+        git(self.control, 'clone', '-q', str(self.control), str(other))
+        git(other, 'switch', '-qc', branch)
+        for name, content in changes.items():
+            (other / name).write_text(content)
+        git(other, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qam', branch)
+        self.gh.open_prs.append({'number': number, 'draft': False, 'base': {'ref': 'main'},
+                                 'head': {'sha': git(other, 'rev-parse', 'HEAD'), 'ref': branch, 'repo': {'full_name': REPOSITORY}},
+                                 'body': '```factory-handoff\n' + json.dumps({'runner': 'claude', 'task': task, 'owner': 'Zerosteps1'}) + '\n```'})
+        self.gh.pr_files[number] = [{'filename': name, 'status': 'modified'} for name in changes]
+        self.sources[number] = (other, branch)
+
+    def fetch(self, trial, numbers):
+        # Stands in for the HTTPS fetch of refs/pull/<n>/head from GitHub.
+        for number in numbers:
+            other, branch = self.sources[number]
+            git(trial, 'fetch', '-q', str(other), f'+refs/heads/{branch}:refs/factory/pull/{number}')
+        return True
+
+    def git_state(self):
+        return {str(root): (git(root, 'for-each-ref'), git(root, 'status', '--porcelain', '--ignored'),
+                            sorted(p.relative_to(root).as_posix() for p in (root / '.git/objects').rglob('*')))
+                for root in (self.control, self.candidate)}
+
+    def gates(self, digest=None, **change):
+        handoff = {'runner': 'claude', 'task': 'docs/work/TEST.md', 'owner': 'Zerosteps1'}
+        feedback = engine.digest(engine.all_feedback(self.gh, REPOSITORY, 1, self.config)) if digest is None else digest
+        receipt = json.dumps({'phase': 'completed', 'snapshot': {'handoff': handoff, 'feedback_digest': feedback}})
+        return [{'id': ident, 'name': name, 'status': 'completed', 'conclusion': 'success', 'app': {'id': 77},
+                 'external_id': f'{REPOSITORY}:1:{self.head}:{self.base}:5:1', 'output': {'text': receipt}, **change}
+                for ident, name in enumerate(self.config['required_checks'], 1)]
+
+    def test_collision_sweep_names_overlaps_and_trial_conflicts_without_writing_checkouts(self):
+        self.sources = {}
+        self.gh.open_prs.append(copy.deepcopy(self.gh.pr))  # the candidate's own PR is not a collision
+        self.other_pr(2, 'feature/two', {'tools/factory/example.py': 'VALUE = 5\n'})
+        self.other_pr(3, 'feature/three', {'AGENTS.md': 'OTHER CONTROL\n'}, task='docs/work/OTHER.md')
+        self.other_pr(4, 'feature/four', {'AGENTS.md': 'SAME TASK\n'})
+        self.other_pr(5, 'feature/five', {'tools/factory/example.py': 'VALUE = 9\n'})
+        self.gh.open_prs[-1]['body'] = '```factory-handoff\n["runner", "task", "owner"]\n```'  # malformed, still a PR
+        self.gh.open_prs.append({'number': 6, 'draft': False, 'base': {'ref': 'main'}, 'body': '```factory-handoff\n5\n```',
+                                 'head': {'sha': 'f' * 40, 'ref': 'fork-branch', 'repo': {'full_name': 'someone/fork'}}})
+        before = self.git_state()
+        with patch.object(session, 'fetch_pulls', side_effect=self.fetch) as fetched:
+            report = session.collisions(self.gh, self.candidate, 'docs/work/TEST.md')
+        self.assertEqual(self.git_state(), before)
+        self.assertEqual(fetched.call_args.args[1], [2, 4, 5])
+        self.assertEqual(report['main'], {'sha': self.base, 'contains': True, 'conflicts': []})
+        self.assertEqual([(o['pr'], o['same_task'], o['overlap'], o['conflicts']) for o in report['open_prs']],
+                         [(2, True, ['tools/factory/example.py'], ['tools/factory/example.py']), (4, True, [], []),
+                          (5, False, ['tools/factory/example.py'], ['tools/factory/example.py'])])
+        self.assertEqual(report['limitations'], [])
+        summary = session.collision_summary(report)
+        self.assertIn('- #2 (same work order): overlapping files `tools/factory/example.py`; '
+                      'trial merge conflicts in `tools/factory/example.py`.', summary)
+        self.assertIn('- #4 (same work order): overlapping files none; trial merge clean.', summary)
+        self.assertNotIn('#3', summary)
+        with patch.object(session, 'fetch_pulls', return_value=False):
+            unfetched = session.collisions(self.gh, self.candidate, 'docs/work/TEST.md')
+        self.assertIsNone(unfetched['open_prs'][0]['conflicts'])
+        self.assertIn('trial merge not run', session.collision_summary(unfetched))
+        self.assertTrue(unfetched['limitations'])
+
+    def test_trial_merge_and_fetch_never_report_unknown_results_as_clean(self):
+        tree = b'a' * 40
+        cases = [((0, tree + b'\0'), []), ((1, tree + b'\0x.py\0'), ['x.py']), ((1, tree + b'\0'), None),
+                 ((1, b''), None), ((128, tree + b'\0'), None)]
+        for (code, out), expected in cases:
+            with self.subTest(code=code, out=out), \
+                    patch.object(session, 'git_run', return_value=subprocess.CompletedProcess([], code, out, b'')):
+                self.assertEqual(session.conflicts(Path(self.temp.name), 'a' * 40, 'b' * 40), expected)
+        with patch.object(session, 'git_run', side_effect=subprocess.TimeoutExpired(['git'], 120)):
+            self.assertFalse(session.fetch_pulls(Path(self.temp.name), [2]))
+            self.assertIsNone(session.conflicts(Path(self.temp.name), 'a' * 40, 'b' * 40))
+        with patch.object(session, 'git_run', return_value=subprocess.CompletedProcess([], 0, b'', b'')) as run:
+            session.fetch_pulls(Path(self.temp.name), [2])
+        self.assertIn('core.alternateRefsCommand=true', run.call_args.args)
+
+    def test_submit_refuses_a_collision_summary_for_another_head(self):
+        body = Path(self.temp.name) / 'body.md'
+        body.write_text('Change with its evidence.')
+        stale = {'candidate': {'branch': 'feature/one', 'head_sha': 'f' * 40, 'task': 'docs/work/TEST.md'},
+                 'main': {'sha': self.base, 'contains': True, 'conflicts': []}, 'open_prs': [], 'limitations': []}
+        with patch.object(local_review, 'run_codex', side_effect=self.model), patch.object(session, 'collisions', return_value=stale):
+            with self.assertRaisesRegex(Blocked, 'changed after the collision sweep'):
+                session.submit(self.gh, self.candidate, 'docs/work/TEST.md', [], 'Update value', body, 'claude', draft=True)
+        self.assertEqual(self.gh.creates, [])
+
+    def test_candidate_behind_main_is_named_and_submit_stops_before_any_model_call(self):
+        (self.control / 'tools/factory/example.py').write_text('VALUE = 3\n')
+        git(self.control, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qam', 'Main moved')
+        self.gh.main = git(self.control, 'rev-parse', 'HEAD')
+        report = session.collisions(self.gh, self.candidate)
+        self.assertEqual((report['main']['contains'], report['main']['conflicts']), (False, ['tools/factory/example.py']))
+        with patch.object(session, 'HumanGitHub', return_value=self.gh):
+            self.assertEqual(session.main(['collisions', '--candidate', str(self.candidate)]), 1)
+        body = Path(self.temp.name) / 'body.md'
+        body.write_text('Change with its evidence.')
+        with patch.object(local_review, 'run_codex', side_effect=self.model):
+            with self.assertRaisesRegex(Blocked, 'does not contain current main.*tools/factory/example.py'):
+                session.submit(self.gh, self.candidate, 'docs/work/TEST.md', [], 'Update value', body, 'claude')
+        self.assertEqual((self.model_calls, self.gh.creates, self.gh.posts), ([], [], []))
+
+    def test_submit_records_collisions_in_its_own_body_and_comments_nowhere(self):
+        self.sources = {}
+        self.other_pr(2, 'feature/two', {'tools/factory/example.py': 'VALUE = 5\n'})
+        body = Path(self.temp.name) / 'body.md'
+        body.write_text('Change with its evidence.')
+        with patch.object(local_review, 'run_codex', side_effect=self.model), \
+                patch.object(session, 'fetch_pulls', side_effect=self.fetch):
+            result = session.submit(self.gh, self.candidate, 'docs/work/TEST.md', [], 'Update value', body, 'claude', draft=True)
+        created = self.gh.creates[0]['body']
+        self.assertIn('Collision check at `' + self.head[:12] + '` against main `' + self.base[:12] + '`: contains current main.', created)
+        self.assertIn('- #2 (same work order)', created)
+        self.assertEqual(engine.handoff(created, self.config)['task'], 'docs/work/TEST.md')
+        self.assertEqual(result['collisions']['open_prs'][0]['pr'], 2)
+        self.assertEqual(self.gh.posts, [])
+
+    def test_merge_binds_both_app_gates_to_this_head_and_main_and_records_the_parents(self):
+        self.gh.head_checks = self.gates()
+        self.gh.threads = [True]
+        verdict = session.merge(self.gh, 1, dry_run=True)
+        self.assertEqual((verdict['mergeable'], verdict['problems'], self.gh.merges), (True, [], []))
+        result = session.merge(self.gh, 1)
+        self.assertEqual(self.gh.merges, [['pr', 'merge', '1', '--repo', REPOSITORY, '--merge', '--admin',
+                                           '--match-head-commit', self.head]])
+        self.assertEqual((result['merged'], result['merge_commit_sha']), (True, 'c' * 40))
+        self.assertEqual(len(self.gh.posts), 1)
+        self.assertIn(f'head `{self.head}` onto main `{self.base}`', self.gh.posts[0]['body'])
+        self.assertIn('verified for exactly this head and main', self.gh.posts[0]['body'])
+
+    def test_merge_refuses_unverified_gates_without_calling_github_merge(self):
+        cases = {
+            'missing from the publisher App': lambda: setattr(self.gh, 'head_checks', self.gates(app={'id': 99})),
+            'factory/senior-review: failure': lambda: setattr(self.gh, 'head_checks', self.gates()[:1] + [
+                {**self.gates()[1], 'conclusion': 'failure'}]),
+            'factory/senior-review: in_progress': lambda: setattr(self.gh, 'head_checks', self.gates() + [
+                {**self.gates()[1], 'id': 3, 'status': 'in_progress', 'conclusion': None}]),
+            'older main': lambda: setattr(self.gh, 'head_checks', self.gates(external_id=f'{REPOSITORY}:1:{self.head}:{"d" * 40}:5:1')),
+            'unresolved review thread': lambda: setattr(self.gh, 'threads', [True, False]),
+            'does not contain the current main': lambda: setattr(self.gh, 'compare', {'status': 'diverged', 'behind_by': 2}),
+            'draft': lambda: self.gh.pr.update(draft=True),
+            'human feedback changed after the review': lambda: setattr(self.gh, 'head_checks', self.gates(digest='stale')),
+        }
+        for expected, arrange in cases.items():
+            with self.subTest(expected=expected):
+                self.gh.head_checks, self.gh.threads = self.gates(), [True]
+                self.gh.compare = {'status': 'ahead', 'behind_by': 0}
+                self.gh.pr['draft'] = False
+                arrange()
+                self.assertIn(expected, ' '.join(session.merge(self.gh, 1, dry_run=True)['problems']))
+                with self.assertRaisesRegex(Blocked, 'not merged: .*' + expected):
+                    session.merge(self.gh, 1)
+                self.assertEqual((self.gh.merges, self.gh.posts), ([], []))
+
+    def test_merge_reports_a_concurrent_main_change_as_an_error(self):
+        self.gh.head_checks, self.gh.threads = self.gates(), []
+        self.gh.merge_parents = ['e' * 40, self.head]
+        with self.assertRaisesRegex(Blocked, 'main moved during the merge'):
+            session.merge(self.gh, 1)
+        self.assertEqual(len(self.gh.merges), 1)
+        self.assertIn('WARNING: main was `' + 'e' * 40 + '`', self.gh.posts[0]['body'])
 
     def test_plain_entrypoints_do_not_create_bytecode_in_control_checkout(self):
         for source in (ROOT / 'tools/factory').glob('*.py'):
@@ -586,6 +774,13 @@ class SessionBoundaries(unittest.TestCase):
             self.assertEqual(transport.request('GET', '/repos/' + REPOSITORY)['full_name'], REPOSITORY)
             with self.assertRaisesRegex(Blocked, 'outside'):
                 transport.request('GET', '/repos/other/repository')
+        with patch.object(session.HumanGitHub, 'command', return_value='{"status":"ahead","behind_by":0}') as command:
+            self.assertTrue(engine.contains_base(session.HumanGitHub(), REPOSITORY, 'b' * 40, 'a' * 40))
+            self.assertIn(f'/repos/{REPOSITORY}/compare/{"b" * 40}...{"a" * 40}?per_page=1', command.call_args.args[0])
+            for unsafe in (f'/repos/{REPOSITORY}/contents/../secrets', f'/repos/{REPOSITORY}/compare/main...{"a" * 40}?per_page=1',
+                           f'/repos/{REPOSITORY}/compare/{"b" * 40}...{"a" * 40}/../x?per_page=1'):
+                with self.subTest(unsafe=unsafe), self.assertRaisesRegex(Blocked, 'unsafe API path'):
+                    session.HumanGitHub().request('GET', unsafe)
         with patch.dict(os.environ, {'GH_TOKEN': 'must-not-forward', 'GITHUB_TOKEN': 'must-not-forward',
                                     'OPENAI_API_KEY': 'must-not-forward', 'FACTORY_PUBLISHER_APP_PRIVATE_KEY': 'must-not-forward'}):
             self.assertNotIn('GH_TOKEN', session.human_env())

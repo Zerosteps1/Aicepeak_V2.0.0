@@ -9,7 +9,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+import re
 from contracts import Blocked, require
+
+# The compare route needs "base...head"; every other ".." stays an unsafe path.
+COMPARE_ROUTE = re.compile(r"/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}\?per_page=1")
+
+
+def safe_route(path):
+    return path.startswith("/") and not path.startswith("//") and (".." not in path or COMPARE_ROUTE.fullmatch(path) is not None)
 
 
 class GitHub:
@@ -18,7 +26,7 @@ class GitHub:
         require(bool(self.token), "GitHub credential missing")
 
     def request(self, method, path, data=None):
-        require(path.startswith("/") and not path.startswith("//") and ".." not in path, "unsafe API path")
+        require(safe_route(path), "unsafe API path")
         req = urllib.request.Request("https://api.github.com" + path,
             data=None if data is None else json.dumps(data).encode(), method=method,
             headers={"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json",

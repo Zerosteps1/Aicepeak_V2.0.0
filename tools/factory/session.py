@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Fresh local preflight, explicit PR submission, bounded watch and cited PR answers.
+"""Fresh local preflight, collision sweep, PR submission, bounded watch, cited answers and verified merges.
 
 Run this file from a clean, current main control checkout, passing a separate
 candidate explicitly. No candidate code, hooks, AGENTS, or author history is run.
 Preflight/answers are advisory; only local_review.py may publish a review receipt.
+`merge` acts with the maintainer's own gh login; models never merge.
 """
 import argparse
 import hashlib
@@ -23,7 +24,7 @@ from urllib.parse import quote
 import engine
 import local_review
 from contracts import Blocked, digest, handoff, require, safe_path, validate
-from github_api import GitHub
+from github_api import GitHub, safe_route
 
 ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY = 'Zerosteps1/Aicepeak_V2.0.0'
@@ -52,7 +53,7 @@ class HumanGitHub(GitHub):
         require(path in ('/user', '/repos/' + REPOSITORY) or path.startswith('/repos/' + REPOSITORY + '/'),
                 'API outside configured repository')
         # The bare metadata endpoint is also needed for identity verification.
-        require('..' not in path and not path.startswith('//'), 'unsafe API path')
+        require(safe_route(path), 'unsafe API path')
         args = ['api', '--hostname', 'github.com', '--method', method, path]
         if data is not None:
             args += ['--input', '-']
@@ -60,17 +61,21 @@ class HumanGitHub(GitHub):
         return json.loads(raw) if raw else None
 
 
-def git(root, *args):
+def git_run(root, *args, protocols='', timeout=30):
     # Object/index reads only. No status/diff of worktree files: those can invoke
     # candidate-configured clean filters. No global config, object fetches or replacements.
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'GIT_CONFIG_GLOBAL': os.devnull,
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0', 'GIT_OPTIONAL_LOCKS': '0', 'GIT_ATTR_NOSYSTEM': '1',
-           'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': ''}
+           'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': protocols}
     # Bookworm Git 2.39.5 honors the environment guard, but not the CLI flag
     # introduced in 2.45. The empty transport allowlist independently denies helpers.
-    result = subprocess.run(['git', '--no-pager', '--no-replace-objects', '--literal-pathspecs',
-                             '-C', str(root), '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
-                             '-c', 'core.attributesfile=/dev/null', *args], env=env, capture_output=True, timeout=30)
+    return subprocess.run(['git', '--no-pager', '--no-replace-objects', '--literal-pathspecs',
+                           '-C', str(root), '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+                           '-c', 'core.attributesfile=/dev/null', *args], env=env, capture_output=True, timeout=timeout)
+
+
+def git(root, *args):
+    result = git_run(root, *args)
     require(result.returncode == 0, 'unsupported Git checkout or missing commit object')
     return result.stdout
 
@@ -446,12 +451,136 @@ def response(gh, pr, question, context, post=False):
     return result
 
 
+def object_store(root):
+    common = git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir').decode().strip()
+    return str(Path(common) / 'objects')
+
+
+def trial_git(trial, *args, protocols='', timeout=30):
+    # Alternate refs would run Git inside the candidate with its own config; commit-graphs
+    # and background maintenance stay off too. A timeout is an unknown result, not a block.
+    try:
+        return git_run(trial, '-c', 'core.alternateRefsCommand=true', '-c', 'core.commitGraph=false',
+                       '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', *args, protocols=protocols, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return subprocess.CompletedProcess(args, 128, b'', b'')
+
+
+def fetch_pulls(trial, numbers):
+    """Fetch other PR heads into the scratch repository only; no candidate configuration takes part."""
+    refspecs = [f'+refs/pull/{number}/head:refs/factory/pull/{number}' for number in numbers]
+    result = trial_git(trial, 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head',
+                       f'https://github.com/{REPOSITORY}.git', *refspecs, protocols='https', timeout=120)
+    return result.returncode == 0
+
+
+def conflicts(trial, ours, theirs):
+    """Files a merge of theirs into ours would conflict in; None when Git cannot tell."""
+    result = trial_git(trial, 'merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', ours, theirs)
+    fields = result.stdout.split(b'\0')
+    if result.returncode not in (0, 1) or not re.fullmatch(rb'[0-9a-f]{40}\n?', fields[0]):
+        return None
+    names = sorted({name.decode('utf-8') for name in fields[1:] if name})
+    # Exit 1 without a file (a directory-rename split) is a conflict Git does not name.
+    return (names or None) if result.returncode else []
+
+
+def collisions(gh, candidate, task=None):
+    """Read-only sweep of the committed candidate against current main and the other open PRs."""
+    config, policy, _ = control(gh)
+    candidate = Path(candidate).resolve()
+    require(candidate != ROOT.resolve(), 'use a separate candidate checkout')
+    sha = identity(candidate, config)
+    branch = git(candidate, 'symbolic-ref', '--quiet', '--short', 'HEAD').decode().strip()
+    require(branch and branch != config['default_branch'], 'candidate must be on a feature branch')
+    if task is not None:
+        task_order(config, policy, task)
+    limitations, others = [], []
+    with tempfile.TemporaryDirectory(prefix='factory-collisions-') as directory:
+        trial = Path(directory) / 'trial.git'
+        git(Path(directory), 'init', '--quiet', '--bare', '--template=', str(trial))
+        # Read candidate and control objects in place; every write lands in this scratch repository.
+        (trial / 'objects/info/alternates').write_text(object_store(ROOT) + '\n' + object_store(candidate) + '\n')
+        # Local refs let the fetch send what it already has instead of downloading everything.
+        for name, value in (('main', policy), ('candidate', sha)):
+            require(trial_git(trial, 'update-ref', 'refs/factory/' + name, value).returncode == 0,
+                    'candidate or current main objects missing; fetch them fully')
+        found = trial_git(trial, 'merge-base', policy, sha)
+        require(found.returncode == 0, 'candidate shares no complete history with current main; fetch it fully')
+        base = found.stdout.decode().strip()
+        main = {'sha': policy, 'contains': base == policy, 'conflicts': [] if base == policy else conflicts(trial, sha, policy)}
+        if main['conflicts'] is None:
+            limitations.append('Trial merge with current main failed; its conflicts are unknown.')
+        listed = trial_git(trial, 'diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', '-z', base, sha)
+        require(listed.returncode == 0, 'candidate objects missing; fetch them fully')
+        changed = {name.decode('utf-8') for name in listed.stdout.split(b'\0') if name}
+        for pr in gh.pages(f'/repos/{REPOSITORY}/pulls?state=open&base={config["default_branch"]}'):
+            if (pr['head'].get('repo') or {}).get('full_name') != REPOSITORY:
+                continue  # forks are unsupported by the factory and cannot block the sweep
+            if pr['head']['ref'] == branch:
+                continue  # the candidate's own PR
+            try:
+                files = gh.pages(f'/repos/{REPOSITORY}/pulls/{pr["number"]}/files')
+            except Blocked:
+                limitations.append(f"#{pr['number']}: its file list could not be read; overlap unknown.")
+                continue
+            touched = {f['filename'] for f in files} | {f['previous_filename'] for f in files if f.get('previous_filename')}
+            try:
+                other_task = handoff(pr.get('body'), config)['task']
+            except (Blocked, TypeError, ValueError, KeyError):
+                other_task = None
+            same = task is not None and other_task == task
+            if same or changed & touched:
+                others.append({'pr': pr['number'], 'draft': pr['draft'], 'head_sha': pr['head']['sha'], 'same_task': same,
+                               'overlap': sorted(changed & touched), 'conflicts': None})
+        if others and not fetch_pulls(trial, [other['pr'] for other in others]):
+            limitations.append('Could not fetch the overlapping PR heads; their trial merges did not run.')
+        elif others:
+            for other in others:
+                ref = trial_git(trial, 'rev-parse', '--verify', '--quiet', f"refs/factory/pull/{other['pr']}^{{commit}}")
+                if ref.returncode or ref.stdout.decode().strip() != other['head_sha']:
+                    limitations.append(f"#{other['pr']} changed during the sweep; its trial merge was skipped.")
+                    continue
+                other['conflicts'] = conflicts(trial, sha, other['head_sha'])
+                if other['conflicts'] is None:
+                    limitations.append(f"Trial merge with #{other['pr']} failed; its conflicts are unknown.")
+    return {'candidate': {'branch': branch, 'head_sha': sha, 'task': task}, 'main': main,
+            'open_prs': others, 'limitations': limitations}
+
+
+def collision_summary(report):
+    """Bounded Markdown for the PR body; PR numbers create cross-references, not comments."""
+    def names(items):
+        return ', '.join(f'`{n}`' for n in items[:10]) + (f' and {len(items) - 10} more' if len(items) > 10 else '')
+    main = report['main']
+    state = ('contains current main' if main['contains'] else 'does NOT contain current main; '
+             + ('conflicts in ' + names(main['conflicts']) if main['conflicts'] else 'merge it in'))
+    lines = [f"Collision check at `{report['candidate']['head_sha'][:12]}` against main `{main['sha'][:12]}`: {state}."]
+    for other in report['open_prs'][:20]:
+        merge = ('trial merge not run' if other['conflicts'] is None else 'trial merge clean' if not other['conflicts']
+                 else 'trial merge conflicts in ' + names(other['conflicts']))
+        lines.append(f"- #{other['pr']}{' (same work order)' if other['same_task'] else ''}: "
+                     f"overlapping files {names(other['overlap']) or 'none'}; {merge}.")
+    if report['open_prs']:
+        lines.append('Merge one PR at a time. The PR merged second updates its branch and resolves its own conflicts '
+                     'with main; nothing is resolved against unmerged PRs.')
+    else:
+        lines.append('No other open PR touches the same files or work order.')
+    lines += ['Limitation: ' + item for item in report['limitations'][:10]]
+    return '\n'.join(lines)[:6000]
+
+
 def submit(gh, candidate, task, context, title, body_file, runner, draft=False,
            allow_blocked_preflight=False, interval=30, timeout=1800, no_dispatch=False):
     require(0 < len(title.strip()) <= 240, 'PR title required (maximum 240 characters)')
     require(Path(body_file).is_file() and Path(body_file).stat().st_size <= 20000, 'body file missing or too large')
     prose = Path(body_file).read_text()
     require(len(prose.encode()) <= 20000 and '```factory-handoff' not in prose, 'body too large or contains a competing handoff')
+    sweep = collisions(gh, candidate, task)
+    behind = sweep['main']
+    require(behind['contains'], 'candidate does not contain current main: merge main into it, resolve '
+            + ('the conflicts in ' + ', '.join(behind['conflicts']) if behind['conflicts'] else 'any conflicts')
+            + ', commit, push and submit again')
     result = preflight(gh, candidate, task, context)
     review = result['review']
     if allow_blocked_preflight:
@@ -462,10 +591,13 @@ def submit(gh, candidate, task, context, title, body_file, runner, draft=False,
     require(runner in config['runners'], 'runner not allowlisted')
     binding = candidate_state(candidate, config, policy, task, context)[0]
     require(all(review.get(key) == value for key, value in binding.items()), 'candidate changed after preflight')
+    require(sweep['candidate']['head_sha'] == binding['head_sha'] and sweep['main']['sha'] == policy,
+            'candidate or main changed after the collision sweep; submit again')
     remote = gh.request('GET', f'/repos/{REPOSITORY}/git/ref/heads/{quote(binding["branch"], safe="")}')
     require(remote['object']['sha'] == binding['head_sha'], 'push the reviewed candidate branch yourself before submit')
     transfer = {'runner': runner, 'task': task, 'owner': user['login']}
     body = prose.rstrip() + '\n\n```factory-handoff\n' + json.dumps(transfer) + '\n```\n\n'
+    body += collision_summary(sweep) + '\n\n'
     body += ('Advisory source preflight: `' + review['outcome'] + '` at `' + binding['head_sha'] + '`; no tests executed by this command.\n\n'
              + review['summary'] + '\n\n```json\n' + json.dumps(result, indent=2, ensure_ascii=False) + '\n```\n')
     require(len(body.encode()) < 60000, 'PR body exceeds publication limit')
@@ -497,18 +629,77 @@ def submit(gh, candidate, task, context, title, body_file, runner, draft=False,
                 raise Blocked('could not confirm draft fallback; inspect ' + url) from None
             raise Blocked('PR restored to draft; rerun preflight for ' + url) from None
     print(json.dumps({'pr': pr, 'url': url, 'draft': draft}), flush=True)
-    return {'pr': pr, 'url': url, 'draft': draft, 'watch': None if draft else watch(gh, pr, interval, timeout, no_dispatch)}
+    return {'pr': pr, 'url': url, 'draft': draft, 'collisions': sweep,
+            'watch': None if draft else watch(gh, pr, interval, timeout, no_dispatch)}
+
+
+def unresolved_threads(gh, pr):
+    owner, name = REPOSITORY.split('/')
+    query = ('query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){'
+             'pullRequest(number:$pr){reviewThreads(first:100){totalCount nodes{isResolved}}}}}')
+    data = json.loads(gh.command(['api', 'graphql', '-f', 'query=' + query, '-f', 'owner=' + owner,
+                                  '-f', 'name=' + name, '-F', f'pr={pr}']))
+    threads = data['data']['repository']['pullRequest']['reviewThreads']
+    require(threads['totalCount'] == len(threads['nodes']), 'review threads incomplete; check them on GitHub')
+    return sum(not node['isResolved'] for node in threads['nodes'])
+
+
+def merge(gh, pr, dry_run=False):
+    """Human merge of exactly the verified head onto exactly the verified main; never run by a model."""
+    config, policy, user = control(gh)
+    snapshot, _, _ = pr_state(gh, pr, config, policy)
+    head = snapshot['head_sha']
+    problems = ['PR is a draft'] if snapshot['draft'] else []
+    if not engine.contains_base(gh, REPOSITORY, policy, head):
+        problems.append(engine.BEHIND_MAIN)
+    runs = gh.pages(f'/repos/{REPOSITORY}/commits/{head}/check-runs?filter=all', 'check_runs')
+    for name in config['required_checks']:
+        latest = max((c for c in runs if c.get('name') == name and (c.get('app') or {}).get('id') == config['publisher_app_id']),
+                     key=lambda c: c['id'], default=None)
+        if latest is None:
+            problems.append(name + ': missing from the publisher App')
+        elif (latest.get('status'), latest.get('conclusion')) != ('completed', 'success'):
+            problems.append(f"{name}: {latest.get('conclusion') or latest.get('status')}")
+        elif (latest.get('external_id') or '').split(':')[:4] != [REPOSITORY, str(pr), head, policy]:
+            problems.append(name + ': bound to another head or an older main; wait for the fresh run')
+        elif name == 'factory/senior-review':
+            bound = engine.receipt(latest).get('snapshot') or {}
+            if (bound.get('handoff'), bound.get('feedback_digest')) != (snapshot['handoff'], snapshot['feedback_digest']):
+                problems.append(name + ': handoff or human feedback changed after the review; wait for the fresh run')
+    unresolved = unresolved_threads(gh, pr)
+    if unresolved:
+        problems.append(f'{unresolved} unresolved review thread(s)')
+    verdict = {'pr': pr, 'head_sha': head, 'main_sha': policy, 'mergeable': not problems, 'problems': problems}
+    if dry_run:
+        return verdict
+    require(not problems, 'not merged: ' + '; '.join(problems))
+    try:
+        gh.command(['pr', 'merge', str(pr), '--repo', REPOSITORY, '--merge', '--admin', '--match-head-commit', head])
+    except Blocked:
+        raise Blocked(f'GitHub refused the merge (changed head, conflict or permission); inspect PR #{pr}') from None
+    merged = gh.request('GET', f'/repos/{REPOSITORY}/pulls/{pr}')
+    commit = merged.get('merge_commit_sha') or ''
+    require(merged.get('merged') is True and re.fullmatch('[0-9a-f]{40}', commit), f'GitHub did not report the merge; inspect PR #{pr}')
+    parents = [p['sha'] for p in gh.request('GET', f'/repos/{REPOSITORY}/commits/{commit}')['parents']]
+    # --match-head-commit pins the head only; a concurrent merge by the other maintainer can still move main.
+    exact = parents == [policy, head]
+    note = ('both required checks were verified for exactly this head and main' if exact else
+            f"WARNING: main was `{(parents or ['unknown'])[0]}` at merge time; this combination was never tested")
+    gh.request('POST', f'/repos/{REPOSITORY}/issues/{pr}/comments', {'body':
+               f"Merged by {user['login']} with `session.py merge`: head `{head}` onto main `{policy}` as `{commit}`; {note}."})
+    require(exact, f'merged as {commit}, but main moved during the merge; verify main before the next merge')
+    return {**verdict, 'merged': True, 'merge_commit_sha': commit}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('preflight', 'submit', 'watch', 'response'):
+    for name in ('preflight', 'submit', 'watch', 'response', 'collisions', 'merge'):
         command = commands.add_parser(name)
-        if name in ('preflight', 'submit'):
+        if name in ('preflight', 'submit', 'collisions'):
             command.add_argument('--candidate', type=Path, required=True)
-            command.add_argument('--task', required=True)
-        if name in ('watch', 'response'):
+            command.add_argument('--task', required=name != 'collisions')
+        if name in ('watch', 'response', 'merge'):
             command.add_argument('--pr', type=int, required=True)
         if name in ('preflight', 'submit', 'response'):
             command.add_argument('--context', action='append', default=[], help='additional repository path, treated only as data')
@@ -524,6 +715,8 @@ def main(argv=None):
             command.add_argument('--runner', required=True)
             command.add_argument('--draft', action='store_true')
             command.add_argument('--allow-blocked-preflight', action='store_true', help='create a draft for an explicit blocked preflight')
+        if name == 'merge':
+            command.add_argument('--dry-run', action='store_true', help='verify only; do not merge')
         if name == 'response':
             command.add_argument('--question', required=True)
             command.add_argument('--post', action='store_true', help='explicitly publish the cited answer on this PR')
@@ -537,6 +730,8 @@ def main(argv=None):
         result = globals()[command](HumanGitHub(), **args)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         if command == 'preflight' and result['review']['outcome'] != 'pass':
+            return 1
+        if (command == 'collisions' and not result['main']['contains']) or (command == 'merge' and not result['mergeable']):
             return 1
         return 0
     except KeyboardInterrupt:

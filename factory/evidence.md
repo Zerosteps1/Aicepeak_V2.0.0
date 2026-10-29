@@ -27,6 +27,15 @@ Additional live evidence: WIF smoke [40762782139](https://github.com/Zerosteps1/
 
 **Still not verified live:** Felix's own reviewer machine (`local_review.py --smoke` and one gate review), authenticated native skill and MCP calls inside an interactive author container, two devices racing for one claim, a new head during a running review, and a foreign App with the same check name. The corresponding local regressions exist; they are not live proof.
 
+## Follow-up on 2026-10-29: two fixes and a second live correction
+
+Executed by Claude Code on Gabriel's machine during the scheduled run; IDs are GitHub check, run and commit identifiers.
+
+- **Local baseline on `main` 84e14ce:** `python3 -I -B -m unittest discover -s tools/factory/tests` ran 219 tests, `OK (skipped=1)`; `doctor.py` passed every check except `tool_actionlint` (not installed locally) and the launcher-only `ANTHROPIC_API_KEY`/`CONTEXT7_API_KEY`; `local_review.py --smoke` returned `passed` with `gpt-6-astra`, effort `high`, `CODEX_ACCESS_TOKEN`.
+- **#24** (push dispatcher skips PRs on an outdated base; classified author launcher reasons): 221 tests `OK` locally; pipeline deterministic `success`, Astra/high `pass` (check 123241711436) on head 7a32396; merged as bb5b21a. `gh pr merge 24 --merge` was refused by the "updates by humans only" ruleset with both checks green; the maintainer bypass (`--admin`) merged it.
+- **Dispatcher after the merge:** the push run 40811423063 dispatched only PR #13, which was already on the pushed base (`Dispatched PR 13 (none)`); no `dispatch must run current protected base` run occurred. A push plus `pull_request_target` for the same head still produce a second dispatch, which the engine refuses as `BLOCKED: duplicate processing; existing authenticated run owns this input` (runs 40811187202 and 40811448823, red but harmless).
+- **#13, second live review-fix loop:** v0.3 (b89f1d4) fixed the five P1 findings of 123129528054. After "Update branch" (b36f926) Astra/high found a new P1 F-006 (123245387161: the partial unique index needed an update of immutable revision rows). The automatic correction ran in GitHub Actions, the writer App pushed 1a4d5d6, fresh tests passed and Astra/high returned `pass` (123247469911). Merged as 331e446.
+
 ## Live-Aktivierung am 28.10.2026
 
 Gabriel (`Zerosteps1`) hat [PR #11](https://github.com/Zerosteps1/Aicepeak_V2.0.0/pull/11) persönlich gemergt. Der anschließend unabhängig gelesene [Merge-Commit `ce736a5`](https://github.com/Zerosteps1/Aicepeak_V2.0.0/commit/ce736a5080a04b2e72f091371ec61c49e8d84291) hat exakt die Eltern `faededdd7c1e734ce2e168502cca54f0f0a04fc3` und `90ee4f52443d719c645e9b55ad69f884930d8476` sowie den geprüften Tree `161ed940fa2651560e4bd5c70768d0cc83080858`. Der [GitHub-Testlauf 40734682121](https://github.com/Zerosteps1/Aicepeak_V2.0.0/actions/runs/40734682121) dieses Heads bestand mit 203 unveränderten Basistests und 211 Kandidatentests, Struktur, Actionlint und Gitleaks; deterministischer Check `122980738257` von Publisher-App 5510081. Frische unabhängige Astra/high-Audits sind im Verlauf unten abgegrenzt.

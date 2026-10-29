@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Fresh local preflight, explicit PR submission, bounded watch and cited PR answers.
+"""Fresh local preflight, collision sweep, PR submission, bounded watch, cited answers and verified merges.
 
 Run this file from a clean, current main control checkout, passing a separate
 candidate explicitly. No candidate code, hooks, AGENTS, or author history is run.
 Preflight/answers are advisory; only local_review.py may publish a review receipt.
+`merge` acts with the maintainer's own gh login; models never merge.
 """
 import argparse
 import hashlib
@@ -22,8 +23,9 @@ from urllib.parse import quote
 
 import engine
 import local_review
+import merge_safety
 from contracts import Blocked, digest, handoff, require, safe_path, validate
-from github_api import GitHub
+from github_api import GitHub, safe_route
 
 ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY = 'Zerosteps1/Aicepeak_V2.0.0'
@@ -52,7 +54,7 @@ class HumanGitHub(GitHub):
         require(path in ('/user', '/repos/' + REPOSITORY) or path.startswith('/repos/' + REPOSITORY + '/'),
                 'API outside configured repository')
         # The bare metadata endpoint is also needed for identity verification.
-        require('..' not in path and not path.startswith('//'), 'unsafe API path')
+        require(safe_route(path), 'unsafe API path')
         args = ['api', '--hostname', 'github.com', '--method', method, path]
         if data is not None:
             args += ['--input', '-']
@@ -60,17 +62,21 @@ class HumanGitHub(GitHub):
         return json.loads(raw) if raw else None
 
 
-def git(root, *args):
+def git_run(root, *args, protocols='', timeout=30):
     # Object/index reads only. No status/diff of worktree files: those can invoke
     # candidate-configured clean filters. No global config, object fetches or replacements.
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'GIT_CONFIG_GLOBAL': os.devnull,
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0', 'GIT_OPTIONAL_LOCKS': '0', 'GIT_ATTR_NOSYSTEM': '1',
-           'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': ''}
+           'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': protocols}
     # Bookworm Git 2.39.5 honors the environment guard, but not the CLI flag
     # introduced in 2.45. The empty transport allowlist independently denies helpers.
-    result = subprocess.run(['git', '--no-pager', '--no-replace-objects', '--literal-pathspecs',
-                             '-C', str(root), '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
-                             '-c', 'core.attributesfile=/dev/null', *args], env=env, capture_output=True, timeout=30)
+    return subprocess.run(['git', '--no-pager', '--no-replace-objects', '--literal-pathspecs',
+                           '-C', str(root), '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+                           '-c', 'core.attributesfile=/dev/null', *args], env=env, capture_output=True, timeout=timeout)
+
+
+def git(root, *args):
+    result = git_run(root, *args)
     require(result.returncode == 0, 'unsupported Git checkout or missing commit object')
     return result.stdout
 
@@ -452,6 +458,11 @@ def submit(gh, candidate, task, context, title, body_file, runner, draft=False,
     require(Path(body_file).is_file() and Path(body_file).stat().st_size <= 20000, 'body file missing or too large')
     prose = Path(body_file).read_text()
     require(len(prose.encode()) <= 20000 and '```factory-handoff' not in prose, 'body too large or contains a competing handoff')
+    sweep = merge_safety.collisions(gh, candidate, task)
+    behind = sweep['main']
+    require(behind['contains'], 'candidate does not contain current main: merge main into it, resolve '
+            + ('the conflicts in ' + ', '.join(behind['conflicts']) if behind['conflicts'] else 'any conflicts')
+            + ', commit, push and submit again')
     result = preflight(gh, candidate, task, context)
     review = result['review']
     if allow_blocked_preflight:
@@ -462,10 +473,13 @@ def submit(gh, candidate, task, context, title, body_file, runner, draft=False,
     require(runner in config['runners'], 'runner not allowlisted')
     binding = candidate_state(candidate, config, policy, task, context)[0]
     require(all(review.get(key) == value for key, value in binding.items()), 'candidate changed after preflight')
+    require(sweep['candidate']['head_sha'] == binding['head_sha'] and sweep['main']['sha'] == policy,
+            'candidate or main changed after the collision sweep; submit again')
     remote = gh.request('GET', f'/repos/{REPOSITORY}/git/ref/heads/{quote(binding["branch"], safe="")}')
     require(remote['object']['sha'] == binding['head_sha'], 'push the reviewed candidate branch yourself before submit')
     transfer = {'runner': runner, 'task': task, 'owner': user['login']}
     body = prose.rstrip() + '\n\n```factory-handoff\n' + json.dumps(transfer) + '\n```\n\n'
+    body += merge_safety.collision_summary(sweep) + '\n\n'
     body += ('Advisory source preflight: `' + review['outcome'] + '` at `' + binding['head_sha'] + '`; no tests executed by this command.\n\n'
              + review['summary'] + '\n\n```json\n' + json.dumps(result, indent=2, ensure_ascii=False) + '\n```\n')
     require(len(body.encode()) < 60000, 'PR body exceeds publication limit')
@@ -497,18 +511,19 @@ def submit(gh, candidate, task, context, title, body_file, runner, draft=False,
                 raise Blocked('could not confirm draft fallback; inspect ' + url) from None
             raise Blocked('PR restored to draft; rerun preflight for ' + url) from None
     print(json.dumps({'pr': pr, 'url': url, 'draft': draft}), flush=True)
-    return {'pr': pr, 'url': url, 'draft': draft, 'watch': None if draft else watch(gh, pr, interval, timeout, no_dispatch)}
+    return {'pr': pr, 'url': url, 'draft': draft, 'collisions': sweep,
+            'watch': None if draft else watch(gh, pr, interval, timeout, no_dispatch)}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('preflight', 'submit', 'watch', 'response'):
+    for name in ('preflight', 'submit', 'watch', 'response', 'collisions', 'merge'):
         command = commands.add_parser(name)
-        if name in ('preflight', 'submit'):
+        if name in ('preflight', 'submit', 'collisions'):
             command.add_argument('--candidate', type=Path, required=True)
-            command.add_argument('--task', required=True)
-        if name in ('watch', 'response'):
+            command.add_argument('--task', required=name != 'collisions')
+        if name in ('watch', 'response', 'merge'):
             command.add_argument('--pr', type=int, required=True)
         if name in ('preflight', 'submit', 'response'):
             command.add_argument('--context', action='append', default=[], help='additional repository path, treated only as data')
@@ -524,6 +539,8 @@ def main(argv=None):
             command.add_argument('--runner', required=True)
             command.add_argument('--draft', action='store_true')
             command.add_argument('--allow-blocked-preflight', action='store_true', help='create a draft for an explicit blocked preflight')
+        if name == 'merge':
+            command.add_argument('--dry-run', action='store_true', help='verify only; do not merge')
         if name == 'response':
             command.add_argument('--question', required=True)
             command.add_argument('--post', action='store_true', help='explicitly publish the cited answer on this PR')
@@ -534,9 +551,12 @@ def main(argv=None):
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        result = globals()[command](HumanGitHub(), **args)
+        handler = {'collisions': merge_safety.collisions, 'merge': merge_safety.merge}.get(command) or globals()[command]
+        result = handler(HumanGitHub(), **args)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         if command == 'preflight' and result['review']['outcome'] != 'pass':
+            return 1
+        if (command == 'collisions' and not result['main']['contains']) or (command == 'merge' and not result['mergeable']):
             return 1
         return 0
     except KeyboardInterrupt:

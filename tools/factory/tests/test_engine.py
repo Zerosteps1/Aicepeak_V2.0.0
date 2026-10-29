@@ -101,6 +101,13 @@ class EngineBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'cost reservation'):
             engine.reserve(self.transport,self.snapshot,self.config,'factory/senior-review',1,'new-head')
 
+    def test_northstar_approval_alone_does_not_authorize_product_development(self):
+        self.config['northstar_approved'] = True
+        self.config['product_checks_ready'] = False
+        self.transport.task['kind'] = 'product'
+        with self.assertRaisesRegex(Blocked, 'product checks not implemented/approved'):
+            self.capture_snapshot()
+
     def test_duplicate_input_cannot_reserve_or_push_twice(self):
         engine.reserve(self.transport,self.snapshot,self.config,'factory/senior-review',1,'same')
         with self.assertRaisesRegex(Blocked,'duplicate'):

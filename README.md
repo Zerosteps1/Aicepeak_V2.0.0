@@ -10,7 +10,7 @@ Only this repository, its work orders and review evidence, and official vendor d
 |---|---|
 | Factory | Installed on `main`; rulesets, environment secrets and both Apps verified active. The review-fix loop passed live on PR #20 and again on PR #13 (2026-10-29: Astra finding F-006, automatic Claude correction, re-review `pass`). Ready for factory and documentation work. |
 | Full operational acceptance | Open: Felix's own reviewer device, two devices racing for one claim, a new head during a running review, a foreign App with the same check name, authenticated skill/MCP calls inside the author container. See [evidence](factory/evidence.md). |
-| Product development | Blocked by design: `northstar_approved: false` and `product_checks_ready: false` in [factory/config.json](factory/config.json). Only `factory` and `smoke` work orders run. |
+| Product development | North star approved by Gabriel on 2026-10-29 ([decision](docs/decisions/0006-northstar-approval.md)); architecture decisions and implemented product checks remain open. `northstar_approved: true`, `product_checks_ready: false`: only `factory` and `smoke` work orders run. |
 | Architecture | Non-binding draft proposal v0.4 (merged with PR #13): [specification sheet and target architecture](docs/architecture/AICEPEAK_SPEC_AND_ARCHITECTURE.md). Its AD-01..AD-12 bind only after adoption through decision records. |
 
 The start-readiness review with measured times, friction and recommendations is in [factory/review-2026-10-29.md](factory/review-2026-10-29.md).
@@ -52,47 +52,132 @@ Both Felix accounts belong to the same person: an approval through the second ac
 
 <a id="gemeinsamer-einstieg-für-gabriel-und-felix"></a>
 
-## Prerequisites and one-time device setup
+## Prerequisites and one-time device setup (macOS)
 
-Needed: Python 3.11 or newer, Git, `gh` with your own login, Docker (only for isolated author sessions), Codex CLI exactly `0.164.0`, and a ChatGPT Business seat with Codex. Verifier versions and hashes are pinned in [factory/tools.lock.json](factory/tools.lock.json); `actionlint` and `gitleaks` are needed only for a full local `verify.py` run.
+Felix can follow this runbook on his Mac once Gabriel has completed the access handoff below. The README cannot grant account permissions or generate an owner-only App key. Use your own Terminal for the credential steps; never paste a secret into an agent session.
+
+### 1. Access handoff — Gabriel and Felix, once
+
+- **GitHub:** accept the repository invitation and choose either `truFelix-Zentru` or `ftrutschnig` as the active account. Both are configured maintainers; use your own identity.
+- **ChatGPT:** Felix needs his own Business workspace seat, local Codex permission and permission to create access tokens. A workspace owner enables these if the token page is unavailable. Follow the [official access-token instructions](https://learn.chatgpt.com/docs/enterprise/access-tokens).
+- **Publisher App:** Gabriel opens [the publisher App settings](https://github.com/settings/apps/aicepeak-publisher-zerosteps1), creates a separate key for Felix's device and transfers the PEM through an agreed secure secret-sharing channel. Record which device owns it so it can be revoked separately. GitHub repository write access alone does not grant App-key administration. Follow [GitHub's private-key instructions](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps). Felix never needs the writer key.
+- **Local author sessions:** agree which Anthropic Console workspace pays for API calls and grant access to its API key plus a Context7 API key. These are separate from the Claude subscription and the WIF credentials used by GitHub Actions. They are not needed for a reviewer-only Mac.
+
+### 2. Install tools and sign in
+
+Install [Homebrew](https://brew.sh/) if it is not already available. In a normal Terminal:
 
 ```sh
+brew install python git gh node
+npm install --prefix "$HOME/.local/share/aicepeak-factory-cli" @openai/codex@0.164.0
+export PATH="$HOME/.local/share/aicepeak-factory-cli/node_modules/.bin:$PATH"
+python3 --version
+git --version
+gh --version
+codex --version
+```
+
+Expected: Python **3.11 or newer** and exactly **`codex-cli 0.164.0`**. Reapply the `export PATH` line in each Terminal used for factory commands. This separate installation does not replace a personal Codex installation. If the access-token UI requires a newer CLI, stop and request a reviewed factory version update; do not silently upgrade the pinned reviewer.
+
+For isolated author sessions, install and start [Docker Desktop for your Mac's processor](https://docs.docker.com/desktop/setup/install/mac-install/), complete its first-launch setup and check `docker info`. Claude Code is installed inside the factory image; no host Claude installation is required.
+
+```sh
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git
+gh api user --jq .login
+gh api repos/Zerosteps1/Aicepeak_V2.0.0 --jq '.permissions.push'
 git clone https://github.com/Zerosteps1/Aicepeak_V2.0.0.git Aicepeak-factory
 cd Aicepeak-factory
 git switch main
-python3 tools/factory/doctor.py --root . --runner claude
 python3 tools/factory/clients.py check --root .
+python3 tools/factory/doctor.py --root . --runner claude
 ```
 
-Keep this clone as a clean control checkout on `main`; do code work in a separate working copy or worktree. Never pull or switch branches over someone else's uncommitted changes. The doctor checks prerequisites only; a positive result is no live acceptance. Personal global configuration is not changed.
+Expected GitHub output: your selected Felix login and `true`; a public clone alone does not prove write access. The [GitHub browser login](https://cli.github.com/manual/gh_auth_login) handles authentication without pasting a GitHub token into the factory. Adapter `check` must pass. **Doctor exit 2 is expected:** it always leaves live acceptance open and, at this stage, keys/image may also be missing. It also checks Docker, author keys and local verifier tools on reviewer-only devices. Read each named check instead of treating exit 2 as a failed installation. `actionlint` and `gitleaks` are only needed for full local verification; the Linux-only `factory/install_tools.py` is not a macOS installer.
 
-Store your own Codex token once per reviewer device and run the reviewer smoke:
+Keep this clone as a clean control checkout on current `main`. Store patches, reports, PR descriptions and credentials outside all checkouts. `session.py` rejects ignored extra files too (including `.DS_Store`, `__pycache__` or `.venv`). Before use, inspect `git status --short --untracked-files=all --ignored`; do not pull or switch over somebody's uncommitted work. Make candidate changes in a separate checkout.
+
+### 3. Configure and test the reviewer
+
+In the correct Business workspace, open [Access tokens](https://chatgpt.com/admin/access-tokens), create a token for Felix's device with **Codex** scope and a finite expiration, and copy it once. This is a personal workspace access token, not a browser session token or a Platform API key. Store it using the password prompt; `-U` also supports rotation:
 
 ```sh
-security add-generic-password -a "$USER" -s aicepeak-factory-codex-access-token -w
+security add-generic-password -U -a "$USER" -s aicepeak-factory-codex-access-token -w
 python3 tools/factory/local_review.py --smoke
 ```
 
-The smoke must report `"status": "passed"` with `gpt-6-astra` and effort `high`. No `OPENAI_API_KEY` is needed for reviews.
+Expected: `"status": "passed"`, `gpt-6-astra`, effort `high`. The smoke uses the personal Codex quota and does not test GitHub publication. On expiry, create a replacement, repeat the keychain command and smoke, then revoke the old token. A 404/forbidden token page requires the workspace owner's permission change; repeatedly logging into GitHub will not fix it.
 
-Maintainer devices that publish review results also need the publisher App key, ideally a new key per device generated on the App page. Store it base64-encoded from an absolute path (a wrong path creates an empty entry):
+Store Gabriel's publisher PEM separately. This **zsh** block asks for an absolute path and validates the file before changing the keychain entry:
 
 ```sh
-security add-generic-password -U -a "$USER" -s aicepeak-factory-publisher-key \
-  -w "$(base64 < /absolute/path/key.pem | tr -d '\n')"
+read -r "FACTORY_PEM?Absolute path to Felix's publisher PEM: "
+if [[ "$FACTORY_PEM" = /* && -s "$FACTORY_PEM" ]] && openssl rsa -in "$FACTORY_PEM" -check -noout; then
+  security add-generic-password -U -a "$USER" -s aicepeak-factory-publisher-key \
+    -w "$(base64 < "$FACTORY_PEM" | tr -d '\n')"
+else
+  printf 'No key stored: provide an existing, valid publisher PEM using an absolute path.\n'
+fi
+unset FACTORY_PEM
 ```
 
-Never put tokens or PEM contents into chat, Git, PR text or a model shell, and never distribute the writer key. Details and token limits: [clients](factory/clients.md#senior-reviewer-maintainer-local).
+Never put tokens or PEM contents into chat, Git or PR text. An environment variable `CODEX_ACCESS_TOKEN` or `FACTORY_PUBLISHER_APP_PRIVATE_KEY` overrides the keychain; remove a stale override in your Terminal if rotation appears ineffective. Details: [reviewer credentials](factory/clients.md#senior-reviewer-maintainer-local).
 
-Isolated author sessions additionally need the client image and, locally, `ANTHROPIC_API_KEY` and `CONTEXT7_API_KEY` in the launcher environment (Anthropic API usage, billed per use):
+### 4. Configure the isolated author (skip on reviewer-only devices)
+
+Create or obtain an API key for the agreed [Anthropic Console](https://platform.claude.com/) workspace and an API key from the [Context7 dashboard](https://context7.com/dashboard). Enter them at hidden prompts in your own **zsh** Terminal; these lines contain no secret values in shell history:
 
 ```sh
+read -rs "ANTHROPIC_API_KEY?Anthropic API key: "
+printf '\n'
+read -rs "CONTEXT7_API_KEY?Context7 API key: "
+printf '\n'
+export ANTHROPIC_API_KEY CONTEXT7_API_KEY
 export FACTORY_DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
 docker build -f factory/Dockerfile -t aicepeak-factory-clients:codex-0.164.0-claude-2.1.311 factory
 python3 tools/factory/clients.py smoke --root .
 ```
 
-If Docker reports `docker-credential-desktop: executable file not found`, add the `Contents/Resources/bin` folder of the actual Docker app temporarily to `PATH` (on Gabriel's Mac it is `Docker 2.app`); do not delete credential-store settings.
+Expected: image build succeeds and container smoke reports `passed`. If `docker-credential-desktop` cannot be found, add the actual Docker app's `Contents/Resources/bin` directory to this Terminal's `PATH`, then repeat the build; keep credential-store settings intact. On Gabriel's Mac the app is named `Docker 2.app`; Felix must use his own installation path.
+
+The container smoke does **not** prove authenticated skill or native MCP execution. From the control checkout, run `python3 tools/factory/clients.py launch --root . --runner claude` and request: “Use factory-start for docs/work/FACTORY-SMOKE.md. Read the approved order, make a generic Context7 documentation lookup and an OpenAI Docs lookup, and report both outcomes without changing files.” Verify actual tool outcomes in that interactive session. This consumes Anthropic API usage; the local launcher needs the two keys even though Actions uses WIF. After the session, remove the author keys from this Terminal with `unset ANTHROPIC_API_KEY CONTEXT7_API_KEY`.
+
+### 5. Complete Felix's first real review
+
+Repeat the doctor and inspect relevant checks. A reviewer needs the correct clean checkout, GitHub identity/access, pinned Codex, personal-token smoke and publisher key. An author additionally needs Docker/image, both API keys, boundary smoke and the authenticated skill/MCP probe. Doctor exit 2 still does not certify live acceptance.
+
+Create a harmless smoke PR under the already approved [FACTORY-SMOKE](docs/work/FACTORY-SMOKE.md). Coordinate with Gabriel so **only Felix's device watches this first smoke**; otherwise Gabriel can win the review claim and two green checks would not test Felix's key. The following runs from the control checkout and uses a new sibling checkout; choose another unused directory if `Aicepeak-felix-smoke` already exists. Replace the Git author placeholders with your own name and verified GitHub email before committing. The fixture change alters indentation only, leaving all numeric and text values correct:
+
+```sh
+git pull --ff-only
+git clone https://github.com/Zerosteps1/Aicepeak_V2.0.0.git ../Aicepeak-felix-smoke
+cd ../Aicepeak-felix-smoke
+git switch -c "smoke/felix-$(date +%Y%m%d-%H%M%S)"
+git config --local user.name 'YOUR NAME'
+git config --local user.email 'YOUR VERIFIED GITHUB EMAIL'
+python3 - <<'PY'
+import json
+from pathlib import Path
+path = Path('factory-smoke.json')
+value = json.loads(path.read_text())
+assert value['quantity'] * value['unit_price'] == value['total']
+path.write_text(json.dumps(value, ensure_ascii=False, indent=4) + '\n')
+PY
+git diff -- factory-smoke.json
+git add factory-smoke.json
+git commit -m 'test(factory): verify Felix reviewer device with unchanged smoke values'
+git push -u origin HEAD
+cd ../Aicepeak-factory
+printf '%s\n' 'Verify Felix reviewer device using the approved FACTORY-SMOKE fixture; formatting only.' > ../felix-smoke-pr.md
+python3 tools/factory/session.py submit --candidate ../Aicepeak-felix-smoke \
+  --task docs/work/FACTORY-SMOKE.md --runner claude \
+  --title 'test(factory): Felix reviewer device smoke' --body-file ../felix-smoke-pr.md
+```
+
+`submit` starts an advisory preflight, opens the PR and runs its watcher. If `main` moved meanwhile, update the clean control checkout and merge the new `origin/main` into the candidate, commit any resolution, push, then retry; do not bypass freshness checks. If you resume an existing PR, use `python3 tools/factory/session.py watch --pr <number>` from the updated control checkout. Keep the Mac awake. Confirm both `factory/deterministic` and `factory/senior-review` from App **5510081** are successful for that PR's current head and current `main` policy (see [merge rules](#merge-rules)). The watcher can keep polling after success; Ctrl-C stops it once both final checks are green. This is the publication test for Felix's publisher key; a successful model smoke alone is insufficient. Record the head/base, run/check IDs and Felix's executed probes in a reviewed evidence update. Until then, his device remains unverified; Gabriel's working reviewer may review shared PRs.
+
+Also inspect the final senior check receipt (`output.text` JSON) and confirm `claim.actor.login` is Felix's active account. If another maintainer won the claim, this run is not acceptance of Felix's device: coordinate again and create a fresh smoke PR or deliberate retry. The smoke fixture needs no merge. Product implementation still requires architecture decisions, implemented product checks and an approved product work order; the north-star approval alone does not remove that gate.
+
 
 ## Daily use, step by step
 

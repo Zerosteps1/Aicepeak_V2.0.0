@@ -50,6 +50,8 @@ A typical PR needs 6 to 10 minutes from push to two green checks (tests 3 to 5, 
 
 Both Felix accounts belong to the same person: an approval through the second account is not an independent human review. Felix has write access, is in CODEOWNERS and is a bypass actor of both rulesets; repository settings, rulesets, environments and App keys stay with the repository owner.
 
+<a id="gemeinsamer-einstieg-für-gabriel-und-felix"></a>
+
 ## Prerequisites and one-time device setup
 
 Needed: Python 3.11 or newer, Git, `gh` with your own login, Docker (only for isolated author sessions), Codex CLI exactly `0.164.0`, and a ChatGPT Business seat with Codex. Verifier versions and hashes are pinned in [factory/tools.lock.json](factory/tools.lock.json); `actionlint` and `gitleaks` are needed only for a full local `verify.py` run.
@@ -95,8 +97,9 @@ If Docker reports `docker-credential-desktop: executable file not found`, add th
 ## Daily use, step by step
 
 1. **Write a work order.** Copy [docs/work/TEMPLATE.md](docs/work/TEMPLATE.md), fill in goal, non-goals, acceptance criteria and allowed paths, set `status` to `approved` and merge it in its own PR (handoff task `docs/work/FACTORY-001.md` allows `docs/work/`). One work order per feature, not per commit.
-2. **Implement.** In a separate candidate checkout on a feature branch: `python3 tools/factory/clients.py launch --root . --runner claude`, then the `factory-change` skill.
-3. **Submit.** Push the candidate branch, then from the control checkout:
+2. **Implement.** In a separate candidate checkout on a feature branch, start the isolated author with `python3 tools/factory/clients.py launch --root . --runner claude` and use the `factory-change` skill. `launch` does not modify your checkout: it returns a patch artifact and the author's report.
+3. **Apply and verify the patch yourself.** Read the report, inspect the patch, apply only the changes the work order allows to the candidate branch (`git apply`), run the verification the work order names (at least `python3 tools/factory/verify.py --root .`), then commit and push. The container keeps control files (`.agents/`, native adapters, `AGENTS.md`, `CLAUDE.md`, `factory/`, `tools/factory/`) read-only; for those the author only proposes a change, and a maintainer applies it in an ordinary checkout, runs `clients.py sync` and `clients.py check` plus the test harness, and submits a manually managed PR ([protected factory changes](factory/clients.md#protected-factory-changes)).
+4. **Submit.** From the control checkout:
 
    ```sh
    python3 tools/factory/session.py submit --candidate /path/to/candidate \
@@ -105,10 +108,10 @@ If Docker reports `docker-credential-desktop: executable file not found`, add th
    ```
 
    `submit` reruns the advisory preflight, creates a draft, marks it ready only after `pass` and a fresh head/base check, and then watches the PR. If the preflight lacks context (for example an unchanged module the change relies on), add `--context <path>`.
-4. **Review.** Every ready PR waits for the binding review until a maintainer device runs `python3 tools/factory/session.py watch --pr <n>`. Without a running watcher nothing reviews on a laptop.
-5. **Act on findings.** P0/P1 block and start the automatic correction where allowed; otherwise the PR gets `needs-author-action` and you continue with `factory-fix-review`. P2 findings are hints.
-6. **Give feedback.** Ordinary PR comments, reviews and inline comments by Gabriel or Felix start a fresh review that takes them into account. `session.py response --pr <n> --question '…' --post` answers questions with citations and changes nothing.
-7. **Merge.** See [merge rules](#merge-rules). After every merge, update the control checkout (`git pull --ff-only`) and bring open PRs up to date with "Update branch"; their fresh run follows automatically.
+5. **Review.** Every ready PR waits for the binding review until a maintainer device runs `python3 tools/factory/session.py watch --pr <n>`. Without a running watcher nothing reviews on a laptop.
+6. **Act on findings.** P0/P1 block and start the automatic correction where allowed; otherwise the PR gets `needs-author-action` and you continue with `factory-fix-review`. P2 findings are hints.
+7. **Give feedback.** Ordinary PR comments, reviews and inline comments by Gabriel or Felix start a fresh review that takes them into account. `session.py response --pr <n> --question '…' --post` answers questions with citations and changes nothing.
+8. **Merge.** See [merge rules](#merge-rules). After every merge, update the control checkout (`git pull --ff-only`) and bring open PRs up to date with "Update branch"; their fresh run follows automatically.
 
 Review all waiting PRs on a set-up maintainer device (stop with Ctrl-C):
 

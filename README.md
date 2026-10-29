@@ -145,12 +145,14 @@ gh workflow run factory.yml --repo Zerosteps1/Aicepeak_V2.0.0 --ref main -f pr=1
 - Normal case: both App-bound required checks `factory/deterministic` and `factory/senior-review` are green on the current head and all threads are resolved; then Gabriel or Felix merges. The "updates by humans only" ruleset lets `main` change only through a maintainer's PR merge, so the command-line merge uses the maintainer bypass, which also skips the check rule. Bind it to the head whose checks you verified, and note the merge in a short PR comment:
 
   ```sh
-  gh pr view <n> --repo Zerosteps1/Aicepeak_V2.0.0 --json headRefOid,baseRefOid,statusCheckRollup
+  gh pr view <n> --repo Zerosteps1/Aicepeak_V2.0.0 --json headRefOid
+  gh api "repos/Zerosteps1/Aicepeak_V2.0.0/commits/<head-sha>/check-runs?per_page=50" \
+    --jq '.check_runs[] | select(.name|startswith("factory/")) | [.name, .conclusion, .app.id, .external_id] | @tsv'
   git ls-remote https://github.com/Zerosteps1/Aicepeak_V2.0.0.git refs/heads/main
-  gh pr merge <n> --repo Zerosteps1/Aicepeak_V2.0.0 --merge --admin --match-head-commit <verified-head-sha>
+  gh pr merge <n> --repo Zerosteps1/Aicepeak_V2.0.0 --merge --admin --match-head-commit <head-sha>
   ```
 
-  Merge only if both checks are green for that head and `baseRefOid` equals the current `main` commit. `--match-head-commit` refuses a changed head but does not detect a moved `main`; if `main` moved, use "Update branch" and wait for the fresh checks and review.
+  Each factory check's `external_id` reads `repository:PR:head:policy:run:attempt`, where `policy` is the protected base the run used. Merge only if `factory/deterministic` and `factory/senior-review` from App 5510081 are `success`, their head equals the PR head and their policy equals the current `main` commit. `--match-head-commit` refuses a changed head but does not detect a moved `main`; if `main` moved, use "Update branch" and wait for the fresh checks and review.
 - Stuck PR (no reviewer device, model failure, exhausted limits): a maintainer may merge deliberately through the ruleset bypass. Write the reason as a PR comment first; GitHub records every bypass. A bypassed PR has no independent review, so use this sparingly.
 - Never: direct pushes to `main`, auto-merge, agent or bot merges, or changing protection rules to force a green result.
 

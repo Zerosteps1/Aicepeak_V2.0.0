@@ -150,7 +150,8 @@ def unresolved_threads(gh, pr):
     return sum(not node['isResolved'] for node in threads['nodes'])
 
 
-REFUSED = re.compile(r'GraphQL:|HTTP [45][0-9][0-9]|not mergeable|was modified|[Rr]equired status|[Rr]epository rule')
+# Only explicit rejections: a 5xx, a generic GraphQL error or silence may still end in a merge.
+REFUSED = re.compile(r'HTTP 4[0-9][0-9]|not mergeable|was modified|[Rr]equired status|[Rr]epository rule|[Mm]erge conflict')
 
 
 def gh_merge(pr, head):

@@ -298,6 +298,9 @@ class MergeSafety(unittest.TestCase):
                  (subprocess.CompletedProcess([], 1, '', 'GraphQL: Pull Request is not mergeable (mergePullRequest)'), 'refused'),
                  (subprocess.CompletedProcess([], 1, '', 'Head branch was modified. Review and try the merge again.'), 'refused'),
                  (subprocess.CompletedProcess([], 1, '', 'connection reset by peer'), 'unknown'),
+                 (subprocess.CompletedProcess([], 1, '', 'HTTP 422: Unprocessable Entity'), 'refused'),
+                 (subprocess.CompletedProcess([], 1, '', 'HTTP 504: Gateway Timeout'), 'unknown'),
+                 (subprocess.CompletedProcess([], 1, '', 'GraphQL: Something went wrong while executing your query.'), 'unknown'),
                  (subprocess.TimeoutExpired(['gh'], 120), 'unknown')]
         for result, expected in cases:
             with self.subTest(expected=expected, result=result), \

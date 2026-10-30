@@ -3,7 +3,7 @@
 Status: draft; it authorizes work only after a maintainer sets `status` to `approved` and this file is merged to protected `main` in its own reviewed PR. [FACTORY-006](FACTORY-006.md) (issues as work orders) builds on it.
 
 ```factory-task
-{"status":"draft","kind":"factory","allowed_paths":["tools/factory/","factory/","AGENTS.md","README.md","CONTRIBUTING.md","docs/dev-setup.md","docs/way-of-working.md","docs/software-factory.md","docs/decisions/"]}
+{"status":"draft","approved":"factory","allowed_paths":["tools/factory/","factory/","AGENTS.md","README.md","CONTRIBUTING.md","docs/dev-setup.md","docs/way-of-working.md","docs/software-factory.md","docs/decisions/"]}
 ```
 
 requirements: []

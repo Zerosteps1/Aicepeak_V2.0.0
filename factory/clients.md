@@ -63,7 +63,7 @@ Both native clients include required documentation servers. Context7 (`https://m
 
 ## Senior reviewer (maintainer-local)
 
-`tools/factory/local_review.py` performs the senior model review; `local_review_queue.py`, invoked by the serialized main workflow, owns the gate claim and final publication. It runs only on the maintainer's trusted Mac and never on GitHub-hosted runners: OpenAI intends ChatGPT workspace access tokens for trusted machines and private runners, and this repository is public. It reviews the snapshot in a pending `factory/senior-review` check and posts neutral result evidence through the Publisher App. It cannot directly complete the gate. The configured target requires both `factory/deterministic` and `factory/senior-review`, with `automatic_correction: true` for the authorized post-bootstrap flow; configuration alone does not prove that remote rules or the live loop are active. Usage is described in the [README](../README.md#gemeinsamer-einstieg-für-gabriel-und-felix).
+`tools/factory/local_review.py` performs the senior model review; `local_review_queue.py`, invoked by the serialized main workflow, owns the gate claim and final publication. It runs only on the maintainer's trusted Mac and never on GitHub-hosted runners: OpenAI intends ChatGPT workspace access tokens for trusted machines and private runners, and this repository is public. It reviews the snapshot in a pending `factory/senior-review` check and posts neutral result evidence through the Publisher App. It cannot directly complete the gate. The configured target requires both `factory/deterministic` and `factory/senior-review`, with `automatic_correction: true` for the authorized post-bootstrap flow; configuration alone does not prove that remote rules or the live loop are active. Usage is described in [way-of-working.md](../docs/way-of-working.md); device setup in [dev-setup.md](../docs/dev-setup.md).
 
 Preconditions, checked before any model call:
 
@@ -104,7 +104,7 @@ Credentials come from the macOS login keychain items `aicepeak-factory-codex-acc
 - `watch` is a bounded local loop that starts eligible pending reviews through shared claims and waits if another device owns the work. The trusted machine must remain running; GitHub does not start a process on a sleeping laptop.
 - `response` produces a source-bound advisory answer. Only `--post` publishes it; the answer cannot authorize corrections, complete the gate, resolve a thread or change code.
 
-Both clients are requested, but `submit --runner` is constrained by the current runner allowlist (`claude`). Business authentication for the isolated Codex author remains a separate activation blocker. Command examples are maintained in the [README](../README.md#gemeinsamer-einstieg-für-gabriel-und-felix).
+Both clients are requested, but `submit --runner` is constrained by the current runner allowlist (`claude`). Business authentication for the isolated Codex author remains a separate activation blocker. Command examples are maintained in [way-of-working.md](../docs/way-of-working.md).
 
 ## Verification status and limits
 

@@ -3,7 +3,7 @@
 Status: draft; it authorizes work only after a maintainer sets `status` to `approved` and this file is merged to protected `main` in its own reviewed PR. It builds on [FACTORY-005](FACTORY-005.md) (single developer checkout); implement it only after FACTORY-005 has merged.
 
 ```factory-task
-{"status":"draft","kind":"factory","allowed_paths":[".github/",".agents/",".claude/",".codex/","factory/","tools/factory/","docs/decisions/","docs/work/TEMPLATE.md","README.md","CONTRIBUTING.md","docs/software-factory.md","docs/way-of-working.md"]}
+{"status":"approved","kind":"factory","allowed_paths":[".github/",".agents/",".claude/",".codex/","factory/","tools/factory/","docs/decisions/","docs/work/TEMPLATE.md","README.md","CONTRIBUTING.md","docs/software-factory.md","docs/way-of-working.md"]}
 ```
 
 requirements: []

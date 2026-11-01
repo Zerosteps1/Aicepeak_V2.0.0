@@ -5,20 +5,25 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import re
 import resource
 import select
 import secrets
 import shutil
+import signal
 import socket
 import stat
 import subprocess
 import sys
 sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CLI use.
 import tempfile
+import threading
 import time
 import tomllib
+import unicodedata
 import urllib.request
 
 try:
@@ -32,6 +37,14 @@ IGNORED_DIRS = {".git", ".agents", ".claude", ".codex", ".ssh", ".aws", ".azure"
 IGNORED_FILES = {".git", "AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", ".mcp.json", ".npmrc", ".netrc", ".pypirc"}
 IMAGE = "aicepeak-factory-clients:codex-0.164.0-claude-2.1.311"
 VERSIONS = {"codex": "codex-cli 0.164.0", "claude": "2.1.311 (Claude Code)"}
+AUTHOR_TOOLS = "Bash,Read,Write,Edit,Glob,Grep,Agent,Skill"
+# --allowedTools only pre-approves; --tools removes every other built-in tool (Agent, Bash, Edit, Write, ...).
+REVIEW_TOOLS = "Read,Glob,Grep,Skill"
+DOC_TOOLS = "mcp__context7__resolve-library-id,mcp__context7__query-docs,mcp__openai_docs__search_openai_docs,mcp__openai_docs__list_openai_docs,mcp__openai_docs__fetch_openai_doc"
+LABEL = re.compile(r"[a-z0-9][a-z0-9.-]{0,62}=[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+STREAM_LINE_LIMIT = 4 * 1024 * 1024
+EVENT_LOG_LIMIT = 2 * 1024 * 1024
+EVENT_TARGETS = ("file_path", "notebook_path", "path", "pattern", "command", "skill", "query", "libraryName", "url")
 
 
 class ClientError(ValueError):
@@ -239,7 +252,7 @@ def clean_env(docker_config: Path | None = None) -> dict[str, str]:
     return env
 
 
-def command(args, *, cwd=None, env=None, timeout=60, input=None, capture=True):
+def command(args, *, cwd=None, env=None, timeout=60, input=None, capture=True, on_line=None):
     if not capture:
         result = subprocess.run(args, cwd=cwd, env=env or clean_env(), input=input, timeout=timeout, check=False)
         if result.returncode:
@@ -248,6 +261,8 @@ def command(args, *, cwd=None, env=None, timeout=60, input=None, capture=True):
     # Disk-backed, kernel-bounded capture: model logs cannot exhaust parent RAM/disk.
     def cap_output():
         resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024 * 1024, 8 * 1024 * 1024))
+    if on_line is not None:
+        return stream_lines(args, cwd=cwd, env=env or clean_env(), timeout=timeout, input=input, on_line=on_line, preexec_fn=cap_output)
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         result = subprocess.run(args, cwd=cwd, env=env or clean_env(), input=input, stdout=out, stderr=err, timeout=timeout, check=False, preexec_fn=cap_output)
         out.seek(0)
@@ -260,6 +275,136 @@ def command(args, *, cwd=None, env=None, timeout=60, input=None, capture=True):
         detail = stderr.decode(errors="replace")[-2000:]
         raise ClientError(f"{Path(args[0]).name} failed ({result.returncode}): {detail}")
     return stdout
+
+
+def _feed(stream, data: bytes):
+    try:
+        stream.write(data)
+    except OSError:
+        pass  # The child exited early; its exit status reports the failure.
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def stream_lines(args, *, cwd, env, timeout, input, on_line, preexec_fn) -> bytes:
+    """Hand each stdout line to on_line without keeping the stream. A volume limit
+    never ends a run whose budget is already spent: oversized lines are skipped."""
+    deadline = time.monotonic() + timeout
+    with tempfile.TemporaryFile() as err:
+        process = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=err, preexec_fn=preexec_fn)
+        try:
+            if input is not None:
+                threading.Thread(target=_feed, args=(process.stdin, input), daemon=True).start()
+            descriptor, buffer, skipping = process.stdout.fileno(), b"", False
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                if not select.select([descriptor], [], [], remaining)[0]:
+                    continue
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    break
+                buffer += chunk
+                while True:
+                    end = buffer.find(b"\n")
+                    if end < 0:
+                        if len(buffer) > STREAM_LINE_LIMIT:
+                            buffer, skipping = b"", True
+                        break
+                    line, buffer = buffer[:end], buffer[end + 1:]
+                    if skipping:
+                        skipping = False
+                    elif line.strip() and len(line) <= STREAM_LINE_LIMIT:
+                        on_line(line)
+            if buffer.strip() and not skipping and len(buffer) <= STREAM_LINE_LIMIT:
+                on_line(buffer)
+            process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+        finally:
+            process.stdout.close()
+        if process.returncode:
+            err.seek(0)
+            detail = err.read(8 * 1024 * 1024).decode(errors="replace")[-2000:]
+            raise ClientError(f"{Path(args[0]).name} failed ({process.returncode}): {detail}")
+    return b""
+
+
+def printable(text: str, limit: int) -> str:
+    """Model-chosen text must not drive the maintainer's terminal: escape control and format characters."""
+    shown = "".join(c if unicodedata.category(c) not in ("Cc", "Cf") else f"\\u{ord(c):04x}" for c in text[:limit])
+    return shown + ("..." if len(text) > limit else "")
+
+
+def tool_summaries(event) -> list[str]:
+    """One line per tool call: tool name and its target. No model text or reasoning."""
+    message = event.get("message") if isinstance(event, dict) and event.get("type") == "assistant" else None
+    content = message.get("content") if isinstance(message, dict) else None
+    lines = []
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        name = block.get("name") if isinstance(block.get("name"), str) else "tool"
+        data = block.get("input") if isinstance(block.get("input"), dict) else {}
+        target = next((data[key] for key in EVENT_TARGETS if isinstance(data.get(key), str) and data[key].strip()), "")
+        target = target.strip().splitlines()[0] if target.strip() else ""
+        lines.append(printable(name, 64) + (" " + printable(target, 120) if target else ""))
+    return lines
+
+
+class EventSink:
+    """Keeps the final result line and appends bounded tool summaries to a 0600 file."""
+    def __init__(self, path: Path, secrets: tuple[str, ...]):
+        self.descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+        self.secrets, self.result, self.written = secrets, None, 0
+
+    def __call__(self, line: bytes):
+        for secret in self.secrets:  # before any truncation can cut a credential in half
+            line = line.replace(secret.encode(), b"[credential redacted]")
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return
+        if isinstance(event, dict) and event.get("type") == "result":
+            self.result = line  # The last result describes the whole session, as in json output.
+            return
+        for text in tool_summaries(event):
+            for secret in self.secrets:
+                text = text.replace(secret, "[credential redacted]")
+            self.write(time.strftime("%H:%M:%S ") + text + "\n")
+
+    def write(self, text: str):
+        data = text.encode()
+        if self.written + len(data) > EVENT_LOG_LIMIT:
+            data = b"" if self.written >= EVENT_LOG_LIMIT else b"[event log limit reached]\n"
+            self.written = EVENT_LOG_LIMIT
+        else:
+            self.written += len(data)
+        if data:
+            os.write(self.descriptor, data)
+
+    def close(self):
+        os.close(self.descriptor)
+
+
+def reported_cost(runner: str, output: bytes | None) -> float | None:
+    """Claude's own estimate from its result message; the broker's caps stay authoritative."""
+    if runner != "claude" or not output:
+        return None
+    try:
+        value = json.loads(output).get("total_cost_usd")
+    except (ValueError, AttributeError):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return None
+    return round(float(value), 4)
 
 
 def git(root: Path, *args) -> bytes:
@@ -326,14 +471,19 @@ def codex_provider_arguments() -> list[str]:
     return [argument for override in overrides for argument in ("-c", override)]
 
 
-def worker_arguments(runner: str, model: str, interactive=False, max_turns: int | None = None, max_budget_usd: float | None = None) -> list[str]:
+def worker_arguments(runner: str, model: str, interactive=False, max_turns: int | None = None, max_budget_usd: float | None = None, *, read_only=False, stream=False) -> list[str]:
     if runner == "codex":
         args = ["codex"] + ([] if interactive else ["exec", "--ephemeral", "--strict-config", "--json"])
-        args += ["--model", model, "--sandbox", "danger-full-access", "-c", 'approval_policy="never"']
+        args += ["--model", model, "--sandbox", "read-only" if read_only else "danger-full-access", "-c", 'approval_policy="never"']
         return args + codex_provider_arguments() + ([] if interactive else ["-"])
-    args = ["claude", "--model", model, "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", "/work/.mcp.json", "--no-chrome", "--permission-mode", "dontAsk", "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep,Agent,Skill,mcp__context7__resolve-library-id,mcp__context7__query-docs,mcp__openai_docs__search_openai_docs,mcp__openai_docs__list_openai_docs,mcp__openai_docs__fetch_openai_doc"]
+    args = ["claude", "--model", model, "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", "/work/.mcp.json", "--no-chrome", "--permission-mode", "dontAsk"]
+    if read_only:
+        args += ["--tools", REVIEW_TOOLS]
+    args += ["--allowedTools", (REVIEW_TOOLS if read_only else AUTHOR_TOOLS) + "," + DOC_TOOLS]
     if not interactive:
-        args += ["-p", "--no-session-persistence", "--permission-prompts", "none", "--output-format", "json"]
+        args += ["-p", "--no-session-persistence", "--permission-prompts", "none", "--output-format", "stream-json" if stream else "json"]
+        if stream:
+            args += ["--verbose"]  # stream-json in print mode requires it.
         # Second brake inside the worker; the broker budget stays authoritative (Claude's estimate can overshoot).
         if max_turns:
             args += ["--max-turns", str(max_turns)]
@@ -432,8 +582,10 @@ def probe_documentation(token: str):
     probe_mcp(token, "openai-docs", {"search_openai_docs", "list_openai_docs", "fetch_openai_doc"}, exact=False)
 
 
-def container_flags(name: str, *, worker=False) -> list[str]:
+def container_flags(name: str, *, worker=False, labels=()) -> list[str]:
     args = ["docker", "run", "--rm", "--init", "--name", name, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=256", "--memory=4g", "--cpus=2", "--user", f"{os.getuid()}:{os.getgid()}", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,mode=1777"]
+    for label in labels:
+        args += ["--label", label]
     if worker:
         args += ["--dns", "127.0.0.1", "--workdir", "/work"]
     return args
@@ -598,7 +750,15 @@ def smoke(root: Path) -> dict:
                 subprocess.run(["docker", "rm", "-f", container_name], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
 
 
-def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, output_patch: Path, *, interactive=False) -> dict:
+def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, output_patch: Path, *, interactive=False,
+        labels=(), read_only=False, events: Path | None = None) -> dict:
+    labels = tuple(labels)
+    if len(labels) > 8 or not all(LABEL.fullmatch(label) for label in labels):
+        raise ClientError("invalid Docker labels")
+    if read_only and (interactive or prompt is None):
+        raise ClientError("a read-only review needs a prompt")
+    stream = events is not None and runner == "claude" and not interactive
+    label_args = [value for label in labels for value in ("--label", label)]
     config = configuration(trusted)
     policy = author_policy(config, runner)
     check(trusted)
@@ -635,22 +795,22 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
         for name in (*provider_keys, "CONTEXT7_API_KEY"):
             proxy_env[name] = os.environ[name]
         try:
-            command(["docker", "network", "create", "--internal", network], env=env)
-            command(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", f"o=size=512m,uid={os.getuid()},gid={os.getgid()},mode=0700", volume], env=env)
+            command(["docker", "network", "create", "--internal", *label_args, network], env=env)
+            command(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", f"o=size=512m,uid={os.getuid()},gid={os.getgid()},mode=0700", *label_args, volume], env=env)
             # volume-nocopy: otherwise each new container copies the image's /work owner
             # (1000:1000, 0755) onto the empty tmpfs root and the host-uid seed cannot write.
             work_mount = ["--mount", f"type=volume,source={volume},target=/work,volume-nocopy"]
             # Docker's local tmpfs driver discards data when its final mount is
             # released. Keep one trusted, network-disabled mount alive across
             # seeding, authoring and extraction.
-            keeper = container_flags(keeper_name) + ["--detach", "--network", "none"]
+            keeper = container_flags(keeper_name, labels=labels) + ["--detach", "--network", "none"]
             keeper += work_mount + [image_id, "python3", "-c", f"import time; time.sleep({policy['timeout'] + 180})"]
             command(keeper, env=env)
-            seed = container_flags("factory-seed-" + secrets.token_hex(8)) + ["--network", "none"]
+            seed = container_flags("factory-seed-" + secrets.token_hex(8), labels=labels) + ["--network", "none"]
             seed += work_mount + mount(work, "/input")
             seed += [image_id, "python3", "-c", "import shutil; shutil.copytree('/input', '/work', dirs_exist_ok=True)"]
             command(seed, env=env)
-            proxy_args = container_flags(proxy_name) + ["--detach", "--network", "bridge", "--env", "FACTORY_PROXY_TOKEN", "--env", "CONTEXT7_API_KEY"]
+            proxy_args = container_flags(proxy_name, labels=labels) + ["--detach", "--network", "bridge", "--env", "FACTORY_PROXY_TOKEN", "--env", "CONTEXT7_API_KEY"]
             for name in provider_keys:
                 proxy_args += ["--env", name]
             proxy_args += mount(trusted / "tools/factory/proxy.py", "/opt/factory/proxy.py")
@@ -668,10 +828,11 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
                 time.sleep(0.1)
             if not ready:
                 raise ClientError("credential broker did not become ready")
-            args = container_flags(worker_name, worker=True) + ["--network", network, "--interactive"]
+            args = container_flags(worker_name, worker=True, labels=labels) + ["--network", network, "--interactive"]
             if interactive and sys.stdin.isatty():
                 args += ["--tty"]
-            args += work_mount
+            # A review sees the same files but cannot change them; its own state lives on /tmp.
+            args += [work_mount[0], work_mount[1] + ",readonly"] if read_only else work_mount
             for relative in (*CONTROL_PATHS, ".git"):
                 args += mount(work / relative, "/work/" + relative)
             args += mount(trusted / "tools/factory/clients.py", "/opt/factory/clients.py")
@@ -682,33 +843,56 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
                      "--max-turns", str(int(config["limits"].get("author_max_turns", 60))), "--max-budget-usd", str(policy["max_cost"])]
             if interactive:
                 args += ["--interactive"]
+            if read_only:
+                args += ["--read-only"]
+            if stream:
+                args += ["--events"]
             if prompt is not None:
                 prompt += b"\n\nFinal response: give a concise author report under 6000 bytes. Explain what changed, actual verification, and an evidence-based response to each review item. If you dispute feedback or make no patch, explain why. Do not include private reasoning or raw transcripts."
-            native_output = command(args, env=env, timeout=policy["timeout"], input=prompt, capture=not interactive)
+            credentials = (token, *(proxy_env[name] for name in (*provider_keys, "CONTEXT7_API_KEY")))
+            sink = EventSink(events, credentials) if stream else None
+            try:
+                native_output = command(args, env=env, timeout=policy["timeout"], input=prompt, capture=not interactive, on_line=sink)
+            finally:
+                if sink:
+                    sink.close()
+            if sink:
+                if sink.result is None:
+                    raise ClientError("author returned no final report")
+                native_output = sink.result
             report, report_truncated = ("Interactive session completed; inspect the patch and verify it before use.\n", False) if interactive else final_report(runner, native_output)
-            for secret in (token, *(proxy_env[name] for name in (*provider_keys, "CONTEXT7_API_KEY"))):
+            cost = None if interactive else reported_cost(runner, native_output)
+            for secret in credentials:
                 report = report.replace(secret, "[credential redacted]")
-            extract = container_flags("factory-extract-" + secrets.token_hex(8), worker=True) + ["--network", "none"]
-            extract += work_mount
-            extract += mount(trusted / "tools/factory/clients.py", "/opt/factory/clients.py")
-            extract += mount(trusted / "tools/factory/proxy.py", "/opt/factory/proxy.py")
-            extract += [image_id, "python3", "/opt/factory/clients.py", "_extract", "--max-bytes", str(int(config["limits"]["max_patch_bytes"]))]
-            patch = command(extract, env=env)
             output_patch.parent.mkdir(parents=True, exist_ok=True)
-            if output_patch.is_symlink():
-                raise ClientError("patch output may not be a symlink")
-            output_patch.write_bytes(patch)
             report_path = Path(str(output_patch) + ".report.txt")
-            if report_path.is_symlink():
-                raise ClientError("report output may not be a symlink")
+            if output_patch.is_symlink() or report_path.is_symlink():
+                raise ClientError("patch and report outputs may not be symlinks")
+            result = {"status": "completed", "runner": runner, "report": str(report_path), "report_truncated": report_truncated,
+                      "reported_cost_usd": cost, "reserved_cost_ceiling_usd": policy["max_cost"], "publication": "none"}
+            if read_only:
+                result.update(patch=None, patch_sha256=None, patch_bytes=0, read_only=True)
+            else:
+                extract = container_flags("factory-extract-" + secrets.token_hex(8), worker=True, labels=labels) + ["--network", "none"]
+                extract += work_mount
+                extract += mount(trusted / "tools/factory/clients.py", "/opt/factory/clients.py")
+                extract += mount(trusted / "tools/factory/proxy.py", "/opt/factory/proxy.py")
+                extract += [image_id, "python3", "/opt/factory/clients.py", "_extract", "--max-bytes", str(int(config["limits"]["max_patch_bytes"]))]
+                patch = command(extract, env=env)
+                output_patch.write_bytes(patch)
+                result.update(patch=str(output_patch), patch_sha256=hashlib.sha256(patch).hexdigest(), patch_bytes=len(patch))
             report_path.write_text(report, encoding="utf-8")
             report_path.chmod(0o600)
-            return {"status": "completed", "runner": runner, "patch": str(output_patch), "patch_sha256": hashlib.sha256(patch).hexdigest(), "patch_bytes": len(patch), "report": str(report_path), "report_truncated": report_truncated, "reserved_cost_ceiling_usd": policy["max_cost"], "publication": "none"}
+            return result
         finally:
             for name in (worker_name, proxy_name, keeper_name):
                 subprocess.run(["docker", "rm", "--force", name], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
             subprocess.run(["docker", "network", "rm", network], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
             subprocess.run(["docker", "volume", "rm", "--force", volume], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+
+
+def _cancelled(_signum, _frame):
+    raise KeyboardInterrupt()
 
 
 def main():
@@ -723,12 +907,17 @@ def main():
             item.add_argument("--policy-root", type=Path, required=True)
             item.add_argument("--prompt-file", type=Path, required=True)
             item.add_argument("--output-patch", type=Path, required=True)
+            item.add_argument("--label", action="append", default=[], help="Docker label key=value for every container, network and volume of the run")
+            item.add_argument("--read-only", action="store_true", help="review only: no file-changing tools, no patch")
+            item.add_argument("--events-file", type=Path, help="append one line per author tool call (Claude only)")
     item = sub.add_parser("_worker")
     item.add_argument("--runner", choices=("codex", "claude"), required=True)
     item.add_argument("--model", required=True)
     item.add_argument("--interactive", action="store_true")
     item.add_argument("--max-turns", type=int)
     item.add_argument("--max-budget-usd", type=float)
+    item.add_argument("--read-only", action="store_true")
+    item.add_argument("--events", action="store_true")
     item = sub.add_parser("_extract")
     item.add_argument("--max-bytes", type=int, required=True)
     item = sub.add_parser("_smoke")
@@ -755,18 +944,25 @@ def main():
                 raise ClientError("worker CLI version mismatch")
             egress_self_test()
             probe_documentation(os.environ["FACTORY_PROXY_TOKEN"])
-            native = worker_arguments(args.runner, args.model, args.interactive, args.max_turns, args.max_budget_usd)
+            native = worker_arguments(args.runner, args.model, args.interactive, args.max_turns, args.max_budget_usd,
+                                      read_only=args.read_only, stream=args.events)
             os.execvpe(native[0], native, os.environ)
+        # A cancelling controller sends SIGTERM: unwind so `finally` removes containers, network and volume.
+        signal.signal(signal.SIGTERM, _cancelled)
         root = args.root.resolve(strict=True)
         if args.command in ("check", "sync", "smoke"):
             result = globals()[args.command](root)
         elif args.command == "run":
-            result = run(root, args.policy_root.resolve(strict=True), args.runner, regular_read(args.prompt_file, 200000), args.output_patch.absolute())
+            result = run(root, args.policy_root.resolve(strict=True), args.runner, regular_read(args.prompt_file, 200000), args.output_patch.absolute(),
+                         labels=args.label, read_only=args.read_only, events=args.events_file.absolute() if args.events_file else None)
         else:
             output = Path(tempfile.mkdtemp(prefix="factory-launch-result-")) / "changes.patch"
             result = run(root, root, args.runner, None, output, interactive=True)
         print(json.dumps(result, indent=2))
         return 2 if result.get("status") == "blocked" else 0
+    except KeyboardInterrupt:
+        print(json.dumps({"status": "blocked", "reason": "cancelled"}), file=sys.stderr)
+        return 130
     except (ClientError, Denied, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
         print(json.dumps({"status": "blocked", "reason": str(exc)}), file=sys.stderr)
         return 2

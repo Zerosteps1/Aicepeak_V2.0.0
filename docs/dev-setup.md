@@ -1,11 +1,11 @@
 # Development setup (macOS)
 
-One-time setup of a maintainer device for the [software factory](software-factory.md). After it, follow [way-of-working.md](way-of-working.md) for daily use.
+One-time setup of a maintainer device for the [software factory](software-factory.md). After it, follow [way-of-working.md](way-of-working.md) for daily use; every `factory` command is described in [factory-cli.md](factory-cli.md).
 
 A device can take two roles:
 
-- **Reviewer device:** runs the binding senior review (`session.py watch`). Needs steps 1–3 and 5.
-- **Author device:** additionally runs isolated author sessions (`clients.py launch`). Needs steps 1–5.
+- **Reviewer device:** runs the binding senior review (`factory watch`). Needs steps 1–3 and 5.
+- **Author device:** additionally runs isolated author runs (`factory start`, `fix`, `hotfix`, `review`). Needs steps 1–5.
 
 This runbook assumes the repository owner has completed the access handoff in step 1. It cannot grant account permissions or generate an owner-only App key. Use your own Terminal for the credential steps; never paste a secret into an agent session.
 
@@ -30,9 +30,9 @@ gh --version
 codex --version
 ```
 
-Expected: Python **3.11 or newer** and exactly **`codex-cli 0.164.0`**. Reapply the `export PATH` line in each Terminal used for factory commands. This separate installation does not replace a personal Codex installation. If the access-token UI requires a newer CLI, stop and request a reviewed factory version update; do not silently upgrade the pinned reviewer.
+Expected: Python **3.11 or newer** and exactly **`codex-cli 0.164.0`**. The `factory` command puts this pinned Codex directory in front of the `PATH` of its helper processes itself; reapply the `export PATH` line only in Terminals where you run `session.py` or `local_review.py` by hand. This separate installation does not replace a personal Codex installation. If the access-token UI requires a newer CLI, stop and request a reviewed factory version update; do not silently upgrade the pinned reviewer.
 
-For isolated author sessions, install and start [Docker Desktop for your Mac's processor](https://docs.docker.com/desktop/setup/install/mac-install/), complete its first-launch setup and check `docker info`. Claude Code is installed inside the factory image; no host Claude installation is required.
+For isolated author runs, install and start [Docker Desktop for your Mac's processor](https://docs.docker.com/desktop/setup/install/mac-install/), complete its first-launch setup and check `docker info`. Claude Code is installed inside the factory image; no host Claude installation is required.
 
 Sign in to GitHub and check your access:
 
@@ -45,47 +45,36 @@ gh api repos/Zerosteps1/Aicepeak_V2.0.0 --jq '.permissions.push'
 
 Expected: your active maintainer login and `true`; a public clone alone does not prove write access. The [GitHub browser login](https://cli.github.com/manual/gh_auth_login) handles authentication without pasting a GitHub token into the factory.
 
-### Create the control checkout
+### Install the factory command
 
-> **This creates your control checkout `Aicepeak-factory`.** Run every factory command from this folder, and never make changes in it: the tools refuse to run if it differs from current `main` ([why](software-factory.md#the-control-checkout)). Changes go into the separate candidate checkout, created [below](#create-the-candidate-checkout).
-
-```sh
-git clone https://github.com/Zerosteps1/Aicepeak_V2.0.0.git Aicepeak-factory
-cd Aicepeak-factory
-git switch main
-```
-
-Store patches, reports, PR descriptions and credentials outside all checkouts. `session.py` rejects ignored extra files too (including `.DS_Store`, `__pycache__` or `.venv`). Before use, inspect `git status --short --untracked-files=all --ignored`; do not pull or switch over somebody's uncommitted work.
-
-### Create the candidate checkout
-
-> **This creates your candidate checkout `Aicepeak-candidate`, next to the control checkout.** This is the only place where you apply, commit and push changes. For each task you create a new branch in it ([way of working, step 4](way-of-working.md#daily-use-step-by-step)). Never run factory commands from here.
-
-Run from the control checkout, and replace the Git author placeholders with your own name and verified GitHub email:
+The installer creates your two checkouts and the global `factory` command ([details](factory-cli.md#install)). The relative paths are resolved from your current directory: run it from a folder whose parent should hold both checkouts, for example from an existing clone in `~/repos/`.
 
 ```sh
-git clone https://github.com/Zerosteps1/Aicepeak_V2.0.0.git ../Aicepeak-candidate
-git -C ../Aicepeak-candidate config --local user.name 'YOUR NAME'
-git -C ../Aicepeak-candidate config --local user.email 'YOUR VERIFIED GITHUB EMAIL'
+git clone https://github.com/Zerosteps1/Aicepeak_V2.0.0.git ../aicepeak-control-checkout && ../aicepeak-control-checkout/tools/factory/cli/install-factory-cli.sh
 ```
+
+It asks for the Git `user.name` and `user.email` for commits in the candidate if they are not set there (use your own name and verified GitHub email), and offers to store the author keys (step 4; answer no on a reviewer-only device). Then open a new Terminal if it added a PATH block to `~/.zshrc`. The device configuration `~/.config/aicepeak-factory/cli.json` records both paths.
+
+- **Control checkout** (`aicepeak-control-checkout`): trusted code on current `main`. `factory` verifies and fast-forwards it before every command. Never make changes in it: `factory` and the factory tools refuse to run if it differs from current `main` by even one file, including ignored files such as `.DS_Store`, `__pycache__` or `.venv` ([why](software-factory.md#the-control-checkout)). Keep it out of Finder and your editor's workspace, and store patches, reports, PR descriptions and credentials outside all checkouts.
+- **Candidate checkout** (`aicepeak-candidate`): the only place where you edit, apply, commit and push. `factory` creates a branch per task in it ([way of working](way-of-working.md#daily-use-step-by-step)).
+
+If you already have older clones (for example `Aicepeak-factory` and `Aicepeak-candidate`), the installer reuses them: bring the control clone to current `main` with `git -C ../Aicepeak-factory pull --ff-only` (with no local changes), then run `../Aicepeak-factory/tools/factory/cli/install-factory-cli.sh --control-dir ../Aicepeak-factory --candidate-dir ../Aicepeak-candidate`. Do not pull or switch over somebody's uncommitted work.
 
 ### Check the tools
 
-From the control checkout:
-
 ```sh
-python3 tools/factory/clients.py check --root .
-python3 tools/factory/doctor.py --root . --runner claude
+factory doctor
 ```
 
-Adapter `check` must pass. **Doctor exit 2 is expected:** it always leaves live acceptance open and, at this stage, keys/image may also be missing. It also checks Docker, author keys and local verifier tools on reviewer-only devices. Read each named check instead of treating exit 2 as a failed installation. `actionlint` and `gitleaks` are only needed for full local verification; the Linux-only `factory/install_tools.py` is not a macOS installer.
+`factory doctor` prints `ok` or `FAIL` with the fix for each of its own checks (shim, checkouts, author keys, image, pinned Codex, `gh` maintainer login) and then summarises `doctor.py` from a disposable checkout of `main`, including the native adapter check. **`doctor.py` exit 2 is expected:** it always leaves live acceptance open and, at this stage, keys/image may also be missing. It sees only exported author keys, not keychain items, and its Docker checks use `FACTORY_DOCKER_HOST` only when exported. It also checks Docker, author keys and local verifier tools on reviewer-only devices. Read each named check instead of treating a blocked check as a failed installation. `actionlint` and `gitleaks` are only needed for full local verification; the Linux-only `factory/install_tools.py` is not a macOS installer.
 
 ## 3. Configure and test the reviewer
 
-In the correct Business workspace, open [Access tokens](https://chatgpt.com/admin/access-tokens), create a token for your device with **Codex** scope and a finite expiration, and copy it once. This is a personal workspace access token, not a browser session token or a Platform API key. Store it using the password prompt; `-U` also supports rotation:
+In the correct Business workspace, open [Access tokens](https://chatgpt.com/admin/access-tokens), create a token for your device with **Codex** scope and a finite expiration, and copy it once. This is a personal workspace access token, not a browser session token or a Platform API key. Store it using the password prompt; `-U` also supports rotation. Run the smoke from the control checkout, with the pinned Codex directory on `PATH` (step 2):
 
 ```sh
 security add-generic-password -U -a "$USER" -s aicepeak-factory-codex-access-token -w
+cd ../aicepeak-control-checkout    # your control checkout; read-only use
 python3 tools/factory/local_review.py --smoke
 ```
 
@@ -108,14 +97,18 @@ Never put tokens or PEM contents into chat, Git or PR text. An environment varia
 
 ## 4. Configure the isolated author (skip on reviewer-only devices)
 
-Create or obtain an API key for the agreed [Anthropic Console](https://platform.claude.com/) workspace and an API key from the [Context7 dashboard](https://context7.com/dashboard). Enter them at hidden prompts in your own **zsh** Terminal; these lines contain no secret values in shell history:
+Create or obtain an API key for the agreed [Anthropic Console](https://platform.claude.com/) workspace and an API key from the [Context7 dashboard](https://context7.com/dashboard). Store both in your login keychain with the installer, which asks before each key and reads it at a hidden prompt (enter it twice); `--author-keys` also rotates existing items. Use the same options as at installation:
 
 ```sh
-read -rs "ANTHROPIC_API_KEY?Anthropic API key: "
-printf '\n'
-read -rs "CONTEXT7_API_KEY?Context7 API key: "
-printf '\n'
-export ANTHROPIC_API_KEY CONTEXT7_API_KEY
+../aicepeak-control-checkout/tools/factory/cli/install-factory-cli.sh --author-keys
+```
+
+The keychain items are `aicepeak-factory-anthropic-api-key` and `aicepeak-factory-context7-api-key`. `factory` reads them for each author run and hands them only to the isolated launcher; exported `ANTHROPIC_API_KEY` and `CONTEXT7_API_KEY` win over the keychain. No per-Terminal export is needed for `factory`.
+
+Build the factory image and run the container smoke from the control checkout. `factory` derives `FACTORY_DOCKER_HOST` from the active Docker context itself; for these manual commands export it:
+
+```sh
+cd ../aicepeak-control-checkout    # your control checkout; read-only use
 export FACTORY_DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
 docker build -f factory/Dockerfile -t aicepeak-factory-clients:codex-0.164.0-claude-2.1.311 factory
 python3 tools/factory/clients.py smoke --root .
@@ -123,19 +116,27 @@ python3 tools/factory/clients.py smoke --root .
 
 Expected: image build succeeds and container smoke reports `passed`. If `docker-credential-desktop` cannot be found, add the actual Docker app's `Contents/Resources/bin` directory to this Terminal's `PATH`, then repeat the build; keep credential-store settings intact. The Docker app's name can differ between Macs (for example `Docker 2.app`); use your own installation path.
 
-The container smoke does **not** prove authenticated skill or native MCP execution. From the control checkout, run `python3 tools/factory/clients.py launch --root . --runner claude` and request: “Use factory-start for docs/work/FACTORY-SMOKE.md. Read the approved order, make a generic Context7 documentation lookup and an OpenAI Docs lookup, and report both outcomes without changing files.” Verify actual tool outcomes in that interactive session. This consumes Anthropic API usage; the local launcher needs the two keys even though Actions uses WIF. After the session, remove the author keys from this Terminal with `unset ANTHROPIC_API_KEY CONTEXT7_API_KEY`.
+The container smoke does **not** prove authenticated skill or native MCP execution. The interactive launcher reads the keys only from its environment, so export them from the keychain for this one session, from the control checkout:
+
+```sh
+export ANTHROPIC_API_KEY="$(security find-generic-password -s aicepeak-factory-anthropic-api-key -w)"
+export CONTEXT7_API_KEY="$(security find-generic-password -s aicepeak-factory-context7-api-key -w)"
+python3 tools/factory/clients.py launch --root . --runner claude
+unset ANTHROPIC_API_KEY CONTEXT7_API_KEY
+```
+
+In the session request: “Use factory-start for docs/work/FACTORY-SMOKE.md. Read the approved order, make a generic Context7 documentation lookup and an OpenAI Docs lookup, and report both outcomes without changing files.” Verify actual tool outcomes in that interactive session. This consumes Anthropic API usage; the local launcher needs the two keys even though Actions uses WIF.
 
 ## 5. Complete the first real review on a new device
 
-Repeat the doctor and inspect relevant checks. A reviewer needs the correct clean checkout, GitHub identity/access, pinned Codex, personal-token smoke and publisher key. An author additionally needs Docker/image, both API keys, boundary smoke and the authenticated skill/MCP probe. Doctor exit 2 still does not certify live acceptance.
+Run `factory doctor` again and inspect the relevant checks. A reviewer needs the correct clean checkouts, GitHub identity/access, pinned Codex, personal-token smoke and publisher key. An author additionally needs Docker/image, both API keys, boundary smoke and the authenticated skill/MCP probe. A clean `factory doctor` still does not certify live acceptance (`doctor.py` keeps exiting 2).
 
-Create a harmless smoke PR under the already approved [FACTORY-SMOKE](work/FACTORY-SMOKE.md). Coordinate with the other maintainers so **only your device watches this first smoke**; otherwise another device can win the review claim and two green checks would not test your key. The following runs from the control checkout and makes the change in your candidate checkout. The fixture change alters indentation only, leaving all numeric and text values correct:
+Create a harmless smoke PR under the already approved [FACTORY-SMOKE](work/FACTORY-SMOKE.md). Coordinate with the other maintainers so **only your device watches this first smoke**; otherwise another device can win the review claim and two green checks would not test your key. Work in your candidate checkout. The branch name `<login>/FACTORY-SMOKE-<k>` ties it to the work order. The fixture change alters indentation only, leaving all numeric and text values correct:
 
 ```sh
-git pull --ff-only
-cd ../Aicepeak-candidate
+cd ../aicepeak-candidate           # your candidate checkout
 git fetch origin
-git switch -c "smoke/device-$(date +%Y%m%d-%H%M%S)" origin/main
+git switch -c "$(gh api user --jq .login)/FACTORY-SMOKE-$(date +%Y%m%d%H%M%S)" origin/main
 python3 - <<'PY'
 import json
 from pathlib import Path
@@ -146,15 +147,10 @@ path.write_text(json.dumps(value, ensure_ascii=False, indent=4) + '\n')
 PY
 git diff -- factory-smoke.json
 git add factory-smoke.json
-git commit -m 'test(factory): verify reviewer device with unchanged smoke values'
-git push -u origin HEAD
-cd ../Aicepeak-factory
-printf '%s\n' 'Verify a new reviewer device using the approved FACTORY-SMOKE fixture; formatting only.' > ../device-smoke-pr.md
-python3 tools/factory/session.py submit --candidate ../Aicepeak-candidate \
-  --task docs/work/FACTORY-SMOKE.md --runner claude \
-  --title 'test(factory): reviewer device smoke' --body-file ../device-smoke-pr.md
+factory submit --finished --title 'test(factory): reviewer device smoke' \
+  --desc 'Verify a new reviewer device using the approved FACTORY-SMOKE fixture; formatting only.'
 ```
 
-`submit` starts an advisory preflight, opens the PR and runs its watcher. If `main` moved meanwhile, update the clean control checkout and merge the new `origin/main` into the candidate, commit any resolution, push, then retry; do not bypass freshness checks. If you resume an existing PR, use `python3 tools/factory/session.py watch --pr <number>` from the updated control checkout. Keep the Mac awake. Confirm both `factory/deterministic` and `factory/senior-review` from App **5510081** are successful for that PR's current head and current `main` policy (see [merge rules](way-of-working.md#merge-rules)). The watcher can keep polling after success; Ctrl-C stops it once both final checks are green. This is the publication test for your publisher key; a successful model smoke alone is insufficient. Record the head/base, run/check IDs and your executed probes in a reviewed evidence update ([factory/evidence.md](../factory/evidence.md)). Until then, your device remains unverified; already verified reviewer devices may review shared PRs.
+`factory submit --finished` commits the staged file, pushes the branch, then runs `session.py submit`: advisory preflight, PR, and its watcher. If `main` moved meanwhile, merge the new `origin/main` into the candidate branch (`git merge origin/main`), commit any resolution, push it with `factory submit`, then retry; do not bypass freshness checks. If you resume an existing PR, use `factory watch <number>`. Keep the Mac awake. Confirm both `factory/deterministic` and `factory/senior-review` from App **5510081** are successful for that PR's current head and current `main` policy (see [merge rules](way-of-working.md#merge-rules)). The watcher can keep polling after success; Ctrl-C stops it once both final checks are green. This is the publication test for your publisher key; a successful model smoke alone is insufficient. Record the head/base, run/check IDs and your executed probes in a reviewed evidence update ([factory/evidence.md](../factory/evidence.md)). Until then, your device remains unverified; already verified reviewer devices may review shared PRs.
 
 Also inspect the final senior check receipt (`output.text` JSON) and confirm `claim.actor.login` is your active account. If another maintainer won the claim, this run is not acceptance of your device: coordinate again and create a fresh smoke PR or deliberate retry. The smoke fixture needs no merge. Product implementation still requires architecture decisions, implemented product checks and an approved product work order; the north-star approval alone does not remove that gate.

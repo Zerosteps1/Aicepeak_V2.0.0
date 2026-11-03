@@ -12,6 +12,8 @@ import subprocess
 import sys
 sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CLI use.
 
+import branches  # this trusted checkout's branch model, never code from --root
+
 
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE = "aicepeak-factory-clients:codex-0.164.0-claude-2.1.311"
@@ -90,8 +92,14 @@ def inspect(root, runner):
             raise ValueError
     except (OSError, ValueError):
         config = {}
-    add("repository_config", config.get("repository") == REPOSITORY and config.get("default_branch") == "main",
-        "Target repository and default branch must match the reviewed setup.", "Check factory/config.json; never guess an identity.")
+    try:
+        found = branches.problems(config)
+    except (AttributeError, KeyError, TypeError):
+        found = ["branch configuration unreadable"]
+    add("repository_config", config.get("repository") == REPOSITORY and not found,
+        "Target repository and branch model must match the reviewed setup" + (": " + "; ".join(found) if found else
+        f" (GitHub default branch {config.get('default_branch')}, config branch {config.get('config_branch')})."),
+        "Check repository, default_branch, config_branch and branches in factory/config.json; never guess an identity.")
     add("reviewer_config", config.get("review_model") == "gpt-6-astra" and config.get("review_effort") == "high",
         "Required: gpt-6-astra with effort high; configuration does not prove model access.", "Restore the review contract.")
     # Run only this trusted checkout's adapter checker, never code from --root.

@@ -14,23 +14,26 @@ import urllib.parse
 
 ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(ROOT / 'tools/factory'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import branch_fixture
 import wif_smoke
 
 
 class WIFSmokeTests(unittest.TestCase):
     def setUp(self):
-        self.config = json.loads((ROOT / 'factory/config.json').read_text())
+        self.config = branch_fixture.load(ROOT)  # config PRs change the candidate's branch model
         self.config['anthropic_federation'] = {
             'organization_id': '00000000-0000-4000-8000-000000000001',
             'service_account_id': 'svac_fixture', 'federation_rule_id': 'fdrl_fixture',
             'workspace_id': 'wrkspc_fixture',
         }
+        self.ref = 'refs/heads/' + self.config['config_branch']
         self.env = {
             'GITHUB_ACTIONS': 'true', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
             'GITHUB_REPOSITORY': 'Zerosteps1/Aicepeak_V2.0.0',
-            'GITHUB_REF': 'refs/heads/main', 'GITHUB_REPOSITORY_ID': '1436114884',
+            'GITHUB_REF': self.ref, 'GITHUB_REPOSITORY_ID': '1436114884',
             'GITHUB_REPOSITORY_OWNER_ID': '115100163',
-            'GITHUB_WORKFLOW_REF': 'Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@refs/heads/main',
+            'GITHUB_WORKFLOW_REF': 'Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@' + self.ref,
             'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://example.actions.githubusercontent.com/oidc?api-version=2.0',
             'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'fixture-request-credential',
         }
@@ -38,7 +41,7 @@ class WIFSmokeTests(unittest.TestCase):
             'iss': 'https://token.actions.githubusercontent.com',
             'aud': 'https://api.anthropic.com',
             'repository': self.env['GITHUB_REPOSITORY'], 'repository_id': '1436114884',
-            'repository_owner_id': '115100163', 'ref': 'refs/heads/main',
+            'repository_owner_id': '115100163', 'ref': self.ref,
             'workflow_ref': self.env['GITHUB_WORKFLOW_REF'],
             'event_name': 'workflow_dispatch', 'environment': 'factory-control',
         }
@@ -94,14 +97,36 @@ class WIFSmokeTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 3)
         self.assertNotIn('credential', json.dumps(result))
 
-    def test_non_main_or_non_actions_context_never_requests_credentials(self):
+    def test_other_branch_or_non_actions_context_never_requests_credentials(self):
+        default = 'refs/heads/' + self.config['default_branch']
         for key, value in [('GITHUB_ACTIONS', 'false'), ('GITHUB_EVENT_NAME', 'pull_request'),
-                           ('GITHUB_REF', 'refs/heads/topic'), ('GITHUB_REPOSITORY', 'other/repo')]:
+                           ('GITHUB_REF', 'refs/heads/topic'), ('GITHUB_REF', default),
+                           ('GITHUB_WORKFLOW_REF', 'Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@' + default),
+                           ('GITHUB_REPOSITORY', 'other/repo')]:
             with self.subTest(key=key):
                 env = {**self.env, key: value}
                 with patch('urllib.request.OpenerDirector.open', side_effect=AssertionError('network forbidden')):
                     with self.assertRaises(wif_smoke.SmokeFailure):
                         wif_smoke.smoke(self.config, env)
+
+    def test_the_ref_follows_the_configured_config_branch(self):
+        branches = self.config['branches']
+        branches['production'].append({'name': 'release', 'review': 'no'})
+        self.config['config_branch'] = 'release'
+        with patch('urllib.request.OpenerDirector.open', side_effect=AssertionError('network forbidden')):
+            with self.assertRaisesRegex(wif_smoke.SmokeFailure, 'context'):
+                wif_smoke.smoke(self.config, self.env)
+        self.ref = 'refs/heads/release'
+        self.env.update(GITHUB_REF=self.ref, GITHUB_WORKFLOW_REF='Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@' + self.ref)
+        self.claims.update(ref=self.ref, workflow_ref=self.env['GITHUB_WORKFLOW_REF'])
+        self.assertEqual(self.run_smoke()['status'], 'passed')
+
+    def test_invalid_branch_model_blocks_before_network(self):
+        for change in ({'config_branch': self.config['default_branch']}, {'branches': {}}):
+            with self.subTest(change=change):
+                with patch('urllib.request.OpenerDirector.open', side_effect=AssertionError('network forbidden')):
+                    with self.assertRaisesRegex(wif_smoke.SmokeFailure, 'branch model'):
+                        wif_smoke.smoke({**self.config, **change}, self.env)
 
     def test_wrong_claim_blocks_exchange_not_just_inference(self):
         for key in ('environment', 'repository_id', 'ref', 'workflow_ref', 'aud'):
@@ -159,7 +184,9 @@ class WIFSmokeTests(unittest.TestCase):
 
         output = io.StringIO()
         stderr = io.StringIO()
+        # main() reads the repository's config.json: give it the fixed branch model the environment names.
         with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(wif_smoke.Path, 'read_text', return_value=branch_fixture.text(ROOT)), \
                 patch('urllib.request.OpenerDirector.open', side_effect=failing_exchange), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(stderr):
             status = wif_smoke.main()

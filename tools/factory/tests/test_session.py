@@ -11,15 +11,23 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.parse import unquote
 
 ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(ROOT / 'tools/factory'))
 import session
 import engine
 import local_review
-from contracts import Blocked
+import merge_safety
+from contracts import Blocked, binding, handoff
 
 REPOSITORY = 'Zerosteps1/Aicepeak_V2.0.0'
+# testing (full) and quick (tests) are gated validation branches, sandbox is not gated; production is the config branch.
+BRANCHES = {'schema_version': 1, 'validation': [
+    {'name': 'testing', 'gate': 'full', 'kinds': ['factory', 'product']},
+    {'name': 'quick', 'gate': 'tests', 'kinds': ['smoke']},
+    {'name': 'sandbox', 'gate': 'none', 'kinds': []}],
+    'production': [{'name': 'production', 'review': 'maintainer-manual'}]}
 
 
 def git(root, *args):
@@ -35,17 +43,27 @@ class GitHubFixture:
         self.case = case
         self.user = {'login': 'Zerosteps1', 'id': 115100163, 'type': 'User'}
         self.permission = 'admin'
-        self.main = case.base
+        self.default = 'testing'
+        self.tips = {name: case.base for name in ('production', 'testing', 'quick', 'sandbox')}
         self.comments = []
+        self.elsewhere = []  # comments GitHub returns by id that this PR does not list (another PR's)
         self.checks = []
+        self.head_checks = []
         self.posts = []
         self.creates = []
         self.readiness = []
+        self.files = [{'filename': 'tools/factory/example.py', 'status': 'modified'}]
         self.pr = {'number': 1, 'state': 'open', 'draft': False, 'changed_files': 1,
                    'head': {'sha': case.head, 'ref': 'feature/one', 'repo': {'full_name': REPOSITORY}},
-                   'base': {'sha': case.base, 'ref': 'main', 'repo': {'full_name': REPOSITORY}},
+                   'base': {'sha': case.base, 'ref': 'testing', 'repo': {'full_name': REPOSITORY}},
                    'body': '```factory-handoff\n' + json.dumps({'runner': 'claude',
                            'task': 'docs/work/TEST.md', 'owner': 'Zerosteps1'}) + '\n```'}
+
+    def target(self, name, head_ref=None):
+        """Retarget the PR; GitHub reports the target's current tip as its base."""
+        self.pr['base'].update(ref=name, sha=self.tips[name])
+        if head_ref:
+            self.pr['head']['ref'] = head_ref
 
     def command(self, arguments, data=None):
         if arguments[:2] == ['pr', 'ready']:
@@ -58,6 +76,7 @@ class GitHubFixture:
         self.creates.append({'arguments': arguments, 'body': body})
         self.pr['body'] = body
         self.pr['draft'] = '--draft' in arguments
+        self.target(arguments[arguments.index('--base') + 1])
         return 'https://github.com/' + REPOSITORY + '/pull/1'
 
     def request(self, method, path, data=None):
@@ -66,17 +85,21 @@ class GitHubFixture:
             if path == '/user':
                 return copy.deepcopy(self.user)
             if path == prefix:
-                return {'full_name': REPOSITORY, 'default_branch': 'main'}
+                return {'full_name': REPOSITORY, 'default_branch': self.default}
             if '/collaborators/' in path:
                 return {'permission': self.permission, 'user': copy.deepcopy(self.user)}
-            if path == prefix + '/git/ref/heads/main':
-                return {'object': {'sha': self.main}}
-            if path == prefix + '/git/ref/heads/feature%2Fone':
-                return {'object': {'sha': self.pr['head']['sha']}}
+            if path.startswith(prefix + '/git/ref/heads/'):
+                name = unquote(path.rsplit('/', 1)[1])
+                if name == self.pr['head']['ref'] and name not in self.tips:
+                    return {'object': {'sha': self.pr['head']['sha']}}
+                return {'object': {'sha': self.tips[name]}}
             if path == prefix + '/pulls/1':
                 return copy.deepcopy(self.pr)
             if '/issues/comments/' in path:
-                return copy.deepcopy(next(c for c in self.comments if c['id'] == int(path.rsplit('/', 1)[1])))
+                found = [c for c in self.comments + self.elsewhere if c['id'] == int(path.rsplit('/', 1)[1])]
+                if not found:
+                    raise Blocked('GitHub CLI failed; check your own gh login and repository access')  # deleted: HTTP 404
+                return copy.deepcopy(found[0])
         if method == 'POST' and path == prefix + '/issues/1/comments':
             self.posts.append(copy.deepcopy(data))
             return {'html_url': 'https://github.com/' + REPOSITORY + '/pull/1#issuecomment-9'}
@@ -84,9 +107,11 @@ class GitHubFixture:
 
     def pages(self, path, field=None):
         if path.endswith('/files'):
-            return [{'filename': 'tools/factory/example.py', 'status': 'modified'}]
+            return copy.deepcopy(self.files)
         if path.endswith('/issues/1/comments'):
             return copy.deepcopy(self.comments)
+        if '/check-runs?' in path:
+            return copy.deepcopy(self.head_checks)
         return []
 
     def text(self, repo, path, sha):
@@ -95,16 +120,20 @@ class GitHubFixture:
         return git(self.case.candidate, 'show', sha + ':' + path) + '\n'
 
     def pending(self, ident=1):
-        binding = {'repository': REPOSITORY, 'pr': 1, 'head_sha': self.pr['head']['sha'],
-                   'base_sha': self.base if hasattr(self, 'base') else self.main, 'policy_sha': self.main,
-                   'run_id': ident, 'run_attempt': 1, 'check_id': ident,
-                   'handoff': {'runner': 'claude', 'task': 'docs/work/TEST.md', 'owner': 'Zerosteps1'},
-                   'files': ['tools/factory/example.py'], 'task': {'status': 'approved', 'kind': 'factory',
-                   'allowed_paths': ['tools/factory/']}, 'feedback_digest': engine.digest(self.comments),
-                   'draft': False, 'control_changed': True}
-        receipt = {'phase': 'awaiting_review', 'snapshot': binding, 'tests': {'ok': True}}
+        """The pipeline's awaiting-review receipt for the PR as it is now (production: reserved by /review)."""
+        base = self.pr['base']['ref']
+        production = base == 'production'
+        snapshot = {'repository': REPOSITORY, 'pr': 1, 'head_sha': self.pr['head']['sha'],
+                    'base_sha': self.tips[base], 'policy_sha': self.tips['production'], 'base_ref': base,
+                    'mode': 'production' if production else 'validation', 'gate': 'tests' if production else 'full',
+                    'review_request': 9 if production else None, 'run_id': ident, 'run_attempt': 1, 'check_id': ident,
+                    'handoff': None if production else {'runner': 'claude', 'task': 'docs/work/TEST.md', 'owner': 'Zerosteps1'},
+                    'files': [f['filename'] for f in self.files], 'task': None if production else {
+                        'status': 'approved', 'kind': 'factory', 'allowed_paths': ['tools/factory/']},
+                    'feedback_digest': engine.digest(self.comments), 'draft': False, 'control_changed': True}
+        receipt = {'phase': 'awaiting_review', 'snapshot': snapshot, 'tests': {'ok': True}}
         return {'id': ident, 'name': 'factory/senior-review', 'status': 'in_progress',
-                'head_sha': binding['head_sha'], 'app': {'id': 77}, 'external_id': engine.bind(binding),
+                'head_sha': snapshot['head_sha'], 'app': {'id': 77}, 'external_id': binding(snapshot),
                 'output': {'text': json.dumps(receipt)}}
 
 
@@ -130,8 +159,8 @@ class ReviewInputBudget(unittest.TestCase):
 
         config = json.loads((ROOT / 'factory/config.json').read_text())
         snapshot = {'repository': config['repository'], 'pr': 1, 'head_sha': 'a' * 40,
-                    'base_sha': 'b' * 40, 'policy_sha': 'b' * 40, 'files': paths,
-                    'handoff': {'task': 'docs/work/FACTORY-001.md'}}
+                    'base_sha': 'b' * 40, 'policy_sha': 'b' * 40, 'base_ref': config['default_branch'],
+                    'mode': 'validation', 'files': paths, 'handoff': {'task': 'docs/work/FACTORY-001.md'}}
         sources = RepositoryFiles()
         material = engine.review_material(sources, snapshot, config, {'ok': True})
         for path in paths:
@@ -151,17 +180,20 @@ class SessionBoundaries(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.control = Path(self.temp.name) / 'control'
         self.control.mkdir()
-        git(self.control, 'init', '-q', '-b', 'main')
+        git(self.control, 'init', '-q', '-b', 'production')
         git(self.control, 'config', 'user.name', 'Fixture')
         git(self.control, 'config', 'user.email', 'fixture@example.invalid')
         git(self.control, 'remote', 'add', 'origin', 'https://github.com/' + REPOSITORY + '.git')
         self.config = json.loads((ROOT / 'factory/config.json').read_text())
         self.config['publisher_app_id'] = 77
         self.config['review_context_paths'] = []
+        self.config.update(default_branch='testing', config_branch='production', branches=copy.deepcopy(BRANCHES))
         files = {'factory/config.json': json.dumps(self.config), 'factory/policy.md': 'TRUSTED POLICY',
                  'factory/review.schema.json': (ROOT / 'factory/review.schema.json').read_text(),
                  'docs/work/TEST.md': 'Approved task.\n```factory-task\n' + json.dumps({
                      'status': 'approved', 'kind': 'factory', 'allowed_paths': ['tools/factory/', 'AGENTS.md', '.gitattributes']}) + '\n```\n',
+                 'docs/work/QUICK.md': 'Approved smoke task.\n```factory-task\n' + json.dumps({
+                     'status': 'approved', 'kind': 'smoke', 'allowed_paths': ['tools/factory/']}) + '\n```\n',
                  'tools/factory/example.py': 'VALUE = 1\n', 'AGENTS.md': 'CONTROL INSTRUCTIONS\n'}
         if self.config.get('northstar_path'):
             files[self.config['northstar_path']] = 'Fixture product draft; no product approval.\n'
@@ -259,8 +291,8 @@ class SessionBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(Blocked, 'symlink|untracked'):
             self.preflight()
         extra.unlink()
-        self.gh.main = 'f' * 40
-        with self.assertRaisesRegex(Blocked, 'policy|main|control'):
+        self.gh.tips['production'] = 'f' * 40
+        with self.assertRaisesRegex(Blocked, 'control checkout must be the clean current production policy'):
             self.preflight()
         self.assertEqual(self.model_calls, [])
 
@@ -420,7 +452,7 @@ class SessionBoundaries(unittest.TestCase):
         self.assertIn('--draft', self.gh.creates[0]['arguments'])
         self.assertIn('$(nope)', self.gh.creates[0]['body'])
         self.assertIn('no tests executed', self.gh.creates[0]['body'])
-        self.assertEqual(engine.handoff(self.gh.creates[0]['body'], self.config)['task'], 'docs/work/TEST.md')
+        self.assertEqual(handoff(self.gh.creates[0]['body'], self.config)['task'], 'docs/work/TEST.md')
 
     def test_submit_requires_pushed_exact_head_and_ready_submission_enters_watch(self):
         body = Path(self.temp.name) / 'body.md'
@@ -601,6 +633,219 @@ class SessionBoundaries(unittest.TestCase):
         with patch.object(local_review, 'run_codex', side_effect=self.model):
             session.response(self.gh, 1, 'Explain the maintainer feedback.', [], post=False)
         self.assertIn('Why did VALUE change?', json.dumps(self.model_calls[0][1]))
+
+
+    def test_base_defaults_to_the_routed_validation_branch_and_must_be_listed(self):
+        self.assertEqual(self.preflight()['review']['base_ref'], 'testing')
+        with patch.object(local_review, 'run_codex', side_effect=self.model):
+            routed = session.preflight(self.gh, self.candidate, 'docs/work/QUICK.md', [])
+            explicit = session.preflight(self.gh, self.candidate, 'docs/work/QUICK.md', [], base='testing')
+        self.assertEqual((routed['review']['base_ref'], explicit['review']['base_ref']), ('quick', 'testing'))
+        calls = len(self.model_calls)
+        for unlisted in ('release', 'feature/one', 'Testing'):
+            with self.subTest(base=unlisted), self.assertRaisesRegex(Blocked, 'target branch .* is not listed'):
+                session.preflight(self.gh, self.candidate, 'docs/work/TEST.md', [], base=unlisted)
+        with patch.object(session, 'HumanGitHub', return_value=self.gh):
+            self.assertEqual(session.main(['preflight', '--candidate', str(self.candidate), '--task', 'docs/work/TEST.md',
+                                           '--base', 'release']), 1)
+        self.assertEqual(len(self.model_calls), calls)
+        config, policy, _ = session.control(self.gh)
+        self.assertEqual(session.target(config, policy, fallback=config['default_branch'])[1], 'testing')
+        self.assertEqual(session.target(config, policy, 'production', 'docs/work/QUICK.md')[1], 'production')
+
+    def test_control_requires_the_config_tip_and_the_configured_github_default_branch(self):
+        self.gh.tips['testing'] = 'e' * 40  # target branches move on their own; the policy is the config tip
+        self.assertEqual(session.control(self.gh)[1], self.base)
+        self.gh.default = 'production'
+        with self.assertRaisesRegex(Blocked, 'default branch is not testing'):
+            session.control(self.gh)
+        self.gh.default = 'testing'
+        self.gh.tips['production'] = 'e' * 40
+        with self.assertRaisesRegex(Blocked, 'control checkout must be the clean current production policy revision'):
+            session.control(self.gh)
+
+    def test_candidate_on_a_listed_branch_is_never_reviewed_or_swept(self):
+        git(self.candidate, 'switch', '-qc', 'quick')
+        with self.assertRaisesRegex(Blocked, 'feature branch, not a listed branch'):
+            self.preflight()
+        with self.assertRaisesRegex(Blocked, 'feature branch, not a listed branch'):
+            merge_safety.collisions(self.gh, self.candidate)
+        self.assertEqual(self.model_calls, [])
+
+    def test_diff_is_against_the_target_tip_while_policy_stays_the_config_tip(self):
+        git(self.candidate, 'switch', '-q', '--detach', self.base)
+        (self.candidate / 'tools/factory/base.py').write_text('BASE = 1\n')
+        git(self.candidate, 'add', '.')
+        git(self.candidate, 'commit', '-qm', 'Testing moved')
+        self.gh.tips['testing'] = testing = git(self.candidate, 'rev-parse', 'HEAD')
+        git(self.candidate, 'switch', '-q', 'feature/one')
+        with self.assertRaisesRegex(Blocked, 'does not contain the current testing tip'):
+            self.preflight()
+        git(self.candidate, 'switch', '-qc', 'feature/two', testing)
+        (self.candidate / 'tools/factory/example.py').write_text('VALUE = 4\n')
+        git(self.candidate, 'commit', '-qam', 'Candidate on testing')
+        review = self.preflight()['review']
+        self.assertEqual((review['base_ref'], review['base_sha'], review['policy_sha'], review['scope']),
+                         ('testing', testing, self.base, ['tools/factory/example.py']))
+        sources = {s['id']: s['sha'] for s in self.model_calls[-1][1]['sources']}
+        self.assertEqual((sources['policy:docs/work/TEST.md'], sources['base:tools/factory/example.py']), (self.base, testing))
+
+    def orders_candidate(self):
+        """A work-order and config change on top of the production tip."""
+        git(self.candidate, 'reset', '-q', '--hard', self.base)
+        (self.candidate / 'docs/work/NEW.md').write_text('New work order.\n')
+        (self.candidate / 'factory/config.json').write_text(json.dumps({**self.config, 'automatic_correction': False}))
+        git(self.candidate, 'add', '.')
+        git(self.candidate, 'commit', '-qm', 'Work orders')
+        self.gh.pr['head']['sha'] = git(self.candidate, 'rev-parse', 'HEAD')
+        self.gh.files = [{'filename': 'docs/work/NEW.md', 'status': 'added'}, {'filename': 'factory/config.json', 'status': 'modified'}]
+        self.gh.pr['changed_files'] = 2
+
+    def test_work_order_and_config_pr_into_production_has_no_handoff_preflight_or_watch(self):
+        self.orders_candidate()
+        body = Path(self.temp.name) / 'body.md'
+        body.write_text('A new work order and a config change.')
+        with patch.object(session, 'HumanGitHub', return_value=self.gh), patch.object(session, 'watch') as watch, \
+             patch.object(local_review, 'run_codex', side_effect=self.model):
+            self.assertEqual(session.main(['submit', '--candidate', str(self.candidate), '--base', 'production',
+                                           '--title', 'Work orders', '--body-file', str(body), '--runner', 'claude']), 0)
+        arguments, created = self.gh.creates[0]['arguments'], self.gh.creates[0]['body']
+        self.assertEqual(arguments[arguments.index('--base') + 1], 'production')
+        self.assertNotIn('factory-handoff', created)
+        self.assertIn('against production `' + self.base[:12] + '`: contains current production.', created)
+        self.assertEqual((self.model_calls, self.gh.pr['draft'], len(self.gh.readiness)), ([], False, 1))
+        watch.assert_not_called()
+        self.assertTrue(session.work_order_or_config(['docs/work/A.md', 'factory/config.json']))
+        for paths in ([], ['docs/work/nested/A.md'], ['docs/work/A.txt'], ['factory/config.json.bak'], ['docs/work/A.md', 'README.md']):
+            self.assertFalse(session.work_order_or_config(paths), paths)
+
+    def test_production_base_refuses_any_other_change_and_validation_bases_need_a_work_order(self):
+        body = Path(self.temp.name) / 'body.md'
+        body.write_text('Code straight into production.')
+        for task in (None, 'docs/work/TEST.md'):
+            with self.subTest(task=task), patch.object(local_review, 'run_codex', side_effect=self.model):
+                with self.assertRaisesRegex(Blocked, r'may change only docs/work/\*\.md and factory/config\.json'):
+                    session.submit(self.gh, self.candidate, task, [], 'Code', body, 'claude', base='production')
+        with self.assertRaisesRegex(Blocked, r'work order \(--task\) is required'):
+            session.submit(self.gh, self.candidate, None, [], 'Code', body, 'claude', base='testing')
+        self.assertEqual((self.gh.creates, self.model_calls), ([], []))
+
+    def test_submit_into_a_tests_gate_routes_by_kind_and_waits_for_no_review(self):
+        body = Path(self.temp.name) / 'body.md'
+        body.write_text('Quick smoke change.')
+        with patch.object(local_review, 'run_codex', side_effect=self.model), patch.object(session, 'watch') as watch:
+            result = session.submit(self.gh, self.candidate, 'docs/work/QUICK.md', [], 'Quick', body, 'claude')
+        arguments = self.gh.creates[0]['arguments']
+        self.assertEqual(arguments[arguments.index('--base') + 1], 'quick')
+        self.assertEqual(handoff(self.gh.creates[0]['body'], self.config)['task'], 'docs/work/QUICK.md')
+        self.assertEqual((result['base'], result['draft'], result['watch']), ('quick', False, None))
+        watch.assert_not_called()
+        with patch.object(session, 'sleep', side_effect=AssertionError('nothing to wait for')):
+            self.assertEqual(session.watch(self.gh, 1, timeout=60)['status'], 'no_review')
+
+    def test_pr_state_takes_the_target_from_the_pr_and_refuses_unlisted_targets_and_listed_heads(self):
+        config, policy, _ = session.control(self.gh)
+        snapshot = session.pr_state(self.gh, 1, config, policy)[0]
+        self.assertEqual((snapshot['base_ref'], snapshot['mode'], snapshot['policy_sha']), ('testing', 'validation', self.base))
+        with self.assertRaisesRegex(Blocked, 'targets testing, not quick'):
+            session.pr_state(self.gh, 1, config, policy, 'quick')
+        self.gh.pr['head']['ref'] = 'quick'
+        with self.assertRaisesRegex(Blocked, 'comes from a listed branch'):
+            session.pr_state(self.gh, 1, config, policy)
+        self.gh.pr['head']['ref'] = 'feature/one'
+        self.gh.pr['base']['ref'] = 'release'
+        with self.assertRaisesRegex(Blocked, 'not a listed branch'):
+            session.pr_state(self.gh, 1, config, policy)
+        self.gh.target('testing')
+        self.gh.tips['testing'] = 'e' * 40  # pushed after GitHub reported the PR
+        with self.assertRaisesRegex(Blocked, 'stale PR base'):
+            session.pr_state(self.gh, 1, config, policy)
+
+    def test_watch_runs_a_production_review_reserved_by_review_only_for_its_head(self):
+        self.gh.target('production', head_ref='testing')  # a promotion: no handoff, no work order
+        self.gh.pr['body'] = 'Promote testing.'
+        self.gh.checks = [self.gh.pending(1)]
+        invoked = []
+        with patch.object(engine, 'pr_checks', side_effect=lambda *a: copy.deepcopy(self.gh.checks)), \
+             patch.object(session, 'invoke_reviewer', side_effect=lambda *a: invoked.append(a) or 0):
+            self.assertEqual(session.watch(self.gh, 1, once=True, base='production')['attempted_checks'], [1])
+            with self.assertRaisesRegex(Blocked, 'targets production, not testing'):
+                session.watch(self.gh, 1, once=True, base='testing')
+            self.gh.pr['head']['sha'] = 'a' * 40  # a new commit needs a new /review
+            self.assertEqual(session.watch(self.gh, 1, once=True)['attempted_checks'], [])
+            self.gh.pr['head']['sha'] = self.head
+            self.gh.comments = [{'id': 23, 'user': copy.deepcopy(self.gh.user), 'body': 'Hold on.',
+                                 'issue_url': 'https://api.github.com/repos/' + REPOSITORY + '/issues/1',
+                                 'html_url': 'https://github.com/' + REPOSITORY + '/pull/1#issuecomment-23'}]
+            stale = session.watch(self.gh, 1, once=True)  # feedback after /review
+            self.assertEqual((stale['status'], stale['attempted_checks']), ('stale', []))
+        self.assertEqual(len(invoked), 1)
+        with patch.object(local_review, 'run_codex', side_effect=self.model):
+            session.response(self.gh, 1, 'What is VALUE?', [])
+        material = self.model_calls[-1][1]
+        self.assertEqual(material['binding']['base_ref'], 'production')
+        self.assertFalse([s for s in material['sources'] if s['id'].startswith('policy:')])
+
+    def test_watch_reports_a_stale_review_request_instead_of_polling(self):
+        body = self.gh.pr['body']
+        self.gh.target('production', head_ref='testing')
+        self.gh.pr['body'] = 'Promote testing.'
+        def pending(**change):
+            check = self.gh.pending(1)
+            receipt = json.loads(check['output']['text'])
+            receipt['snapshot'].update(change)
+            check.update(external_id=binding(receipt['snapshot']), output={'text': json.dumps(receipt)})
+            return check
+        message = 'feedback or the config branch changed after /review; comment /review again'
+        for change in ({'feedback_digest': 'f' * 64}, {'policy_sha': 'd' * 40}, {'feedback_digest': 'f' * 64, 'policy_sha': 'd' * 40}):
+            with self.subTest(change=change), patch.object(engine, 'pr_checks', return_value=[pending(**change)]), \
+                    patch.object(session, 'invoke_reviewer', side_effect=AssertionError('must not run')), \
+                    patch.object(session, 'sleep', side_effect=AssertionError('must not poll')):
+                self.assertEqual(session.watch(self.gh, 1, interval=10, timeout=60),
+                                 {'pr': 1, 'status': 'stale', 'message': message, 'attempted_checks': []})
+        # A moved target is stale too (into the config branch it moves with the config tip): the promotion needs a new head.
+        moved = 'the target branch moved after /review: update the promotion (`factory promote testing`), then comment /review again'
+        for change in ({'base_sha': 'd' * 40, 'policy_sha': 'd' * 40}, {'base_sha': 'd' * 40},
+                       {'base_sha': 'd' * 40, 'policy_sha': 'd' * 40, 'feedback_digest': 'f' * 64}):
+            with self.subTest(change=change), patch.object(engine, 'pr_checks', return_value=[pending(**change)]), \
+                    patch.object(session, 'invoke_reviewer', side_effect=AssertionError('must not run')), \
+                    patch.object(session, 'sleep', side_effect=AssertionError('must not poll')):
+                self.assertEqual(session.watch(self.gh, 1, interval=10, timeout=60),
+                                 {'pr': 1, 'status': 'stale', 'message': moved, 'attempted_checks': []})
+        # With several production branches the hint names the target; a head that is no validation branch is not echoed.
+        several = {**self.config, 'branches': {**BRANCHES, 'production': [*BRANCHES['production'], {'name': 'release', 'review': 'no'}]}}
+        for head_ref, source in (('testing', 'testing'), ('feature/one', '<V>')):
+            with self.subTest(head_ref=head_ref), patch.object(engine, 'load_config', return_value=copy.deepcopy(several)), \
+                    patch.object(engine, 'pr_checks', return_value=[pending(base_sha='d' * 40)]), \
+                    patch.object(session, 'invoke_reviewer', side_effect=AssertionError('must not run')):
+                self.gh.pr['head']['ref'] = head_ref
+                self.assertIn(f'(`factory promote {source} --to production`)', session.watch(self.gh, 1, once=True)['message'])
+        self.gh.pr['head']['ref'] = 'testing'
+        # Any other difference is a reservation that is not this PR's current one: keep waiting, as before.
+        for change in ({'files': ['other.py'], 'feedback_digest': 'f' * 64}, {'base_ref': 'release', 'base_sha': 'd' * 40},
+                       {'head_sha': 'e' * 40}):
+            with self.subTest(change=change), patch.object(engine, 'pr_checks', return_value=[pending(**change)]), \
+                    patch.object(session, 'invoke_reviewer', side_effect=AssertionError('must not run')):
+                self.assertEqual(session.watch(self.gh, 1, once=True)['status'], 'polled')
+        # A full-gate validation PR gets a fresh reservation from the pipeline: never reported stale.
+        self.gh.target('testing', head_ref='feature/one')
+        self.gh.pr['body'] = body
+        validation = self.gh.pending(1)
+        receipt = json.loads(validation['output']['text'])
+        receipt['snapshot']['feedback_digest'] = 'f' * 64
+        validation.update(external_id=binding(receipt['snapshot']), output={'text': json.dumps(receipt)})
+        with patch.object(engine, 'pr_checks', return_value=[validation]), \
+                patch.object(session, 'invoke_reviewer', side_effect=AssertionError('must not run')):
+            self.assertEqual(session.watch(self.gh, 1, once=True)['status'], 'polled')
+
+    def test_watch_rejects_a_legacy_six_field_pending_receipt(self):
+        legacy = self.gh.pending(1)
+        bound = json.loads(legacy['output']['text'])['snapshot']
+        legacy['external_id'] = ':'.join(str(bound[k]) for k in ('repository', 'pr', 'head_sha', 'policy_sha', 'run_id', 'run_attempt'))
+        with patch.object(engine, 'pr_checks', return_value=[legacy]), \
+             patch.object(session, 'invoke_reviewer', side_effect=AssertionError('must not run')):
+            with self.assertRaisesRegex(Blocked, 'unauthenticated pending review receipt'):
+                session.watch(self.gh, 1, once=True)
 
 
 if __name__ == '__main__':

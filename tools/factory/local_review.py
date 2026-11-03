@@ -3,8 +3,8 @@
 
 The pipeline leaves factory/senior-review in progress with an authenticated receipt.
 This script reviews that exact snapshot in a fresh, tool-less `codex exec` session and
-submits result evidence through the publisher App. The serialized main workflow alone
-claims and completes the senior gate. Never run this script on GitHub-hosted runners.
+submits result evidence through the publisher App. The serialized factory workflow on the
+config branch alone claims and completes the senior gate. Never run this script on GitHub-hosted runners.
 """
 import argparse
 from contextlib import contextmanager
@@ -72,7 +72,7 @@ def require_trusted_checkout(policy_sha):
     status = subprocess.run([*git, 'status', '--porcelain'], env=env, capture_output=True, text=True, timeout=15)
     clean = head.returncode == status.returncode == 0 and not status.stdout.strip()
     require(clean and head.stdout.strip() == policy_sha,
-            f'checkout must be the clean policy revision {policy_sha[:12]}: git switch --detach {policy_sha[:12]} (or pull main)')
+            f'checkout must be the clean policy revision {policy_sha[:12]} (config branch tip): git switch --detach {policy_sha[:12]}')
 
 
 def child_env(tmp, token):
@@ -344,20 +344,36 @@ def require_review_budget(gh, pr, config):
 
 
 def dispatch_correction(config, pr, check_id):
-    """The maintainer's own GitHub CLI starts the correction run on the protected default branch."""
+    """The maintainer's own GitHub CLI starts the correction run on the config branch."""
     subprocess.run(['gh', 'workflow', 'run', Path(config['workflow']).name, '--repo', config['repository'],
-                    '--ref', config['default_branch'], '-f', f'pr={pr}', '-f', f'correction={check_id}'],
+                    '--ref', config['config_branch'], '-f', f'pr={pr}', '-f', f'correction={check_id}'],
                    check=True, capture_output=True, timeout=60)
 
 
 def dispatch_review(config, pr, check_id, claim_id, result_id=0):
     """Use the maintainer's existing Actions dispatch authority; no new App permission."""
     args = ['gh', 'workflow', 'run', Path(config['workflow']).name, '--repo', config['repository'],
-            '--ref', config['default_branch'], '-f', f'pr={pr}', '-f', f'review_check={check_id}',
+            '--ref', config['config_branch'], '-f', f'pr={pr}', '-f', f'review_check={check_id}',
             '-f', f'review_claim={claim_id}']
     if result_id:
         args += ['-f', f'review_result={result_id}']
     subprocess.run(args, check=True, capture_output=True, timeout=60)
+
+
+def production_command(config, pr):
+    """The maintainer's own command that re-runs the production check of a PR on the config branch."""
+    return ['gh', 'workflow', 'run', 'factory-promotion.yml', '--repo', config['repository'],
+            '--ref', config['config_branch'], '-f', f'pr={pr}']
+
+
+def dispatch_production(config, pr):
+    """A finished production review re-runs the production check, which requires it for maintainer-manual targets.
+    The maintainer's own GitHub CLI dispatches it; a failure leaves the review published and names the command."""
+    args = production_command(config, pr)
+    try:
+        subprocess.run(args, check=True, capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        print('Production check not dispatched; run: ' + ' '.join(args), file=sys.stderr)
 
 
 def wait_for_coordination(gh, config, pr, check_id, claim_id, result_id=0):
@@ -405,15 +421,26 @@ def publish_review(gh, config, check, record, review, reviewer, dispatch, error=
     snapshot = record['snapshot']
     result_id = submit_result(gh, config, check, record, review, reviewer, dispatch, error, dry_run)
     claim_id = record['claim']['id']
+    # Only this process re-runs the production check after the review; whoever finishes the review by hand needs it too.
+    rerun = (f" Once the review is complete, re-run the production check: `{' '.join(production_command(config, snapshot['pr']))}`."
+             if snapshot.get('mode') == 'production' else '')
     try:
         dispatch_review(config, snapshot['pr'], check['id'], claim_id, result_id)
     except (OSError, subprocess.SubprocessError):
-        raise Blocked(f"Result {result_id} saved without completing the gate. Redispatch factory.yml on main with "
+        raise Blocked(f"Result {result_id} saved without completing the gate. Redispatch factory.yml on {config['config_branch']} with "
                       f"pr={snapshot['pr']}, review_check={check['id']}, review_claim={claim_id}, review_result={result_id}; "
-                      'this reuses the evidence without another model call.') from None
-    _, completed = wait_for_coordination(gh, config, snapshot['pr'], check['id'], claim_id, result_id)
+                      'this reuses the evidence without another model call.' + rerun) from None
+    try:
+        _, completed = wait_for_coordination(gh, config, snapshot['pr'], check['id'], claim_id, result_id)
+    except (Blocked, KeyboardInterrupt) as exc:
+        if not rerun:
+            raise
+        raise Blocked(f"{(str(exc) or 'interrupted while waiting for the review coordination').rstrip('.')}.{rerun}") from None
     outcome = completed['review']['outcome'] if completed.get('review') else 'blocked'
-    automatic = outcome == 'changes_requested' and not snapshot['control_changed'] and config.get('automatic_correction') is True
+    if snapshot.get('mode') == 'production':
+        dispatch_production(config, snapshot['pr'])
+    automatic = (outcome == 'changes_requested' and not snapshot['control_changed'] and engine.full_gate(snapshot)
+                 and config.get('automatic_correction') is True)
     if automatic and dispatch:
         dispatch_correction(config, snapshot['pr'], check['id'])
     return outcome
@@ -434,7 +461,7 @@ def review_pr(gh, pr, config, dispatch, dry_run):
     require(record.get('tests', {}).get('ok') is True, 'deterministic checks did not pass; no review requested')
     require_review_budget(gh, pr, config)
     engine.unchanged(gh, snapshot, config)
-    instructions = engine.review_prompt()
+    instructions = engine.review_prompt(snapshot)
     material = engine.review_material(gh, snapshot, config, record['tests'])
     require(len((instructions + material).encode()) <= config['limits']['review_input_bytes'], 'complete prompt over budget')
     claim_id = uuid.uuid4().hex

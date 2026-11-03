@@ -11,6 +11,8 @@ import sys
 import tempfile
 import tomllib
 
+import branches  # Trusted: imported from this file's directory, never from the candidate.
+
 
 def run(command, **kwargs):
     result=subprocess.run(command, text=True, capture_output=True, timeout=180, **kwargs)
@@ -34,6 +36,8 @@ def structural(root, trusted):
                 if not (path.parent/target).resolve().is_relative_to(root.resolve()):raise ValueError('documentation escapes repository')
                 if not (path.parent/target).exists():raise ValueError(f'broken link: {path.relative_to(root)} -> {target}')
     config=json.loads((root/'factory/config.json').read_text())
+    found=branches.problems(config)
+    if found:raise ValueError('invalid branch configuration: '+'; '.join(found))
     if config['review_model']!='gpt-6-astra' or config['review_effort']!='high':raise ValueError('review model policy drift')
     if config['limits']['max_rounds']>3 or config['limits']['max_rounds']<1:raise ValueError('invalid correction limit')
     if (root/'CLAUDE.md').read_text().splitlines().count('@AGENTS.md')!=1:raise ValueError('Claude must import AGENTS.md')
@@ -73,7 +77,7 @@ def main():
     args=p.parse_args();root=args.root.resolve();trusted=(args.trusted_root or root).resolve()
     try:
         structural(root,trusted)
-        print('PASS: JSON/TOML/Python syntax, model/limit contract, native adapter drift, internal links and smoke fixture')
+        print('PASS: JSON/TOML/Python syntax, branch model, model/limit contract, native adapter drift, internal links and smoke fixture')
         if args.structure_only:return 0
         for tool in (args.actionlint,'gitleaks'):
             if not shutil.which(tool):raise ValueError('required verifier unavailable: '+tool)

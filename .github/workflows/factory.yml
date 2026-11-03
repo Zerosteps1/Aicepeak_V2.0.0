@@ -22,7 +22,7 @@ on:
         type: string
         default: ''
       wif_smoke:
-        description: Test main-only Anthropic federation and one tiny model call; no PR pipeline
+        description: Test config-branch-only Anthropic federation and one tiny model call; no PR pipeline
         type: boolean
         default: false
       review_check:
@@ -37,7 +37,22 @@ on:
         description: App-authenticated local result check ID; empty requests a claim
         type: string
         default: ''
+      review_request:
+        description: Maintainer /review comment ID on a production PR; reserves factory/senior-review for its current head
+        type: string
+        default: ''
+      bypass:
+        description: Maintainer /bypass comment ID; publishes the PR's required factory checks for its current head as bypassed
+        type: string
+        default: ''
+      head:
+        description: PR head SHA the dispatcher read for a /review or /bypass; the stage refuses any other head
+        type: string
+        default: ''
 
+# Every job is dispatched on the config branch. The expressions cannot read factory/config.json:
+# each stage verifies GITHUB_REF against config_branch before acting, and the factory-control
+# environment admits only the config branch.
 permissions: {}
 cache-mode: none
 concurrency:
@@ -47,7 +62,7 @@ concurrency:
 jobs:
   wif-smoke:
     name: Anthropic federation smoke
-    if: inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == 'refs/heads/main'
+    if: inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0'
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 5
@@ -64,7 +79,7 @@ jobs:
 
   snapshot:
     name: Snapshot
-    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
+    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' && inputs.review_request == '' && inputs.bypass == '' }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -130,10 +145,10 @@ jobs:
         run: python3 tools/factory/engine.py publish
 
   # Shares the whole workflow's PR concurrency lock with snapshots and corrections.
-  # Only this trusted main job may claim or complete the senior-review gate.
+  # Only this trusted config-branch job may claim or complete the senior-review gate.
   review-coordinate:
     name: Review coordination
-    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.correction == '' && (inputs.review_check != '' || inputs.review_claim != '' || inputs.review_result != '') }}
+    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction == '' && inputs.review_request == '' && inputs.bypass == '' && (inputs.review_check != '' || inputs.review_claim != '' || inputs.review_result != '') }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -156,7 +171,7 @@ jobs:
   # It dispatches this workflow with `correction` when a review requests changes.
   correction:
     name: Correction gate
-    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.correction != '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
+    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction != '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' && inputs.review_request == '' && inputs.bypass == '' }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -259,3 +274,47 @@ jobs:
           AUTHOR_REPORT: ${{ needs.author.outputs.report }}
           AUTHOR_FAILURE: ${{ needs.author.outputs.failure }}
         run: python3 tools/factory/engine.py author-failed
+
+  # A maintainer's /review comment on a production PR reserves the senior review for the head it was
+  # posted for; a maintainer device then reviews it as usual. New commits never re-reserve it.
+  review-request:
+    name: Review request
+    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.review_request != '' && inputs.bypass == '' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          PR_NUMBER: ${{ inputs.pr }}
+          COMMENT_ID: ${{ inputs.review_request }}
+          HEAD_SHA: ${{ inputs.head }}
+        run: python3 tools/factory/engine.py review-request --pr "$PR_NUMBER" --comment-id "$COMMENT_ID" --head "$HEAD_SHA"
+
+  # A maintainer's /bypass <reason> comment publishes the PR's required factory checks for the head
+  # it was posted for as passed by bypass, recording login and reason. Never for work-order/config PRs.
+  bypass:
+    name: Bypass
+    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.bypass != '' && inputs.review_request == '' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          PR_NUMBER: ${{ inputs.pr }}
+          COMMENT_ID: ${{ inputs.bypass }}
+          HEAD_SHA: ${{ inputs.head }}
+        run: python3 tools/factory/engine.py bypass --pr "$PR_NUMBER" --comment-id "$COMMENT_ID" --head "$HEAD_SHA"

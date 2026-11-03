@@ -1,8 +1,17 @@
 {
   "repository": "Zerosteps1/Aicepeak_V2.0.0",
-  "default_branch": "main",
+  "default_branch": "testing",
+  "config_branch": "production",
+  "branches": {
+    "schema_version": 1,
+    "validation": [
+      {"name": "testing", "gate": "full", "kinds": ["factory", "product", "smoke"]}
+    ],
+    "production": [
+      {"name": "production", "review": "maintainer-manual"}
+    ]
+  },
   "require_second_human_review": false,
-  "maintainer_check_bypass": true,
   "northstar_path": "AICEPEAK_NORDSTERN.md",
   "northstar_approved": true,
   "product_checks_ready": false,
@@ -54,7 +63,7 @@
   "limits": {
     "max_rounds": 2,
     "timeout_seconds": 900,
-    "review_input_bytes": 800000,
+    "review_input_bytes": 900000,
     "max_reviews_per_pr": 6,
     "author_output_tokens": 200000,
     "author_request_output_tokens": 32000,
@@ -79,10 +88,6 @@
     "docs/decisions/",
     "README.md",
     "CONTRIBUTING.md"
-  ],
-  "required_checks": [
-    "factory/deterministic",
-    "factory/senior-review"
   ],
   "environment": "factory-control",
   "workflow": ".github/workflows/factory.yml",

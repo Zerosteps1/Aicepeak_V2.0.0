@@ -5,13 +5,18 @@ Status: manueller Diagnoseweg für den autorisierten Factory-Setup-Auftrag
 Die Änderung benötigt menschliche Prüfung und Merge. Sie aktiviert keine
 Autor-Korrektur und ändert keine Required Checks.
 
+Seit [ADR-0008](../decisions/0008-branch-model.md) läuft jeder Factory-Job, auch dieser
+Smoke, auf dem Konfigurationsbranch `config_branch` (heute `production`);
+`python3 tools/factory/settings.py wif` gibt die exakten Claims der Federation-Regel aus.
+
 ## Zweck und Abnahme
 
 Die vier IDs in [config.json](../../factory/config.json) sind öffentliche
 Konfiguration. Ein `author_federation: passed` im Doctor beweist keinen Login.
 Der Diagnoseweg in [factory.yml](../../.github/workflows/factory.yml) prüft:
 
-1. GitHub gibt für genau diesen Workflow auf `main` eine OIDC-Identität aus.
+1. GitHub gibt für genau diesen Workflow auf dem Konfigurationsbranch (heute
+   `production`) eine OIDC-Identität aus.
 2. Anthropic akzeptiert diese Identität und stellt einen kurzlebigen Token aus.
 3. Das konfigurierte Claude-Autormodell beantwortet eine minimale Anfrage.
 
@@ -24,15 +29,15 @@ API-Verbrauch im gewählten Anthropic-Workspace; Federation legt keine Abrechnun
 
 ## Voraussetzungen
 
-- Diese Änderung wurde von einem Menschen nach `main` gemergt.
-- Das Environment `factory-control` erlaubt ausschließlich `main`; eventuell
-  konfigurierte menschliche Freigaben bleiben wirksam.
+- Der Diagnoseweg liegt auf dem Konfigurationsbranch (heute `production`).
+- Das Environment `factory-control` erlaubt ausschließlich den Konfigurationsbranch;
+  eventuell konfigurierte menschliche Freigaben bleiben wirksam.
 - Die Federation-Regel verwendet für diesen **direkten** Workflow den Claim
   `workflow_ref`, nicht `job_workflow_ref`. Letzterer gehört zu wiederverwendbaren
   Workflows. Erwarteter Wert:
-  `Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@refs/heads/main`.
+  `Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@refs/heads/production`.
 - Weitere Bedingungen bleiben eng: Repository-ID `1436114884`, Owner-ID
-  `115100163`, `ref=refs/heads/main`, `environment=factory-control`,
+  `115100163`, `ref=refs/heads/production`, `environment=factory-control`,
   `event_name=workflow_dispatch`, Audience `https://api.anthropic.com`.
 - Das am 27.10.2026 angelegte Repository verwendet GitHubs Subject-Format mit
   unveränderlichen IDs. Das exakte Subject Pattern für das Environment lautet:
@@ -49,11 +54,11 @@ nicht. Für den Test keine Pull-Request-Branches freischalten.
 
 ## Ausführen
 
-Mit eigenem GitHub-Login und Actions-Schreibrecht, nach dem menschlichen Merge:
+Mit eigenem GitHub-Login und Actions-Schreibrecht, auf dem Konfigurationsbranch:
 
 ```sh
 gh workflow run factory.yml --repo Zerosteps1/Aicepeak_V2.0.0 \
-  --ref main -f pr=0 -f wif_smoke=true
+  --ref production -f pr=0 -f wif_smoke=true
 gh run list --repo Zerosteps1/Aicepeak_V2.0.0 --workflow factory.yml --limit 5
 ```
 
@@ -64,7 +69,7 @@ gh run watch RUN_ID --repo Zerosteps1/Aicepeak_V2.0.0 --exit-status
 gh run view RUN_ID --repo Zerosteps1/Aicepeak_V2.0.0 --log
 ```
 
-Alternativ: Actions → Factory trusted pipeline → Run workflow → Branch `main`,
+Alternativ: Actions → Factory trusted pipeline → Run workflow → Branch `production`,
 `pr=0`, `wif_smoke=true`. Nur **Anthropic federation smoke** läuft. Die normalen
 PR-Jobs überspringen diesen Diagnosemodus und veröffentlichen keine Gates.
 

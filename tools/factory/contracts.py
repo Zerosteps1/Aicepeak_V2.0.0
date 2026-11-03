@@ -80,10 +80,19 @@ def validate_review(review, schema, snapshot):
     return review["outcome"]
 
 
-def assert_current(snapshot, pr, default_sha):
+def binding(snapshot):
+    """Check external_id: repository, PR, head, policy (config tip), target branch, run and attempt."""
+    return (f"{snapshot['repository']}:{snapshot['pr']}:{snapshot['head_sha']}:{snapshot['policy_sha']}:"
+            f"{snapshot['base_ref']}:{snapshot['run_id']}:{snapshot['run_attempt']}")
+
+
+def assert_current(snapshot, pr, policy_tip, base_tip):
+    """The PR, its target branch and the config branch are still where the snapshot found them."""
     require(pr["state"] == "open" and not pr["draft"], "PR closed or draft")
     require(pr["head"]["sha"] == snapshot["head_sha"], "stale head")
-    require(pr["base"]["sha"] == snapshot["base_sha"] == default_sha == snapshot["policy_sha"], "stale base/policy")
+    require(pr["base"]["ref"] == snapshot["base_ref"], "PR target branch changed")
+    require(pr["base"]["sha"] == snapshot["base_sha"] == base_tip, "stale base")
+    require(snapshot["policy_sha"] == policy_tip, "stale policy")
     require(pr["head"]["repo"]["full_name"] == snapshot["repository"], "fork remediation forbidden")
 
 
@@ -121,8 +130,7 @@ def authentic_check(check, snapshot, config):
     require(check["name"] == "factory/senior-review", "wrong check name")
     require(check["head_sha"] == snapshot["head_sha"], "wrong check SHA")
     require(check["status"] == "completed", "review not finished")
-    expected = f"{snapshot['repository']}:{snapshot['pr']}:{snapshot['head_sha']}:{snapshot['policy_sha']}:{snapshot['run_id']}:{snapshot['run_attempt']}"
-    require(check["external_id"] == expected, "unauthenticated review binding")
+    require(check["external_id"] == binding(snapshot), "unauthenticated review binding")
     require(check["details_url"] == f"https://github.com/{snapshot['repository']}/actions/runs/{snapshot['run_id']}", "wrong reviewer run")
 
 

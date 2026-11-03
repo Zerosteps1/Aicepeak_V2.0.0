@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import types
 import unittest
@@ -257,6 +258,165 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("oidc-request-only-for-broker", json.dumps(worker))
         self.assertIn("--max-turns", worker[0])
         self.assertIn("--max-budget-usd", worker[0])
+
+    def run_claude(self, worker_output, **options):
+        """Run the launcher for Claude with Docker faked; worker_output(args, kwargs) plays the worker."""
+        candidate = Path(self.temp.name) / "candidate"
+        candidate.mkdir(exist_ok=True)
+        (candidate / "app.py").write_text("pass\n")
+        config = json.loads((self.root / "factory/config.json").read_text())
+        config["author_models"]["claude"] = "claude-sonnet-5-5"
+        config["author_pricing_usd_per_million"]["claude"] = {"input": 2, "output": 10}
+        (self.root / "factory/config.json").write_text(json.dumps(config))
+        calls, real_command, real_run = [], clients.command, subprocess.run
+
+        def fake_command(args, **kwargs):
+            if args[0] == "git":
+                return real_command(args, **kwargs)
+            calls.append(args)
+            if args[1:3] == ["image", "inspect"]:
+                return ("sha256:" + "c" * 64).encode()
+            if "_worker" in args:
+                return worker_output(args, kwargs)
+            return b""
+        keys = {"ANTHROPIC_API_KEY": "anthropic-test-value", "CONTEXT7_API_KEY": "context-test-value"}
+        with mock.patch.dict(os.environ, keys), mock.patch.object(clients.shutil, "which", return_value="/usr/bin/docker"), \
+                mock.patch.object(clients, "command", side_effect=fake_command), \
+                mock.patch.object(clients.subprocess, "run", side_effect=lambda args, **kw: subprocess.CompletedProcess(args, 0) if args[0] == "docker" else real_run(args, **kw)):
+            os.environ.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
+            result = clients.run(candidate, self.root, "claude", b"Review", Path(self.temp.name) / "out.patch", **options)
+        return result, calls
+
+    def test_labels_reach_every_container_network_and_volume(self):
+        result, calls = self.run_claude(lambda args, kwargs: json.dumps({"type": "result", "result": "done", "is_error": False}).encode(),
+                                        labels=["aicepeak.factory.run=FACTORY-007-1"])
+        self.assertEqual(result["status"], "completed")
+        created = [args for args in calls if args[:2] == ["docker", "run"] or args[:3] in (["docker", "network", "create"], ["docker", "volume", "create"])]
+        self.assertGreaterEqual(len(created), 7)  # network, volume, keeper, seed, proxy, worker, extract
+        for args in created:
+            self.assertEqual(args[args.index("--label") + 1], "aicepeak.factory.run=FACTORY-007-1", args[:3])
+        for bad in (["Upper=case"], ["no-value="], ["a=b"] * 9):
+            with self.assertRaisesRegex(clients.ClientError, "labels"):
+                clients.run(Path(self.temp.name), self.root, "claude", b"x", Path(self.temp.name) / "x.patch", labels=bad)
+
+    def test_read_only_review_mounts_work_read_only_and_returns_no_patch(self):
+        result, calls = self.run_claude(lambda args, kwargs: json.dumps({"type": "result", "result": "1. app.py:1 empty module", "is_error": False}).encode(),
+                                        read_only=True)
+        worker = next(args for args in calls if "_worker" in args)
+        self.assertIn("--read-only", worker)
+        work = [value for value in worker if value.startswith("type=volume,") and "target=/work" in value]
+        self.assertEqual(work, [work[0]])
+        self.assertTrue(work[0].endswith(",volume-nocopy,readonly"))
+        self.assertFalse(any("_extract" in args for args in calls))
+        self.assertIsNone(result["patch"])
+        self.assertTrue(result["read_only"])
+        self.assertFalse((Path(self.temp.name) / "out.patch").exists())
+        self.assertIn("empty module", Path(result["report"]).read_text())
+        with self.assertRaisesRegex(clients.ClientError, "prompt"):
+            clients.run(Path(self.temp.name), self.root, "claude", None, Path(self.temp.name) / "y.patch", read_only=True, interactive=True)
+
+    def test_read_only_worker_keeps_only_review_tools(self):
+        claude = clients.worker_arguments("claude", "claude-sonnet-5-5", read_only=True)
+        self.assertEqual(claude[claude.index("--tools") + 1], "Read,Glob,Grep,Skill")
+        allowed = claude[claude.index("--allowedTools") + 1].split(",")
+        self.assertTrue({"Read", "Glob", "Grep", "Skill", "mcp__openai_docs__fetch_openai_doc"} <= set(allowed))
+        self.assertFalse({"Bash", "Write", "Edit", "Agent"} & set(allowed))
+        default = clients.worker_arguments("claude", "claude-sonnet-5-5")
+        self.assertNotIn("--tools", default)
+        self.assertIn("Bash", default[default.index("--allowedTools") + 1])
+        codex = clients.worker_arguments("codex", "gpt-6-astra", read_only=True)
+        self.assertEqual(codex[codex.index("--sandbox") + 1], "read-only")
+
+    def test_event_stream_keeps_result_and_tool_lines_only(self):
+        # Event shapes follow the Claude Code headless documentation (stream-json). Doc-derived,
+        # not a capture: replace with a recorded Claude Code 2.1.311 stream during live acceptance.
+        lines = [
+            {"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "tools": ["Read"]},
+            {"type": "assistant", "parent_tool_use_id": None, "message": {"content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "text", "text": "I will read the module."},
+                {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/work/app.py"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "pass"}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "python3 -m unittest\nrm -rf /"}}]}},
+            {"type": "result", "subtype": "success", "result": "Done: app.py reviewed.", "is_error": False, "total_cost_usd": 0.42},
+        ]
+        def worker(args, kwargs):
+            self.assertIn("--events", args)
+            for line in lines:
+                kwargs["on_line"](json.dumps(line).encode())
+            return b""
+        events = Path(self.temp.name) / "events.log"
+        result, _ = self.run_claude(worker, events=events)
+        self.assertEqual(result["reported_cost_usd"], 0.42)
+        self.assertIn("Done: app.py reviewed.", Path(result["report"]).read_text())
+        logged = events.read_text()
+        self.assertIn("Read /work/app.py", logged)
+        self.assertIn("Bash python3 -m unittest", logged)
+        for hidden in ("private reasoning", "I will read", "rm -rf", "pass\n"):
+            self.assertNotIn(hidden, logged)
+        self.assertEqual(events.stat().st_mode & 0o777, 0o600)
+        with self.assertRaisesRegex(clients.ClientError, "no final report"):
+            self.run_claude(lambda args, kwargs: b"", events=Path(self.temp.name) / "none.log")
+
+    def test_event_sink_escapes_terminal_controls_and_redacts_credentials(self):
+        path = Path(self.temp.name) / "sink.log"
+        sink = clients.EventSink(path, ("broker-token-value",))
+        sink(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "echo broker-token-value \x1b[2J‮"}}]}}).encode())
+        sink(b"not json")
+        sink(json.dumps({"type": "result", "result": "first"}).encode())
+        sink(json.dumps({"type": "result", "result": "last"}).encode())
+        with mock.patch.object(clients, "EVENT_LOG_LIMIT", 80):
+            for _ in range(5):
+                sink(json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "x" * 30}}]}}).encode())
+        sink.close()
+        text = path.read_text()
+        self.assertIn("[credential redacted]", text)
+        self.assertNotIn("broker-token-value", text)
+        self.assertNotIn("\x1b", text)
+        self.assertIn("\\u001b", text)
+        self.assertIn("\\u202e", text)
+        self.assertEqual(text.count("[event log limit reached]"), 1)
+        self.assertEqual(json.loads(sink.result)["result"], "last")
+        cut = Path(self.temp.name) / "cut.log"
+        long_sink = clients.EventSink(cut, ("secret-at-the-cut-" + "z" * 20,))
+        long_sink(json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash",
+                  "input": {"command": "x" * 110 + "secret-at-the-cut-" + "z" * 20}}]}}).encode())
+        long_sink.close()
+        self.assertNotIn("secret-at", cut.read_text())
+        symlink = Path(self.temp.name) / "link.log"
+        symlink.symlink_to(path)
+        with self.assertRaises(OSError):
+            clients.EventSink(symlink, ())
+
+    def test_stream_lines_skips_oversized_lines_and_kills_on_timeout(self):
+        seen = []
+        script = "import sys; sys.stdout.write('a\\n' + 'x' * 5000 + '\\nb\\n'); sys.stdout.flush()"
+        with mock.patch.object(clients, "STREAM_LINE_LIMIT", 1000):
+            clients.command([sys.executable, "-c", script], env=dict(os.environ), on_line=seen.append, timeout=30)
+        self.assertEqual(seen, [b"a", b"b"])
+        echoed = []
+        clients.command([sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"], env=dict(os.environ),
+                        input=b"prompt", on_line=echoed.append, timeout=30)
+        self.assertEqual(echoed, [b"PROMPT"])
+        with self.assertRaisesRegex(clients.ClientError, r"failed \(3\)"):
+            clients.command([sys.executable, "-c", "import sys; sys.exit(3)"], env=dict(os.environ), on_line=seen.append, timeout=30)
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            clients.command([sys.executable, "-c", "import time; time.sleep(30)"], env=dict(os.environ), on_line=seen.append, timeout=1)
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_cancellation_returns_130_after_cleanup(self):
+        with self.assertRaises(KeyboardInterrupt):
+            clients._cancelled(15, None)
+        argv = ["clients.py", "run", "--root", self.temp.name, "--runner", "claude", "--policy-root", str(self.root),
+                "--prompt-file", str(self.root / "AGENTS.md"), "--output-patch", str(Path(self.temp.name) / "c.patch")]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(clients, "run", side_effect=KeyboardInterrupt), \
+                mock.patch.object(clients.signal, "signal") as handler, mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(clients.main(), 130)
+        handler.assert_called_with(clients.signal.SIGTERM, clients._cancelled)
+        self.assertIn("cancelled", err.getvalue())
 
 class BrokerTests(unittest.TestCase):
     def setUp(self):

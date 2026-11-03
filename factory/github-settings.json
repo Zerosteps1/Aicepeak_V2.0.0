@@ -1,11 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repository": "Zerosteps1/Aicepeak_V2.0.0",
-  "quality_ruleset_name": "Factory mandatory review and checks",
-  "human_ruleset_name": "Factory human PR merges only",
-  "required_checks": [
-    "factory/deterministic",
-    "factory/senior-review"
+  "ruleset_names": {
+    "validation": "Factory validation: {branch}",
+    "production": "Factory production: {branch}",
+    "lifecycle": "Factory branch lifecycle"
+  },
+  "retired_ruleset_names": [
+    "Factory mandatory review and checks",
+    "Factory human PR merges only"
+  ],
+  "production_merge_methods": [
+    "squash",
+    "rebase"
   ],
   "actions": {
     "enabled": true,
@@ -27,6 +34,10 @@
     "CONTEXT7_API_KEY"
   ],
   "optional_environment_secrets": [],
+  "promotion_environment": "factory-promotion",
+  "promotion_environment_secrets": [
+    "FACTORY_PUBLISHER_APP_PRIVATE_KEY"
+  ],
   "publisher_permissions": {
     "metadata": "read",
     "contents": "read",

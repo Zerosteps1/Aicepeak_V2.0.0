@@ -1,8 +1,9 @@
 """Installer stage 2 (`factory _install`): runs from the control checkout and sets up this device.
 
-Stage 1 (install-factory-cli.sh) only checks prerequisites, verifies itself against main and clones the control
-checkout. Everything else happens here, from reviewed code on main: verify and fast-forward the control checkout,
-reuse or clone the candidate, record both paths, install the shim and, if needed, the PATH block and author keys.
+Stage 1 (install-factory-cli.sh) only checks prerequisites, verifies itself against the config branch's copy and
+clones the control checkout on the chosen control branch. Everything else happens here, from that reviewed code:
+verify and fast-forward the control checkout, reuse or clone the candidate, record both paths and the control
+branch, install the shim and, if needed, the PATH block and author keys.
 """
 from __future__ import annotations
 
@@ -78,16 +79,18 @@ def store_keys(force):
                        check=False)
 
 
-def install(control_dir, candidate_dir, bin_dir, author_keys=False):
+def install(control_dir, candidate_dir, bin_dir, author_keys=False, branch=None):
     control = Path(control_dir).expanduser().resolve()
     require(os.path.samefile(control / 'tools/factory/cli/factory.py', Path(__file__).resolve().parent / 'factory.py'),
             'the installer must run from the control checkout it installs')
     require(sys.version_info >= (3, 11) and os.path.isabs(sys.executable), 'Python 3.11 or newer is required')
     control = checkouts.toplevel(control)
     config = checkouts.repository_config(control)
+    branch = branch or config['config_branch']
     with common.Lock(common.STATE_DIR / 'locks/control.lock', 'the control checkout'):
-        sha, _ = checkouts.update_control(control, config)
-    say(f'Control checkout: {control} (main {sha[:12]})')
+        sha, _ = checkouts.update_control(control, config, branch=branch)  # refuses an unlisted control branch
+        policy = checkouts.read_policy(control, config)
+    say(f'Control checkout: {control} ({branch} {sha[:12]}; rules from {policy.model.config_branch} {policy.tip[:12]})')
     candidate = Path(candidate_dir).expanduser().absolute()
     if not os.path.lexists(candidate):
         candidate.parent.mkdir(parents=True, exist_ok=True)
@@ -95,15 +98,15 @@ def install(control_dir, candidate_dir, bin_dir, author_keys=False):
         say(f'Cloned the candidate checkout: {candidate}')
     candidate = checkouts.toplevel(candidate)
     checkouts.separate(control, candidate)
-    session.identity(candidate, config)
+    session.identity(candidate, policy.config)
     ensure_identity(candidate)
-    checkouts.verify_candidate(candidate, config)
+    checkouts.verify_candidate(candidate, policy.config)
     say(f'Candidate checkout: {candidate}')
     bin_path = Path(bin_dir).expanduser().absolute()
     bin_path.mkdir(parents=True, exist_ok=True)
     write_shim(bin_path / 'factory', sys.executable, control)
     common.atomic_json(common.CONFIG_FILE, {'control': str(control), 'candidate': str(candidate),
-                                            'python': sys.executable, 'bin': str(bin_path)})
+                                            'python': sys.executable, 'bin': str(bin_path), 'branch': branch})
     say(f'Installed {bin_path / "factory"} (configuration: {common.CONFIG_FILE})')
     if path_block(bin_path):
         say(f'Added {bin_path} to PATH in {RC_FILE}; open a new terminal before using `factory`.')

@@ -15,9 +15,13 @@ from unittest import mock
 
 ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
 sys.path[:0] = [str(ROOT / 'tools/factory/cli'), str(ROOT / 'tools/factory')]
+import branch_fixture  # noqa: E402  fixtures never take the candidate's branch model (config PRs change it)
+import branches  # noqa: E402
+import branching  # noqa: E402
 import checkouts  # noqa: E402
 import commands  # noqa: E402
 import common  # noqa: E402
+import factory  # noqa: E402  the CLI entry (tools/factory/cli/factory.py)
 import helptext  # noqa: E402
 import install  # noqa: E402
 import pipeline  # noqa: E402
@@ -46,27 +50,31 @@ def order(name, kind='factory', status='approved', paths=('docs/',)):
 
 class GitHub:
     def __init__(self):
-        self.pulls = []
+        self.pulls, self.created = [], []
 
     def pages(self, path, field=None):
         return self.pulls if '/pulls?state=open' in path else []
 
     def request(self, method, path, data=None):
+        if method == 'POST' and path == f'/repos/{REPOSITORY}/pulls':
+            self.created.append(data)
+            return {'number': 77, 'html_url': f'https://github.com/{REPOSITORY}/pull/77'}
         raise AssertionError((method, path))
 
 
 class Repos(unittest.TestCase):
-    """origin (bare, stands in for GitHub), a control clone and a candidate clone."""
+    """origin (bare, stands in for GitHub) with testing (validation, default) and production (config branch),
+    a control clone on production and a candidate clone on testing."""
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.tmp = Path(temp.name).resolve()
         self.origin = self.tmp / 'origin.git'
-        subprocess.run(['git', 'init', '--quiet', '--bare', '-b', 'main', str(self.origin)], env=ENV, check=True)
+        subprocess.run(['git', 'init', '--quiet', '--bare', '-b', 'testing', str(self.origin)], env=ENV, check=True)
         self.seed = self.tmp / 'seed'
         self.seed.mkdir()
-        git(self.seed, 'init', '--quiet', '-b', 'main')
-        files = {'factory/config.json': (ROOT / 'factory/config.json').read_text(),
+        git(self.seed, 'init', '--quiet', '-b', 'testing')
+        files = {'factory/config.json': branch_fixture.text(ROOT),
                  'docs/work/TEMPLATE.md': (ROOT / 'docs/work/TEMPLATE.md').read_text(),
                  'docs/work/FACTORY-001.md': order('FACTORY-001', paths=('docs/work/',)),
                  'docs/work/ARCH-001.md': order('ARCH-001'),
@@ -82,11 +90,12 @@ class Repos(unittest.TestCase):
         git(self.seed, 'commit', '--quiet', '-m', 'seed')
         git(self.seed, 'rm', '--quiet', 'docs/work/FACTORY-006.md')
         git(self.seed, 'commit', '--quiet', '-m', 'withdraw FACTORY-006')
-        git(self.seed, 'push', '--quiet', str(self.origin), 'main')
-        self.control, self.candidate = self.clone('control'), self.clone('candidate')
+        git(self.seed, 'branch', 'production')
+        git(self.seed, 'push', '--quiet', str(self.origin), 'testing', 'production')
+        self.control, self.candidate = self.clone('control', 'production'), self.clone('candidate')
         git(self.candidate, 'config', 'user.name', 'Fixture')
         git(self.candidate, 'config', 'user.email', 'fixture@example.invalid')
-        self.main = git(self.control, 'rev-parse', 'HEAD')
+        self.tip = git(self.control, 'rev-parse', 'HEAD')
         self.config = json.loads((self.control / 'factory/config.json').read_text())
         real_tool = common.tool
         # CI mounts /tmp noexec: never run fake executables. gh only names the https credential helper,
@@ -101,47 +110,68 @@ class Repos(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def clone(self, name):
+    def clone(self, name, branch=None):
         path = self.tmp / name
-        subprocess.run(['git', 'clone', '--quiet', str(self.origin), str(path)], env=ENV, check=True)
+        subprocess.run(['git', 'clone', '--quiet', *(['--branch', branch] if branch else []), str(self.origin), str(path)],
+                       env=ENV, check=True)
         git(path, 'remote', 'set-url', 'origin', HTTPS)
         return path
 
-    def advance_origin(self, name='docs/later.md'):
-        (self.seed / name).write_text('later\n')
+    def advance_origin(self, name='docs/later.md', branch='testing', text='later\n'):
+        git(self.seed, 'switch', '--quiet', branch)
+        (self.seed / name).parent.mkdir(parents=True, exist_ok=True)
+        (self.seed / name).write_text(text)
         git(self.seed, 'add', name)
-        git(self.seed, 'commit', '--quiet', '-m', 'later')
-        git(self.seed, 'push', '--quiet', str(self.origin), 'main')
+        git(self.seed, 'commit', '--quiet', '-m', f'later {name}')
+        git(self.seed, 'push', '--quiet', str(self.origin), branch)
         return git(self.seed, 'rev-parse', 'HEAD')
 
-    def ctx(self):
-        case = self
+    def publish_config(self, change):
+        """A merged config PR: the config branch gets the edited configuration; the control fetches it."""
+        git(self.seed, 'switch', '--quiet', 'production')
+        text = branches.edited((self.seed / 'factory/config.json').read_text(), change)
+        self.advance_origin('factory/config.json', 'production', text)
+        checkouts.fetch(self.control, self.config, 'production')
+        return json.loads(text)
 
-        class Context:
-            candidate, control, config, sha, root, login = case.candidate, case.control, case.config, case.main, ROOT, 'ftrutschnig'
-            gh = GitHub()
+    def switch_config(self, name):
+        """`factory set config branch <name>` after owner steps 1 and 2: <name> is listed and names itself, then the old
+        config branch production names <name>. Control checkouts and their code are left on production."""
+        self.publish_config(lambda config: branches.with_production(config, name, 'no'))
+        git(self.seed, 'branch', name)
+        text = branches.edited((self.seed / 'factory/config.json').read_text(),
+                               lambda config: branches.with_config_branch(config, name))
+        self.advance_origin('factory/config.json', name, text)
+        self.advance_origin('factory/config.json', 'production', text)
+        return git(self.origin, 'rev-parse', name), git(self.origin, 'rev-parse', 'production')
 
-            def candidate_lock(self):
-                return common.Lock(common.STATE_DIR / 'locks/candidate.lock', 'the candidate checkout')
+    def device_file(self, branch=None):
+        common.CONFIG_FILE.write_text(json.dumps({'control': str(self.control), 'candidate': str(self.candidate),
+                                                  'python': sys.executable, 'bin': str(self.tmp / 'bin'),
+                                                  **({'branch': branch} if branch else {})}))
 
-            def main(self):
-                return checkouts.fetch(self.candidate, self.config, 'main')['main']
-
-            def identity(self):
-                return ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid']
-        return Context()
+    def ctx(self, model_config=None):
+        """The real command context on the fixture: control policy, faked GitHub and login."""
+        device = {'control': self.control, 'candidate': self.candidate, 'python': sys.executable,
+                  'bin': self.tmp / 'bin', 'branch': None}
+        policy = checkouts.read_policy(self.control, self.config)
+        if model_config:
+            policy = policy._replace(config=model_config, model=branches.parse(model_config))
+        context = factory.Context(device, self.config, self.tip, policy)
+        context._gh, context._user = GitHub(), {'login': 'ftrutschnig'}
+        return context
 
 
 class WorkOrderTests(Repos):
     def test_numbers_never_reuse_withdrawn_orders(self):
-        used = workorders.numbers_ever_added(self.control, self.main)
+        used = workorders.numbers_ever_added(self.control, self.tip)
         self.assertEqual(used, {1, 3, 6})
         self.assertEqual(workorders.next_name('factory', used), 'FACTORY-007')
         self.assertEqual(workorders.next_name('product', used | {12}), 'PRODUCT-013')
-        self.assertEqual(workorders.names_on(self.control, self.main), ['ARCH-001', 'FACTORY-001', 'FACTORY-003'])
+        self.assertEqual(workorders.names_on(self.control, self.tip), ['ARCH-001', 'FACTORY-001', 'FACTORY-003'])
 
     def test_references_resolve_only_when_unique(self):
-        names = workorders.names_on(self.control, self.main)
+        names = workorders.names_on(self.control, self.tip)
         self.assertEqual(workorders.resolve('3', names), 'FACTORY-003')
         self.assertEqual(workorders.resolve('003', names), 'FACTORY-003')
         self.assertEqual(workorders.resolve('factory-003', names), 'FACTORY-003')
@@ -186,16 +216,16 @@ class WorkOrderTests(Repos):
         self.assertEqual(workorders.branch_order('zerosteps1/FACTORY-003-fix-4', names), 'FACTORY-003')
         self.assertEqual(workorders.branch_order('ftrutschnig/FACTORY-SMOKE', names), 'FACTORY-SMOKE')
         self.assertIsNone(workorders.branch_order('feature/csv', names))
-        self.assertIsNone(workorders.branch_order('main', names))
+        self.assertIsNone(workorders.branch_order('testing', names))
 
 
 class CheckoutTests(Repos):
     def test_disposable_checkout_is_what_session_accepts(self):
         with checkouts.scratch('test-') as scratch:
-            repo = checkouts.materialize(scratch / 'repo', self.main, objects=[checkouts.objects_dir(self.control)],
+            repo = checkouts.materialize(scratch / 'repo', self.tip, objects=[checkouts.objects_dir(self.control)],
                                          origin=HTTPS, branch='feature/x')
-            self.assertEqual(session.identity(repo, self.config), self.main)
-            session.clean_tree(repo, self.main)
+            self.assertEqual(session.identity(repo, self.config), self.tip)
+            session.clean_tree(repo, self.tip)
             self.assertEqual(checkouts.current_branch(repo), 'feature/x')
             self.assertTrue((repo / 'tool.sh').stat().st_mode & 0o111)
             self.assertEqual((repo / 'docs/guide.md').read_text(), 'guide\n')
@@ -208,22 +238,132 @@ class CheckoutTests(Repos):
         self.assertFalse(scratch.exists())
 
     def test_control_fast_forwards_and_refuses_unsafe_states(self):
-        newer = self.advance_origin()
+        newer = self.advance_origin(branch='production')
         self.assertEqual(checkouts.update_control(self.control, self.config), (newer, True))
         self.assertEqual(git(self.control, 'rev-parse', 'HEAD'), newer)
+        self.assertEqual(checkouts.read_policy(self.control, self.config).tip, newer)
         (self.control / '.DS_Store').write_text('x')
         with self.assertRaisesRegex(Blocked, r'untracked file \.DS_Store.*factory never deletes'):
             checkouts.update_control(self.control, self.config)
         (self.control / '.DS_Store').unlink()
         git(self.control, 'switch', '--quiet', '-c', 'other')
-        with self.assertRaisesRegex(Blocked, 'stay on main'):
+        with self.assertRaisesRegex(Blocked, 'stay on production'):
             checkouts.update_control(self.control, self.config)
-        git(self.control, 'switch', '--quiet', 'main')
+        git(self.control, 'switch', '--quiet', 'production')
         (self.control / 'docs/guide.md').write_text('own\n')
         git(self.control, 'commit', '--quiet', '-am', 'own commit')
-        self.advance_origin('docs/even-later.md')
-        with self.assertRaisesRegex(Blocked, 'cannot fast-forward'):
+        self.advance_origin('docs/even-later.md', branch='production')
+        with self.assertRaisesRegex(Blocked, 'cannot fast-forward to origin/production'):
             checkouts.update_control(self.control, self.config)
+
+    def test_control_follows_its_listed_branch_and_fails_closed(self):
+        git(self.control, 'switch', '--quiet', '--no-track', '-c', 'testing', 'origin/testing')
+        newer = self.advance_origin()
+        self.assertEqual(checkouts.update_control(self.control, self.config, branch='testing'), (newer, True))
+        policy = checkouts.read_policy(self.control, self.config)
+        self.assertEqual((policy.tip, policy.model.config_branch, policy.model.route('smoke')), (self.tip, 'production', 'testing'))
+        git(self.seed, 'push', '--quiet', str(self.origin), 'testing:feature-x')
+        git(self.control, 'switch', '--quiet', '--no-track', '-c', 'feature-x', 'origin/testing')
+        with self.assertRaisesRegex(Blocked, 'does not list.*`factory use branch production`'):
+            checkouts.update_control(self.control, self.config, branch='feature-x')
+        before = git(self.control, 'rev-parse', 'HEAD')
+        self.assertEqual(checkouts.update_control(self.control, self.config, branch='feature-x', listed=False), (before, False))
+        with self.assertRaisesRegex(Blocked, 'config branch release is not on GitHub'):
+            checkouts.update_control(self.control, {**self.config, 'config_branch': 'release'}, branch='feature-x')
+        self.assertIsNone(checkouts.read_policy(self.control, {**self.config, 'config_branch': 'release'}))
+        self.publish_config(lambda config: branches.with_config_branch(branches.with_production(config, 'release', 'no'),
+                                                                       'release'))
+        with self.assertRaisesRegex(Blocked, 'names the config branch release'):
+            checkouts.read_policy(self.control, self.config)
+
+    def test_control_follows_a_finished_change_of_the_config_branch(self):
+        release, production = self.switch_config('release')
+        self.assertEqual(checkouts.update_control(self.control, self.config), (production, True))  # code names production
+        policy = checkouts.read_policy(self.control, self.config)
+        self.assertEqual((policy.tip, policy.model.config_branch, policy.config['config_branch']), (release, 'release', 'release'))
+        code = checkouts.repository_config(self.control)  # the fast-forwarded code itself names release now
+        self.assertEqual(code['config_branch'], 'release')
+        self.assertEqual(checkouts.update_control(self.control, code, branch='production'), (production, False))
+        self.assertEqual(checkouts.read_policy(self.control, code).tip, release)
+        git(self.control, 'switch', '--quiet', '--no-track', '-c', 'feature-x', 'origin/production')
+        with self.assertRaisesRegex(Blocked, 'does not list.*`factory use branch release`'):
+            checkouts.update_control(self.control, self.config, branch='feature-x')
+
+    def test_after_a_config_branch_switch_commands_and_use_take_the_new_config_branch(self):
+        """Control and code on the old config branch production, origin/production naming release, origin/release
+        naming itself: the state every device is in right after owner steps 1 and 2."""
+        self.advance_origin('tools/factory/cli/factory.py', 'production', '# the CLI entry bootstrap verifies\n')
+        checkouts.update_control(self.control, self.config)
+        release, production = self.switch_config('release')
+        self.device_file()
+        entry = self.control / 'tools/factory/cli/factory.py'
+        with mock.patch.object(factory, 'ROOT', self.control), mock.patch.object(checkouts, 'ROOT', self.control), \
+                mock.patch.object(factory, '__file__', str(entry)), mock.patch.object(factory, 'reexec') as reexec:
+            ctx = factory.bootstrap('branches')
+            reexec.assert_called_once()  # the control fast-forwarded to production's tip
+            self.assertEqual(git(self.control, 'rev-parse', 'HEAD'), production)
+            self.assertEqual(checkouts.device()['branch'], 'production')  # pinned before the code names release
+            self.assertEqual((ctx.model.config_branch, ctx.policy, ctx.branch), ('release', release, 'production'))
+            with mock.patch.object(factory, 'REEXECS', 1):
+                ctx = factory.bootstrap('branches')  # the re-executed start, whose own code names release
+                self.assertEqual((ctx.model.config_branch, ctx.policy), ('release', release))
+                ctx._gh, ctx._user = GitHub(), {'login': 'ftrutschnig'}
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(branching.diagram(ctx), 0)
+                self.assertIn('Config branch: release', output.getvalue())
+                self.assertEqual(ctx.config_tip(), release)
+                ctx = factory.bootstrap('use')
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(branching.use(ctx, 'release'), 0)
+            self.assertIn('come from the config branch release', output.getvalue())
+            self.assertEqual((checkouts.current_branch(self.control), checkouts.device()['branch']), ('release', 'release'))
+            reexec.reset_mock()
+            ctx = factory.bootstrap('branches')
+            reexec.assert_not_called()
+            self.assertEqual((ctx.branch, ctx.model.config_branch, ctx.policy), ('release', 'release', release))
+
+    def test_use_leaves_a_listed_control_branch_that_is_missing_on_github(self):
+        git(self.seed, 'push', '--quiet', str(self.origin), 'testing:staging')
+        self.publish_config(lambda config: branches.with_validation(config, 'staging', 'tests', ['smoke']))
+        checkouts.fetch(self.control, self.config, 'staging')
+        git(self.control, 'switch', '--quiet', '--no-track', '-c', 'staging', 'origin/staging')
+        git(self.origin, 'update-ref', '-d', 'refs/heads/staging')  # deleted on GitHub while still listed
+        before = git(self.control, 'rev-parse', 'HEAD')
+        with self.assertRaisesRegex(Blocked, 'staging is not on GitHub; switch with `factory use branch production`'):
+            checkouts.update_control(self.control, self.config, branch='staging')
+        self.assertEqual(checkouts.update_control(self.control, self.config, branch='staging', listed=False), (before, False))
+        self.device_file('staging')
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(branching.use(self.ctx(), 'production'), 0)
+        self.assertEqual((checkouts.current_branch(self.control), checkouts.device()['branch']), ('production', 'production'))
+
+    def test_an_interrupted_use_branch_never_strands_the_control_checkout(self):
+        self.device_file('production')
+        checkouts.fetch(self.control, self.config, 'testing')
+        git(self.control, 'switch', '--quiet', '--no-track', '-c', 'testing', 'origin/testing')  # then interrupted
+        head = git(self.control, 'rev-parse', 'HEAD')
+        newer = self.advance_origin()
+        with self.assertRaisesRegex(Blocked, 'is on testing, but it must stay on production, its recorded control branch: '
+                                    '`factory use branch <listed branch>` switches it'):
+            checkouts.update_control(self.control, self.config, branch='production')
+        self.assertEqual(checkouts.update_control(self.control, self.config, branch='production', listed=False), (head, False))
+        self.assertEqual(git(self.control, 'rev-parse', 'HEAD'), head)  # only verified: never fast-forwarded off its branch
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(branching.use(self.ctx(), 'testing'), 0)
+        self.assertEqual((checkouts.current_branch(self.control), git(self.control, 'rev-parse', 'HEAD')), ('testing', newer))
+        self.assertEqual(checkouts.device()['branch'], 'testing')
+        git(self.control, 'switch', '--quiet', 'production')  # interrupted again, now on a commit GitHub never saw
+        git(self.control, 'commit', '--quiet', '--allow-empty', '-m', 'own')
+        with self.assertRaisesRegex(Blocked, 'is on production with own commits; it must never carry any'):
+            checkouts.update_control(self.control, self.config, branch='testing', listed=False)
+        git(self.control, 'reset', '--quiet', '--hard', 'HEAD~1')
+        self.assertEqual(checkouts.update_control(self.control, self.config, branch='testing', listed=False)[1], False)
+        git(self.control, 'switch', '--quiet', '--no-track', '-c', 'feature-x', 'origin/testing')
+        with self.assertRaisesRegex(Blocked, 'is on feature-x, neither its recorded control branch testing nor a listed branch'):
+            checkouts.update_control(self.control, self.config, branch='testing', listed=False)
+        git(self.control, 'switch', '--quiet', '--detach')
+        with self.assertRaisesRegex(Blocked, 'is on a detached HEAD, neither'):
+            checkouts.update_control(self.control, self.config, branch='testing', listed=False, online=False)
 
     def test_checkouts_are_separate_and_candidate_config_is_allowlisted(self):
         checkouts.separate(self.control, self.candidate)
@@ -244,10 +384,10 @@ class CheckoutTests(Repos):
         git(self.candidate, 'add', '.')
         git(self.candidate, 'commit', '--quiet', '-m', 'a')
         git(self.candidate, 'push', '--quiet', str(self.origin), 'HEAD')
-        tips = checkouts.fetch(self.candidate, self.config, 'main', 'ftrutschnig/FACTORY-003', 'missing')
-        self.assertEqual(set(tips), {'main', 'ftrutschnig/FACTORY-003'})
+        tips = checkouts.fetch(self.candidate, self.config, 'testing', 'ftrutschnig/FACTORY-003', 'missing', 'testing')
+        self.assertEqual(set(tips), {'testing', 'ftrutschnig/FACTORY-003'})
         head = git(self.candidate, 'rev-parse', 'HEAD')
-        self.assertEqual(checkouts.direct_imports(self.candidate, self.main, head), ['tools/factory/b.py'])
+        self.assertEqual(checkouts.direct_imports(self.candidate, self.tip, head), ['tools/factory/b.py'])
 
 
 class CommandTests(Repos):
@@ -262,21 +402,23 @@ class CommandTests(Repos):
         self.assertEqual(set(changes), {'docs/work/FACTORY-007.md', 'docs/work/FACTORY-003.md', 'docs/work/ARCH-001.md'})
         self.assertIsNone(changes['docs/work/ARCH-001.md'])
         (work / 'FACTORY-003.md').write_text('edited again after the submission\n')
-        commands.move_out(self.candidate, self.main, changes)
+        commands.move_out(self.candidate, self.tip, changes)
         self.assertFalse((work / 'FACTORY-007.md').exists())
         self.assertEqual((work / 'FACTORY-003.md').read_text(), 'edited again after the submission\n')
         self.assertTrue((work / 'ARCH-001.md').exists())
         self.assertEqual((self.candidate / 'docs/guide.md').read_text(), 'unrelated\n')
 
-    def test_submit_workorders_pushes_only_orders_then_moves_them(self):
+    def test_submit_workorders_pushes_only_orders_into_the_config_branch_then_moves_them(self):
+        self.advance_origin('docs/testing-only.md')  # testing moves on: the work-order branch starts from production
         (self.candidate / 'docs/work/FACTORY-007.md').write_text(order('FACTORY-007', status='draft'))
         (self.candidate / 'docs/guide.md').write_text('unrelated\n')
         calls = []
         with mock.patch.object(common, 'ask', return_value=True), \
-                mock.patch.object(commands, 'session_submit', side_effect=lambda *a, **k: calls.append(a) or k['on_created'](12) or 12), \
+                mock.patch.object(commands, 'session_submit', side_effect=lambda *a, **k: calls.append((a, k)) or k['on_created'](12) or 12), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(commands.submit_workorders(self.ctx()), 0)
-        self.assertEqual(calls[0][2], 'docs/work/FACTORY-001.md')
+        self.assertEqual((calls[0][0][2], calls[0][1]['base']), ('docs/work/FACTORY-001.md', 'production'))
+        self.assertEqual(git(self.origin, 'rev-parse', 'ftrutschnig/new-workorders^'), git(self.origin, 'rev-parse', 'production'))
         pushed = git(self.origin, 'show', 'refs/heads/ftrutschnig/new-workorders:docs/work/FACTORY-007.md')
         self.assertEqual(workorders.task_block(pushed)['status'], 'approved')
         self.assertEqual(git(self.origin, 'show', 'refs/heads/ftrutschnig/new-workorders:docs/guide.md'), 'guide')
@@ -291,8 +433,18 @@ class CommandTests(Repos):
             commands.submit_workorders(self.ctx())
         self.assertNotIn('new-workorders', git(self.origin, 'branch', '--list'))
 
-    def test_submit_commits_only_staged_files_and_never_main(self):
-        with self.assertRaisesRegex(Blocked, 'never on main'):
+    def test_issue_numbers_come_from_the_config_branch(self):
+        self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009'))
+        self.advance_origin('docs/work/FACTORY-012.md', 'testing', order('FACTORY-012'))  # numbers live on production
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(commands.issue(self.ctx(), 'CSV export', noedit=True), 0)
+        self.assertTrue((self.candidate / 'docs/work/FACTORY-010.md').is_file())
+
+    def test_submit_commits_only_staged_files_and_refuses_listed_branches(self):
+        with self.assertRaisesRegex(Blocked, 'never on testing, a listed validation branch'):
+            commands.submit(self.ctx())
+        git(self.candidate, 'switch', '--quiet', '--no-track', '-c', 'production', 'origin/production')
+        with self.assertRaisesRegex(Blocked, 'never on production, a listed production branch'):
             commands.submit(self.ctx())
         git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/FACTORY-003')
         (self.candidate / 'docs/guide.md').write_text('staged\n')
@@ -315,6 +467,24 @@ class CommandTests(Repos):
         with self.assertRaisesRegex(Blocked, 'belongs to no work order'):
             commands.submit(self.ctx(), finished=True)
 
+    def test_submit_finished_targets_the_branch_routed_for_the_kind(self):
+        self.advance_origin('docs/work/SMOKE-004.md', 'production', order('SMOKE-004', kind='smoke'))
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
+        ctx = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['smoke']))
+        calls = []
+        for branch in ('ftrutschnig/SMOKE-004', 'ftrutschnig/FACTORY-003'):
+            git(self.candidate, 'switch', '--quiet', '-c', branch, self.tip)
+            (self.candidate / 'docs/guide.md').write_text(branch + '\n')
+            git(self.candidate, 'add', 'docs/guide.md')
+            with mock.patch.object(commands, 'session_submit', side_effect=lambda *a, **k: calls.append((a[2], k['base'])) or 3), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(commands.submit(ctx, finished=True), 0)
+        self.assertEqual(calls, [('docs/work/SMOKE-004.md', 'staging'), ('docs/work/FACTORY-003.md', 'testing')])
+        self.advance_origin('docs/staging-only.md', 'testing')
+        with self.assertRaisesRegex(Blocked, 'does not contain current testing.*merge origin/testing'), \
+                contextlib.redirect_stdout(io.StringIO()):
+            commands.submit(ctx, finished=True)
+
     def test_submit_refuses_a_branch_behind_github(self):
         git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/FACTORY-003')
         git(self.candidate, 'push', '--quiet', str(self.origin), 'HEAD')
@@ -325,6 +495,29 @@ class CommandTests(Repos):
         git(other, 'push', '--quiet', str(self.origin), 'HEAD')
         with self.assertRaisesRegex(Blocked, 'behind or diverged'):
             commands.submit(self.ctx())
+
+    def test_watch_reports_a_stale_review_and_goes_on_with_other_prs(self):
+        fake = self.tmp / 'policy'
+        (fake / 'tools/factory').mkdir(parents=True)
+        (fake / 'tools/factory/session.py').write_text(  # stands in for session.py watch of the config branch tip
+            'import json, sys\npr = int(sys.argv[sys.argv.index("--pr") + 1])\nprint("reviewer output", flush=True)\n'
+            'stale = {"message": "feedback or the config branch changed after /review; comment /review again"}\n'
+            'print(json.dumps({"pr": pr, "status": "stale" if pr == 12 else "polled", "attempted_checks": [],'
+            ' **(stale if pr == 12 else {})}, indent=2))\n')
+        ctx = self.ctx()
+        ctx._gh = mock.Mock(pages=mock.Mock(return_value=[{'number': 12, 'title': 'a', 'pull_request': {'url': 'x'}},
+                                                          {'number': 13, 'title': 'b', 'pull_request': {'url': 'y'}}]))
+        with mock.patch.object(checkouts, 'policy_checkout', lambda *args: contextlib.nullcontext(fake)), \
+                contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as warned:
+            self.assertEqual(commands.watch(ctx, 12), 0)
+            with mock.patch.object(commands, 'time', mock.Mock(sleep=mock.Mock(side_effect=KeyboardInterrupt))), \
+                    self.assertRaises(KeyboardInterrupt):
+                commands.watch(ctx, everything=True)
+        stale = 'PR #12: feedback or the config branch changed after /review; comment /review again'
+        self.assertEqual(warned.getvalue().count(stale), 2)
+        self.assertIn('PR #13: b', output.getvalue())
+        self.assertIn('"status": "polled"', output.getvalue())  # the other PR is still watched
+        self.assertIn('reviewer output', output.getvalue())
 
 
 class RunTests(unittest.TestCase):
@@ -375,7 +568,7 @@ class RunTests(unittest.TestCase):
     def test_cancel_terminates_the_runner_and_sweeps_its_labels(self):
         path = runs.create('FACTORY-003', 'start')
         process = self.holder(path)
-        runs.update(path, order='FACTORY-003', status='running', pid=process.pid, pr=42)
+        runs.update(path, order='FACTORY-003', status='running', pid=process.pid, pr=42, config_branch='production')
         docker = []
 
         def fake_run(args, **kwargs):
@@ -390,7 +583,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(runs.state(path)['status'], 'cancelled')
         self.assertIn(f'ps -aq --filter label=aicepeak.factory.run={path.name}', docker)
         self.assertIn('rm -f c1', docker)
-        self.assertIn('gh workflow run factory.yml --ref main -f pr=42 -f retry=true', output.getvalue())
+        self.assertIn('gh workflow run factory.yml --ref production -f pr=42 -f retry=true', output.getvalue())
 
 
 class PipelineTests(Repos):
@@ -398,14 +591,16 @@ class PipelineTests(Repos):
         runner = pipeline.Runner.__new__(pipeline.Runner)
         runner.path = self.tmp / 'run'
         runner.path.mkdir(exist_ok=True)
-        runner.work = checkouts.materialize(runner.path / 'work', self.main, objects=[checkouts.objects_dir(self.control)],
+        runner.work = checkouts.materialize(runner.path / 'work', self.tip, objects=[checkouts.objects_dir(self.control)],
                                             origin=HTTPS, branch='factory-run/test')
-        runner.data = {'base': self.main, 'branch': 'ftrutschnig/FACTORY-003', 'branch_exists': False, 'kind': 'start',
+        runner.data = {'base': self.tip, 'branch': 'ftrutschnig/FACTORY-003', 'branch_exists': False, 'kind': 'start',
                        'allowed_paths': ['docs/', 'tools/factory/'], 'request': None, 'pr': None, 'runner': 'claude',
-                       'identity': {'name': 'Fixture', 'email': 'fixture@example.invalid'}, **data}
+                       'identity': {'name': 'Fixture', 'email': 'fixture@example.invalid'}, 'target': 'testing',
+                       'config_branch': 'production', 'listed': ['testing', 'production'], **data}
         runner.kind, runner.order, runner.task = runner.data['kind'], 'FACTORY-003', 'docs/work/FACTORY-003.md'
         runner.config, runner.control, runner.candidate = self.config, self.control, self.candidate
-        runner.merged_main, runner.last_review, runner.spend, runner.url = None, None, 0.0, str(self.origin)
+        runner.merged_base, runner.last_review, runner.spend, runner.url = None, None, 0.0, str(self.origin)
+        runner.target = runner.data['target']
         return runner
 
     def commit(self, runner, files):
@@ -415,6 +610,25 @@ class PipelineTests(Repos):
             target.write_bytes(content) if isinstance(content, bytes) else target.write_text(content)
         git(runner.work, 'add', '.')
         git(runner.work, 'commit', '--quiet', '-m', 'run')
+
+    def test_start_targets_the_validation_branch_routed_for_the_kind(self):
+        self.advance_origin('docs/work/SMOKE-004.md', 'production', order('SMOKE-004', kind='smoke'))
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
+        staging = self.advance_origin('docs/staging.md', 'testing')
+        git(self.seed, 'push', '--quiet', str(self.origin), 'testing:staging')
+        ctx = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['smoke']))
+        with mock.patch.object(pipeline, 'docker_ready', return_value=''), mock.patch.object(pipeline, 'author_keys', return_value={}), \
+                mock.patch.object(runs, 'spawn', side_effect=lambda *args: args[-1].close()), \
+                mock.patch.object(runs, 'follow', return_value=0), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(pipeline.launch(ctx, 'start', 'SMOKE-004'), 0)
+            self.assertEqual(pipeline.launch(ctx, 'start', '3'), 0)
+        states = {runs.state(path)['order']: runs.state(path) for path in runs.every()}
+        smoke, factory_run = states['SMOKE-004'], states['FACTORY-003']
+        self.assertEqual((smoke['target'], smoke['base'], smoke['branch']), ('staging', staging, 'ftrutschnig/SMOKE-004'))
+        self.assertEqual((factory_run['target'], factory_run['base']), ('testing', staging))
+        self.assertEqual((smoke['config_branch'], smoke['listed']), ('production', ['testing', 'staging', 'production']))
+        self.assertEqual(smoke['policy_config']['config_branch'], 'production')
 
     def test_author_scope_refuses_control_only_orders(self):
         with self.assertRaisesRegex(Blocked, 'protected factory change'):
@@ -447,15 +661,15 @@ class PipelineTests(Repos):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             runner.apply()
         self.assertIn('Patch kept, not applied', output.getvalue())
-        self.assertEqual(checkouts.current_branch(self.candidate), 'main')
+        self.assertEqual(checkouts.current_branch(self.candidate), 'testing')
         self.assertTrue((runner.path / 'changes.patch').stat().st_size)
 
-    def test_result_after_main_moved_lands_on_the_new_main(self):
+    def test_result_after_the_target_moved_lands_on_its_new_tip(self):
         runner = self.runner()
         newer = self.advance_origin()
-        checkouts.update_control(self.control, self.config)
+        checkouts.fetch(self.control, self.config, 'testing')  # as the run's fetch_tips does
         git(runner.work, '-c', 'user.name=F', '-c', 'user.email=f@example.invalid', 'merge', '--quiet', '--no-edit', newer)
-        runner.merged_main = newer
+        runner.merged_base = newer
         self.commit(runner, {'docs/new.md': 'new\n'})
         with contextlib.redirect_stdout(io.StringIO()):
             runner.apply()
@@ -490,12 +704,12 @@ class PipelineTests(Repos):
         self.commit(runner, {'docs/new.md': 'new\n'})
         (self.candidate / 'docs/guide.md').write_text('local edit\n')
         patch = runner.path / 'p.patch'
-        patch.write_bytes(git(runner.work, 'diff', '--binary', self.main, 'HEAD').encode() + b'\n')
+        patch.write_bytes(git(runner.work, 'diff', '--binary', self.tip, 'HEAD').encode() + b'\n')
         names = ['docs/new.md']
-        self.assertIn('uncommitted changes', runner.apply_to_candidate(patch, self.main, names)[0])
+        self.assertIn('uncommitted changes', runner.apply_to_candidate(patch, self.tip, names)[0])
         git(self.candidate, 'checkout', '--', 'docs/guide.md')
         git(self.candidate, 'switch', '--quiet', '-c', 'my-own-work')
-        self.assertIn('does not switch away', runner.apply_to_candidate(patch, self.main, names)[0])
+        self.assertIn('does not switch away', runner.apply_to_candidate(patch, self.tip, names)[0])
 
     def test_run_budget_stops_model_steps_before_they_start(self):
         worker = pipeline.Worker(self.tmp, self.control, {}, 'label', 'claude', '')
@@ -510,22 +724,396 @@ class PipelineTests(Repos):
         self.commit(runner, {'docs/fix.md': 'fixed\n'})
         applied = []
         with mock.patch.object(runner, 'apply', side_effect=lambda: applied.append(True)), \
-                mock.patch.object(runner, 'fetch_main', return_value=self.main), contextlib.redirect_stdout(io.StringIO()) as output:
+                mock.patch.object(runner, 'fetch_tips', return_value=(self.tip, self.tip)), contextlib.redirect_stdout(io.StringIO()) as output:
             runner.publish()
         self.assertEqual(applied, [True])
         self.assertIn('the last preflight did not pass on exactly this result', output.getvalue())
         self.assertNotIn('ftrutschnig/FACTORY-003', git(self.origin, 'branch', '--list'))
         head = git(runner.work, 'rev-parse', 'HEAD')
-        runner.last_review = ({'outcome': 'pass'}, head, self.main)
+        runner.last_review = ({'outcome': 'pass'}, head, self.tip)
         self.commit(runner, {'README.md': 'protected\n'})
-        runner.last_review = ({'outcome': 'pass'}, git(runner.work, 'rev-parse', 'HEAD'), self.main)
+        runner.last_review = ({'outcome': 'pass'}, git(runner.work, 'rev-parse', 'HEAD'), self.tip)
         runner.data['allowed_paths'].append('README.md')
         with mock.patch.object(runner, 'apply', side_effect=lambda: applied.append(True)), \
-                mock.patch.object(runner, 'fetch_main', return_value=self.main), contextlib.redirect_stdout(io.StringIO()) as output:
+                mock.patch.object(runner, 'fetch_tips', return_value=(self.tip, self.tip)), contextlib.redirect_stdout(io.StringIO()) as output:
             runner.publish()
         self.assertIn('protected paths are never pushed automatically: README.md', output.getvalue())
         self.assertNotIn('ftrutschnig/FACTORY-003', git(self.origin, 'branch', '--list'))
 
+
+class BranchTests(Repos):
+    def outside_spans(self, text):
+        """config.json text without the values of branches and config_branch."""
+        for start, end in sorted((branches._span(text, key) for key in ('branches', 'config_branch')), reverse=True):
+            text = text[:start] + text[end:]
+        return text
+
+    def submitted(self, calls=None):
+        calls = [] if calls is None else calls
+
+        def fake(ctx, snapshot, task, title, body, *args, **kwargs):
+            calls.append({'task': task, 'title': title, 'body': Path(body).read_text(), 'base': kwargs['base'],
+                          'branch': checkouts.current_branch(snapshot), 'head': checkouts.head(snapshot)})
+            return 5
+        return calls, mock.patch.object(commands, 'session_submit', side_effect=fake)
+
+    def test_config_prs_change_only_the_branch_spans_of_the_config_branch(self):
+        published = self.publish_config(lambda config: branches.with_production(
+            branches.with_validation(config, 'staging', 'tests', ['smoke']), 'release', 'no'))
+        production = git(self.origin, 'rev-parse', 'production')
+        before = git(self.origin, 'show', 'production:factory/config.json') + '\n'
+        calls, patcher = self.submitted()
+        with patcher, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.add_validation(self.ctx(), 'qa', 'none', []), 0)
+            self.assertEqual(branching.add_production(self.ctx(), 'release', 'initiated'), 0)
+            self.assertEqual(branching.remove(self.ctx(), 'staging'), 0)
+            self.assertEqual(branching.add_validation(self.ctx(), 'testing', 'full', ['factory', 'product']), 0)
+        self.assertIn('Next: two maintainers approve', output.getvalue())
+        self.assertIn('already says this; nothing to propose', output.getvalue())  # testing is unchanged
+        expected = {'ftrutschnig/config-add-qa': lambda c: branches.with_validation(c, 'qa', 'none', []),
+                    'ftrutschnig/config-change-release': lambda c: branches.with_production(c, 'release', 'initiated'),
+                    'ftrutschnig/config-remove-staging': lambda c: branches.without(c, 'staging')}
+        self.assertEqual([call['branch'] for call in calls], list(expected))
+        for call, (branch, change) in zip(calls, expected.items()):
+            self.assertEqual((call['base'], call['task']), ('production', None))  # no advisory preflight
+            self.assertEqual(git(self.origin, 'rev-parse', f'{branch}^'), production)
+            self.assertEqual(git(self.origin, 'diff', '--name-only', production, branch), 'factory/config.json')
+            after = git(self.origin, 'show', f'{branch}:factory/config.json') + '\n'
+            self.assertEqual(self.outside_spans(after), self.outside_spans(before))
+            self.assertEqual(json.loads(after), change(published))
+            self.assertIn('Owner steps after the merge', call['body'])
+            self.assertIn('settings.py diff', call['body'])
+            self.assertNotIn('factory-handoff', call['body'])
+        self.assertIn('git/refs -f ref=refs/heads/qa', calls[0]['body'])
+        self.assertIn('into the config branch `production`', calls[0]['body'])
+        for name, message in (('production', 'config or default branch'), ('testing', 'config or default branch'),
+                              ('nope', 'not a listed branch')):
+            with self.assertRaisesRegex(Blocked, message):
+                branching.remove(self.ctx(), name)
+        with self.assertRaisesRegex(Blocked, 'not a listed production branch'):
+            branching.set_config(self.ctx(), 'testing')
+        with self.assertRaisesRegex(Blocked, 'factory/config.json on production: the change would break the branch model'):
+            branching.add_validation(self.ctx(), 'main', 'full', [])
+        self.assertEqual(len(calls), 3)
+
+    def test_set_config_branch_opens_the_pr_into_the_new_branch_first(self):
+        published = self.publish_config(lambda config: branches.with_production(config, 'release', 'no'))
+        git(self.seed, 'push', '--quiet', str(self.origin), 'production:release')
+        tips = {name: git(self.origin, 'rev-parse', name) for name in ('release', 'production')}
+        calls, patcher = self.submitted()
+        with patcher, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.set_config(self.ctx(), 'release'), 0)
+            self.assertEqual(branching.set_config(self.ctx(), 'production'), 0)
+        self.assertIn('production is already the config branch; nothing to propose', output.getvalue())
+        names = ['ftrutschnig/config-set-config-release-into-release', 'ftrutschnig/config-set-config-release-into-production']
+        self.assertEqual([(call['branch'], call['base']) for call in calls], list(zip(names, ('release', 'production'))))
+        for branch, base in zip(names, ('release', 'production')):
+            self.assertEqual(git(self.origin, 'rev-parse', f'{branch}^'), tips[base])
+            self.assertEqual(git(self.origin, 'diff', '--name-only', tips[base], branch), 'factory/config.json')
+            self.assertEqual(json.loads(git(self.origin, 'show', f'{branch}:factory/config.json')),
+                             branches.with_config_branch(published, 'release'))
+        self.assertIn('work-order/config PR into the production branch `release`', calls[0]['body'])
+        self.assertIn('work-order/config PR into the config branch `production`', calls[1]['body'])
+        rerun = (f"`gh pr list --repo {REPOSITORY} --state open --limit 1000 --json number --jq '.[].number' | xargs -I{{}} gh "
+                 f"workflow run factory.yml --repo {REPOSITORY} --ref release -f pr={{}} -f retry=true`")
+        checks = [f"`gh pr list --repo {REPOSITORY} --state open --base {p} --limit 1000 --json number --jq '.[].number' | "
+                  f"xargs -I{{}} gh workflow run factory-promotion.yml --repo {REPOSITORY} --ref release -f pr={{}}`"
+                  for p in ('production', 'release')]
+        steps = ['Right before merging, run `factory set config branch release` again', 'Merge the config PR into `release`', 'Then merge the config PR into `production`', 'settings.py apply',
+                 'Do it right away', 'refs/heads/release', 'factory promote <validation branch> --to release',
+                 'factory use branch release', rerun, *checks, 'The first push to `release`']
+        for call in calls:
+            positions = [call['body'].index(step) for step in steps]
+            self.assertEqual(positions, sorted(positions))
+            self.assertNotIn('commands stop', call['body'])
+            self.assertIn('regenerate the diagram with `factory branches` in a later change', call['body'])
+            self.assertEqual(call['body'].rstrip().splitlines()[-1][:3], '7. ')  # re-running the open PRs comes last
+            self.assertIn(rerun, call['body'].rstrip().splitlines()[-1])
+        with patcher, contextlib.redirect_stdout(io.StringIO()) as output:  # a rerun reuses both proposals
+            self.assertEqual(branching.set_config(self.ctx(), 'release'), 0)
+        self.assertEqual(output.getvalue().count('Reusing ftrutschnig/config-set-config-release-into-'), 2)
+        self.assertEqual([call['head'] for call in calls[2:]], [git(self.origin, 'rev-parse', name) for name in names])
+
+    def test_set_config_branch_refuses_a_branch_that_lags_behind_the_config_branch(self):
+        self.publish_config(lambda config: branches.with_production(config, 'release', 'no'))
+        git(self.seed, 'push', '--quiet', str(self.origin), 'production:release')  # release starts as a copy
+        self.publish_config(lambda config: branches.with_validation(config, 'staging', 'tests', ['smoke']))  # later, production only
+        data = json.loads((self.seed / 'factory/config.json').read_text())
+        data['limits'] = {**data['limits'], 'max_rounds': data['limits']['max_rounds'] + 1}
+        self.advance_origin('factory/config.json', 'production', json.dumps(data, indent=2) + '\n')
+        self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009'))
+        self.advance_origin('docs/work/FACTORY-003.md', 'production', order('FACTORY-003', status='draft'))
+        listed = git(self.origin, 'branch', '--list')
+        calls, patcher = self.submitted()
+        with patcher, self.assertRaises(Blocked) as refused:
+            branching.set_config(self.ctx(), 'release')
+        for expected in ('release cannot become the config branch yet',
+                         'factory/config.json on release differs from production in branches, limits;',
+                         'release lacks the work orders FACTORY-009;', 'work orders on release differ from production: FACTORY-003.',
+                         'Bring production into a validation branch and promote it into release: if <V> does not contain '
+                         'production yet, `factory promote <V> --to production` merges production into <V> (push it); then '
+                         '`factory promote <V> --to release`'):
+            self.assertIn(expected, str(refused.exception))
+        self.assertEqual((calls, git(self.origin, 'branch', '--list')), ([], listed))  # nothing pushed or proposed
+        git(self.seed, 'push', '--quiet', str(self.origin), 'production:release')  # release now holds production
+        with patcher, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(branching.set_config(self.ctx(), 'release'), 0)
+        self.assertEqual([call['base'] for call in calls], ['release', 'production'])
+
+    def test_branch_changes_wait_until_the_default_branch_names_the_config_branch(self):
+        release, _ = self.switch_config('release')  # production and release name release; testing still names production
+        checkouts.fetch_policy(self.control, self.config)
+        ctx = self.ctx()
+        self.assertEqual(ctx.model.config_branch, 'release')
+        calls, patcher = self.submitted()
+        remedy = 'bring the previous change into testing first: `factory promote testing --to release`'
+        with patcher:
+            with self.assertRaisesRegex(Blocked, 'default branch testing still names the config branch production, so a '
+                                        'further change would need two hops: ' + re.escape(remedy)):
+                branching.set_config(ctx, 'production')
+            with self.assertRaisesRegex(Blocked, 'default branch testing still names production as the config branch.*'
+                                        + re.escape(remedy) + ', then remove production'):
+                branching.remove(ctx, 'production')
+        self.assertEqual(calls, [])
+        self.advance_origin('factory/config.json', 'testing', git(self.origin, 'show', 'release:factory/config.json') + '\n')
+        with patcher, contextlib.redirect_stdout(io.StringIO()):  # testing carries the change: production may go
+            self.assertEqual(branching.remove(ctx, 'production'), 0)
+        self.assertEqual([(call['base'], call['branch']) for call in calls], [('release', 'ftrutschnig/config-remove-production')])
+        self.assertEqual(git(self.origin, 'rev-parse', 'ftrutschnig/config-remove-production^'), release)
+
+    def test_a_config_pr_branch_is_reused_reported_or_replaced(self):
+        branch = 'ftrutschnig/config-add-qa'
+        submitted = []
+        with mock.patch.object(commands, 'run_session_submit', side_effect=lambda ctx, snapshot, args, on_created=None:
+                               submitted.append(args)), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(branching.add_validation(self.ctx(), 'qa', 'none', []), 1)  # pushed; no PR was created
+        self.assertNotIn('--task', submitted[0])  # session.py submit without a preflight: approvals decide type (b)
+        self.assertEqual(submitted[0][submitted[0].index('--base') + 1], 'production')
+        pushed = git(self.origin, 'rev-parse', branch)
+        calls, patcher = self.submitted()
+        with patcher, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.add_validation(self.ctx(), 'qa', 'none', []), 0)
+        self.assertIn(f'Reusing {branch} ({pushed[:12]})', output.getvalue())
+        self.assertEqual((git(self.origin, 'rev-parse', branch), calls[-1]['head'], calls[-1]['branch'], calls[-1]['task']),
+                         (pushed, pushed, branch, None))  # the rerun opens the PR, again without a preflight
+        moved = self.advance_origin('docs/later.md', 'production')  # the old proposal no longer sits on the config tip
+        with self.submitted(calls)[1], mock.patch.object(common, 'ask', return_value=False), \
+                contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(Blocked, 'nothing proposed'):
+            branching.add_validation(self.ctx(), 'qa', 'none', [])
+        self.assertEqual((git(self.origin, 'rev-parse', branch), len(calls)), (pushed, 1))
+        with self.submitted(calls)[1], mock.patch.object(common, 'ask', return_value=True) as ask, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(branching.add_validation(self.ctx(), 'qa', 'none', []), 0)
+        ask.assert_called_once_with(f'Replace {branch} with this proposal?')
+        replaced = git(self.origin, 'rev-parse', branch)
+        self.assertEqual((git(self.origin, 'rev-parse', f'{branch}^'), calls[-1]['head']), (moved, replaced))
+        maintainer = self.config['maintainers'][0]
+        ctx = self.ctx()
+        ctx.gh.pulls = [{'number': 9, 'html_url': 'https://github.com/x/pull/9', 'base': {'ref': 'production'},
+                         'head': {'ref': branch, 'repo': {'full_name': REPOSITORY}},
+                         'user': {'id': maintainer['id'], 'login': maintainer['login']}}]
+        with self.submitted(calls)[1], contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.add_validation(ctx, 'qa', 'none', []), 0)
+        self.assertIn(f'Pull request #9 of {branch} into production is already open', output.getvalue())
+        self.assertEqual((git(self.origin, 'rev-parse', branch), len(calls)), (replaced, 2))
+        ctx.gh.pulls[0]['draft'] = True  # e.g. session.py left it a draft when its verification failed
+        with self.submitted(calls)[1], contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.add_validation(ctx, 'qa', 'none', []), 1)
+        self.assertIn(f'Pull request #9 of {branch} into production is open as a draft', output.getvalue())
+        self.assertIn(f'`gh pr ready 9 --repo {REPOSITORY}`', output.getvalue())
+        self.assertEqual((git(self.origin, 'rev-parse', branch), len(calls)), (replaced, 2))
+
+    def test_only_config_prs_skip_the_advisory_preflight(self):
+        captured, ctx = [], self.ctx()
+        with mock.patch.object(commands, 'run_session_submit', side_effect=lambda ctx, snapshot, args, on_created=None:
+                               captured.append(args) or 5):
+            for task in (None, commands.ORDERS_TASK):
+                self.assertEqual(commands.session_submit(ctx, self.tmp, task, 'title', self.tmp / 'body.md',
+                                                         base='production'), 5)
+        self.assertNotIn('--task', captured[0])
+        self.assertEqual(captured[1][:4], ['--task', 'docs/work/FACTORY-001.md', '--base', 'production'])
+
+    def test_use_branch_switches_a_clean_control_to_listed_branches_only(self):
+        common.CONFIG_FILE.write_text(json.dumps({'control': str(self.control), 'candidate': str(self.candidate),
+                                                  'python': sys.executable, 'bin': str(self.tmp / 'bin')}))
+        self.assertIsNone(checkouts.device()['branch'])
+        ctx = self.ctx()
+        git(self.seed, 'push', '--quiet', str(self.origin), 'testing:feature-x')
+        with self.assertRaisesRegex(Blocked, 'feature-x is not a listed'):
+            branching.use(ctx, 'feature-x')
+        (self.control / 'stray.txt').write_text('x')
+        with self.assertRaisesRegex(Blocked, 'untracked file stray.txt.*only when it is clean'):
+            branching.use(ctx, 'testing')
+        self.assertEqual(checkouts.current_branch(self.control), 'production')
+        (self.control / 'stray.txt').unlink()
+        newer = self.advance_origin()
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.use(ctx, 'testing'), 0)
+        self.assertIn('rules, policy and work orders still come from the config branch production', output.getvalue())
+        self.assertEqual((checkouts.current_branch(self.control), git(self.control, 'rev-parse', 'HEAD')), ('testing', newer))
+        self.assertEqual(checkouts.device()['branch'], 'testing')
+        self.assertEqual(checkouts.update_control(self.control, self.config, branch='testing'), (newer, False))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(branching.use(ctx, 'production'), 0)
+        self.assertEqual((checkouts.current_branch(self.control), checkouts.device()['branch']), ('production', 'production'))
+
+    def test_promote_merges_production_into_the_validation_branch_without_pushing(self):
+        production = self.advance_origin('docs/production-only.md', 'production')
+        testing = git(self.origin, 'rev-parse', 'testing')
+        ctx = self.ctx()
+        (self.candidate / 'scratch.txt').write_text('x')
+        with self.assertRaisesRegex(Blocked, 'uncommitted or untracked files'):
+            branching.promote(ctx, 'testing')
+        (self.candidate / 'scratch.txt').unlink()
+        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/elsewhere')
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.promote(ctx, 'testing'), 0)
+        self.assertEqual(checkouts.current_branch(self.candidate), 'testing')
+        parents = git(self.candidate, 'rev-list', '--parents', '-n', '1', 'HEAD').split()[1:]
+        self.assertEqual(parents, [testing, production])
+        self.assertEqual(git(self.origin, 'rev-parse', 'testing'), testing)  # never pushed
+        self.assertIn('push origin testing', output.getvalue())
+        self.assertIn('again to open or update the promotion PR', output.getvalue())
+        self.assertEqual(ctx.gh.created, [])
+        with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as warned:
+            self.assertEqual(branching.promote(ctx, 'testing'), 0)
+        self.assertIn('not on GitHub yet', warned.getvalue())
+        self.assertIn('already contains production', output.getvalue())
+
+    def test_promote_leaves_conflicts_to_the_maintainer(self):
+        self.advance_origin('docs/guide.md', 'production', 'production\n')
+        self.advance_origin('docs/guide.md', 'testing', 'testing\n')
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.promote(self.ctx(), 'testing'), 1)
+        self.assertIn('docs/guide.md', output.getvalue())
+        self.assertIn('git merge --abort', output.getvalue())
+        self.assertTrue((self.candidate / '.git/MERGE_HEAD').is_file())
+        self.assertIn('<<<<<<<', (self.candidate / 'docs/guide.md').read_text())
+        with self.assertRaisesRegex(Blocked, 'uncommitted or untracked'):
+            branching.promote(self.ctx(), 'testing')
+
+    def test_promote_opens_one_promotion_and_never_merges(self):
+        ctx = self.ctx()
+        with self.assertRaisesRegex(Blocked, 'not a listed validation branch'):
+            branching.promote(ctx, 'production')
+        with self.assertRaisesRegex(Blocked, 'not a listed production branch'):
+            branching.promote(ctx, 'testing', 'testing')
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.promote(ctx, 'testing'), 0)
+        created = ctx.gh.created[0]
+        self.assertEqual((created['head'], created['base'], created['title']), ('testing', 'production', 'Promote testing to production'))
+        self.assertIn('factory/production/production', created['body'])
+        self.assertIn('/review', output.getvalue())
+        own = {'number': 77, 'base': {'ref': 'production'}, 'html_url': 'https://github.com/x/pull/77',
+               'head': {'ref': 'testing', 'repo': {'full_name': REPOSITORY}}}
+        ctx.gh.pulls = [own]
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.promote(ctx, 'testing'), 0)  # e.g. right after the merge-back it asked for
+        tip = git(self.origin, 'rev-parse', 'testing')
+        self.assertIn(f'Promotion #77 (testing → production) is already open and now carries {tip[:12]}', output.getvalue())
+        self.assertIn('/review', output.getvalue())
+        staging = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['smoke']))
+        staging.gh.pulls = [own, {**own, 'number': 78, 'head': {'ref': 'staging', 'repo': {'full_name': REPOSITORY}}}]
+        with self.assertRaisesRegex(Blocked, r'already open: #78 \(staging → production\); merge or close it first'):
+            branching.promote(staging, 'testing')
+        self.assertEqual(len(ctx.gh.created) + len(staging.gh.created), 1)
+        several = self.ctx(branches.with_production(self.config, 'release', 'no'))
+        with self.assertRaisesRegex(Blocked, 'choose one with --to'):
+            branching.promote(several, 'testing')
+
+    def test_sync_adds_missing_orders_byte_exact_and_never_overwrites(self):
+        self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009') + 'tail \t\r\n')
+        self.advance_origin('docs/work/FACTORY-003.md', 'production', order('FACTORY-003', status='draft'))
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
+        ctx = self.ctx(branches.with_validation(self.config, 'staging', 'none', ['smoke']))
+        before = git(self.origin, 'rev-parse', 'testing')
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.sync(ctx), 0)
+        for branch in ('testing', 'staging'):
+            self.assertEqual(git(self.origin, 'rev-parse', f'{branch}:docs/work/FACTORY-009.md'),
+                             git(self.origin, 'rev-parse', 'production:docs/work/FACTORY-009.md'))
+            self.assertEqual(git(self.origin, 'rev-parse', f'{branch}:docs/work/FACTORY-003.md'),
+                             git(self.origin, 'rev-parse', f'{self.tip}:docs/work/FACTORY-003.md'))  # never overwritten
+            self.assertEqual(git(self.origin, 'log', '-1', '--format=%s', branch), 'docs(work): sync FACTORY-009 from production')
+            self.assertIn(f'{branch}: FACTORY-003 differs from production; left unchanged', output.getvalue())
+        self.assertEqual(git(self.origin, 'diff', '--name-status', before, 'testing'), 'A\tdocs/work/FACTORY-009.md')
+        tips = [git(self.origin, 'rev-parse', branch) for branch in ('testing', 'staging')]
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.sync(ctx), 0)
+            self.assertEqual(branching.sync(ctx, '9'), 0)
+        self.assertEqual([git(self.origin, 'rev-parse', branch) for branch in ('testing', 'staging')], tips)
+        self.assertIn('testing: up to date', output.getvalue())
+        with self.assertRaisesRegex(Blocked, 'no work order 42'):
+            branching.sync(ctx, '42')
+
+    def test_branches_write_the_mermaid_document_and_a_self_contained_page(self):
+        ctx = self.ctx(branches.with_validation(self.config, 'staging', 'none', ['smoke']))
+        opened = []
+        with mock.patch.object(branching, 'open_file', side_effect=opened.append), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.diagram(ctx, show=True), 0)
+        text = (self.candidate / 'docs/factory-branches.md').read_text()
+        for expected in ('```mermaid\nflowchart LR\n', 'v0["testing<br/>gate: full<br/>kinds: factory, product<br/>default branch"]',
+                         'v1["staging<br/>gate: none<br/>kinds: smoke"]', 'p0["production<br/>review: maintainer-manual<br/>config branch"]',
+                         'feature -->|PR| v0', 'feature -->|PR, not gated| v1', 'v1 -->|promotion PR| p0',
+                         'p0 -. sync work orders .-> v0', '| `production` | production, config branch |'):
+            self.assertIn(expected, text)
+        self.assertIn('staging', output.getvalue())
+        page = opened[0].read_text()
+        self.assertTrue(opened[0].is_relative_to(common.STATE_DIR))
+        for expected in ('<svg', 'class="sync"', 'flowchart LR', 'review: maintainer-manual'):
+            self.assertIn(expected, page)
+        for remote in ('http', '<script', '<link', '<img', '@import', 'url(http'):
+            self.assertNotIn(remote, page)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            branching.diagram(ctx)
+        self.assertIn('is up to date', output.getvalue())
+        self.assertEqual(len(opened), 1)
+
+    def test_diagram_arrows_never_hit_a_label_or_a_line_of_text(self):
+        long = 'dev-' + 'x' * 36  # the longest name a branch may have
+        config = self.config
+        for name, gate, kinds in (('staging', 'none', ['smoke']), ('qa', 'tests', []), (long, 'none', [])):
+            config = branches.with_validation(config, name, gate, kinds)
+        for name, review in (('release', 'no'), ('hotfix', 'initiated')):
+            config = branches.with_production(config, name, review)
+        model = branches.parse(config)
+        boxes, arrows, labels, (width, height) = branching.layout(model)
+        self.assertEqual((len(boxes), len(arrows)), (8, 4 + 4 * 3 + 4))
+        self.assertEqual([text[0] for *_, text in boxes.values() if text[-1] == 'not gated'], ['staging', long])
+        # 11px edge labels (centred): at most 7px per character; 13px box lines: 8px per character of a bold name,
+        # 6.5px of the others; an em above and a third of it below the baseline
+        areas = [(x - 3.5 * len(text), y - 11, x + 3.5 * len(text), y + 4) for x, y, text in labels]
+        for x, y, wide, tall, text in boxes.values():
+            for i, line in enumerate(text):
+                base = y + branching.PAD + branching.LINE * (i + 1) - 5
+                area = (x + branching.PAD, base - 13, x + branching.PAD + (8 if i == 0 else 6.5) * len(line), base + 4)
+                self.assertTrue(area[2] <= x + wide and y <= area[1] and area[3] <= y + tall, (line, area))  # inside
+                areas.append(area)
+        overlap = lambda a, b: a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+        rects = [(x, y, x + wide, y + tall) for x, y, wide, tall, _ in boxes.values()]
+        for i, one in enumerate(areas[:len(labels)]):
+            self.assertTrue(0 <= one[0] and one[2] <= width and 0 <= one[1] and one[3] <= height, labels[i])
+            for other in areas[i + 1:len(labels)] + rects:
+                self.assertFalse(overlap(one, other), (labels[i], other))
+        inside = lambda point, rect: rect[0] < point[0] < rect[2] and rect[1] < point[1] < rect[3]
+        for kind, sx, sy, ex, ey, bend in arrows:  # each arrow is drawn as this cubic Bezier
+            controls = ((sx, sy), (sx + bend, sy), (ex - bend, ey), (ex, ey))
+            for step in range(65):
+                t = step / 64
+                weights = ((1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t ** 2, t ** 3)
+                point = tuple(sum(w * c[axis] for w, c in zip(weights, controls)) for axis in (0, 1))
+                for area in areas + rects:
+                    self.assertFalse(inside(point, area), (kind, point, area))
+        drawn = {(start, end): arrow for (start, end, _, _), arrow in zip(branching.edges(model), arrows)}
+        for key in [key for key in boxes if key.startswith('v')]:  # promotion and sync arrows of a pair run apart
+            (_, _, leave, _, enter, _), (kind, _, back, _, arrive, _) = drawn[key, 'p0'], drawn['p0', key]
+            self.assertEqual(kind, 'sync')
+            self.assertGreaterEqual(min(abs(leave - arrive), abs(enter - back)), 15)
+        page = branching.page(model)
+        self.assertEqual(page.count('class="muted">not gated</text>'), 2)
+        self.assertIn(f'>{long}</text>', page)
+        self.assertEqual(branching.layout(branches.parse(self.config))[0]['v0'][2], branching.WIDTH)  # short names
 
 def slugs(markdown):
     """GitHub heading anchors: lower case, punctuation removed, spaces to hyphens."""
@@ -559,9 +1147,10 @@ class HelpAndInstallTests(unittest.TestCase):
             tree = Path(temp) / 'repo'
             shutil.copytree(ROOT / 'tools/factory', tree / 'tools/factory', ignore=shutil.ignore_patterns('tests', '__pycache__'))
             (tree / 'factory').mkdir()
-            shutil.copy(ROOT / 'factory/config.json', tree / 'factory/config.json')
+            (tree / 'factory/config.json').write_text(branch_fixture.text(ROOT))
             env = {'PATH': os.environ['PATH'], 'HOME': temp}
-            for argv in (['--help'], ['issue', '--help'], ['fix', '--help'], ['submit', '--help']):
+            for argv in (['--help'], ['issue', '--help'], ['fix', '--help'], ['submit', '--help'], ['promote', '--help'],
+                         ['add', '--help'], ['sync', '--help'], ['use', '--help'], ['branches', '--help']):
                 result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), *argv],
                                         env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -569,7 +1158,12 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertIn('When to use it', result.stdout)
             result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), '--version'],
                                     env=env, capture_output=True, text=True, timeout=30)
-            self.assertEqual((result.returncode, result.stdout), (0, 'factory 0.1.0\n'), result.stderr)
+            self.assertEqual((result.returncode, result.stdout), (0, 'factory 0.2.0\n'), result.stderr)
+            result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), 'add',
+                                     'validation', 'branch', 'staging', '--review', 'no'],
+                                    env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('needs --gate', result.stderr)
             self.assertEqual(list(tree.rglob('*.pyc')), [])
             self.assertFalse((Path(temp) / '.config').exists())
 
@@ -577,6 +1171,220 @@ class HelpAndInstallTests(unittest.TestCase):
         script = ROOT / 'tools/factory/cli/install-factory-cli.sh'
         self.assertTrue(script.stat().st_mode & 0o111)
         self.assertEqual(subprocess.run(['bash', '-n', str(script)], capture_output=True).returncode, 0)
+
+    def test_installer_trusts_the_config_branch_of_the_remote_default_branch(self):
+        text = (ROOT / 'tools/factory/cli/install-factory-cli.sh').read_text()
+        self.assertTrue(text.startswith('#!/usr/bin/env bash\n') and 'set -euo pipefail' in text)
+        for expected in ('ls-remote --symref "$url" HEAD', 'refs/remotes/origin/$1:factory/config.json', 'config_of "$start"',
+                         'fetch_branch "$repo" "$named"', 'fetch_branch "$repo" "$target"',
+                         '"refs/remotes/origin/$config_branch:$self"', 'hash-object --no-filters',
+                         'clone --quiet --branch "$branch"', '--branch) branch="$2"', '--branch "$branch" $keys',
+                         'branch="${branch:-$config_branch}"', 'not listed in factory/config.json'):
+            self.assertIn(expected, text)
+        self.assertNotIn('reset', text)
+        lines = [line for line in text.splitlines() if not line.lstrip().startswith('#')]
+        self.assertTrue(all(' rm ' not in line and 'push' not in line for line in lines))
+        parser = factory.build_parser()
+        args = parser.parse_args(['_install', '--control-dir', '/c', '--candidate-dir', '/d', '--bin-dir', '/b',
+                                  '--branch', 'testing'])
+        self.assertEqual(args.branch, 'testing')
+
+    def test_installer_follows_a_finished_change_of_the_config_branch_once(self):
+        text = (ROOT / 'tools/factory/cli/install-factory-cli.sh').read_text()
+        start = text.index('config_branch="$("$python" -I -c \'\n') + len('config_branch="$("$python" -I -c \'\n')
+        code = text[start:text.index('\n\' "$named_config" "$target_config" "$named" "$branch" "$repository" "$not_yet")"', start)]
+        config = branch_fixture.load(ROOT)
+        listed = branches.with_production(config, 'release', 'no')
+        moved = branches.with_config_branch(listed, 'release')
+
+        def stage(first, second=None, branch=''):
+            return subprocess.run([sys.executable, '-I', '-c', code, json.dumps(first), json.dumps(second) if second else '',
+                                   'production', branch, REPOSITORY, 'finish the runbook'], capture_output=True, text=True, timeout=30)
+        for first, second, branch, expected in ((config, None, '', 'production'), (config, None, 'testing', 'production'),
+                                                (moved, moved, '', 'release'), (moved, moved, 'production', 'release')):
+            result = stage(first, second, branch)
+            self.assertEqual((result.returncode, result.stdout), (0, expected + '\n'), result.stderr)
+        for first, second, branch, problem in (
+                (moved, listed, '', 'names release, whose own configuration does not name itself'),
+                ({**config, 'config_branch': 'testing'}, config, '', 'names testing, which it does not list as a production'),
+                (moved, moved, 'feature-x', 'feature-x is not listed in factory/config.json on release'),
+                (config, None, 'feature-x', 'feature-x is not listed in factory/config.json on production'),
+                ({**config, 'repository': 'someone/else'}, None, '', 'names another repository')):
+            result = stage(first, second, branch)
+            self.assertEqual((result.returncode, result.stdout), (1, ''), problem)
+            self.assertIn(problem, result.stderr)
+
+    def stand_in(self, temp, rulesets=None):
+        """The real installer against a local stand-in for GitHub: a bare origin behind git URL rewriting, and gh
+        answering only the rulesets API (None: gh reads nothing, as when it is logged out). Stops before stage 2."""
+        script = (ROOT / 'tools/factory/cli/install-factory-cli.sh').read_bytes()
+        origin, seed, device, tools = temp / 'origin.git', temp / 'seed', temp / 'device', temp / 'tools'
+        tools.mkdir()
+        responses = temp / 'gh.json'
+        (tools / 'gh').symlink_to(ROOT / 'tools/factory/tests/fixtures/fake_gh.py')
+        # Each ruleset is a branch name, or (name, protected branch, enforcement) for a misleading one.
+        entries = [(r, r, 'active') if isinstance(r, str) else r for r in rulesets or []]
+        listing = [{'id': n, 'name': f'Factory production: {name}', 'enforcement': state} for n, (name, _, state) in enumerate(entries, 1)]
+        canned = {f'repos/{REPOSITORY}/rulesets?per_page=100': listing}
+        for n, (_, target, state) in enumerate(entries, 1):
+            canned[f'repos/{REPOSITORY}/rulesets/{n}'] = {'id': n, 'enforcement': state, 'target': 'branch',
+                                                          'conditions': {'ref_name': {'include': [f'refs/heads/{target}'], 'exclude': []}}}
+        responses.write_text(json.dumps(canned if rulesets is not None else {}))
+        env = {**ENV, 'HOME': str(temp), 'PATH': f"{tools}{os.pathsep}{ENV['PATH']}", 'FAKE_GH_RESPONSES': str(responses),
+               'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': f'url.{origin.as_uri()}.insteadOf', 'GIT_CONFIG_VALUE_0': HTTPS}
+        subprocess.run(['git', 'init', '-q', '--bare', str(origin)], env=ENV, check=True)
+        subprocess.run(['git', 'init', '-q', str(device)], env=ENV, check=True)  # the checkout the installer runs from
+        for path in ('tools/factory/cli/install-factory-cli.sh', 'factory/github-settings.json'):
+            (device / path).parent.mkdir(parents=True, exist_ok=True)
+            (device / path).write_bytes((ROOT / path).read_bytes())
+        (device / 'factory/config.json').write_text(json.dumps(branch_fixture.load(ROOT)))
+
+        def publish(name, files):
+            """Branch `name` on the stand-in with exactly these files (bytes or JSON-able data; None leaves it out)."""
+            shutil.rmtree(seed, ignore_errors=True)
+            subprocess.run(['git', 'init', '-q', '-b', name, str(seed)], env=ENV, check=True)
+            for path, data in files.items():
+                if data is not None:
+                    (seed / path).parent.mkdir(parents=True, exist_ok=True)
+                    (seed / path).write_bytes(data if isinstance(data, bytes) else (json.dumps(data, indent=2) + '\n').encode())
+            git(seed, 'add', '-A')
+            git(seed, 'commit', '-q', '--allow-empty', '-m', name)
+            git(seed, 'push', '-q', '--force', str(origin), f'{name}:{name}')
+
+        def install(default, *options, control=None, answer=None):
+            """Run stage 1; with `answer`, on a pseudo-terminal that types it at the first prompt."""
+            git(origin, 'symbolic-ref', 'HEAD', f'refs/heads/{default}')
+            args = ['bash', str(device / 'tools/factory/cli/install-factory-cli.sh'), '--control-dir', str(control or temp / 'control'),
+                    '--candidate-dir', str(temp / 'candidate'), '--bin-dir', str(temp / 'bin'), *options]
+            if answer is None:
+                return subprocess.run(args, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            import pty
+            import select
+            pid, fd = pty.fork()  # the child gets the terminal as stdin and as /dev/tty
+            if pid == 0:
+                os.execvpe('bash', args, env)
+            output, sent, deadline = b'', False, time.monotonic() + 120
+            while time.monotonic() < deadline:
+                if select.select([fd], [], [], 1)[0]:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except OSError:
+                        break  # the child closed the terminal
+                    if not chunk:
+                        break
+                    output += chunk
+                    if not sent and b'Number (1-' in output:
+                        os.write(fd, answer.encode() + b'\n')
+                        sent = True
+            os.close(fd)
+            code = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+            return subprocess.CompletedProcess(args, code, '', output.decode(errors='replace'))
+
+        def dirty_control():
+            """A control directory that passes nothing: reaching its refusal proves every configuration check passed."""
+            shutil.rmtree(temp / 'dirty', ignore_errors=True)
+            subprocess.run(['git', 'clone', '-q', str(origin), str(temp / 'dirty')], env=ENV, check=True)
+            (temp / 'dirty/own.txt').write_text('own\n')
+            return temp / 'dirty'
+        return script, publish, install, dirty_control
+
+    def test_installer_stage_one_explains_every_configuration_problem(self):
+        config = branch_fixture.load(ROOT)
+        legacy = {k: v for k, v in config.items() if k not in ('config_branch', 'branches')}  # before the branch model
+        legacy['default_branch'] = branches.RESERVED[0]
+        installer = 'tools/factory/cli/install-factory-cli.sh'
+        hint = 'GitHub does not carry the branch model of FACTORY-008 yet'
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            script, publish, install, dirty_control = self.stand_in(temp)  # no production ruleset readable yet
+            cases = [  # (published branches, default branch, expected message)
+                ({'old': {'factory/config.json': legacy}}, 'old',
+                 'factory/config.json on old names no config branch (config_branch): ' + hint),
+                ({'old': {'factory/config.json': None, 'README.md': b'x\n'}}, 'old', 'origin/old has no factory/config.json: ' + hint),
+                ({'old': {'factory/config.json': b'{not json\n'}}, 'old', 'factory/config.json on old is not valid JSON'),
+                ({'testing': {'factory/config.json': config}}, 'testing',
+                 'the config branch that testing names is not on GitHub; ' + hint),
+                ({'production': {'factory/config.json': {k: v for k, v in config.items() if k != 'branches'}}}, 'production',
+                 'factory/config.json on production has no valid branch list (branches): ' + hint),
+                ({'production': {'factory/config.json': config, installer: b'#!/usr/bin/env bash\nexit 1\n'}}, 'production',
+                 'this installer differs from origin/production'),
+            ]
+            for published, default, expected in cases:
+                with self.subTest(expected=expected):
+                    for name, files in published.items():
+                        publish(name, files)
+                    result = install(default)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(expected, result.stderr)
+                    self.assertIn(f'the default branch {default} names the config branch', result.stderr)  # the fallback
+                    self.assertNotIn('Traceback', result.stderr)
+                    self.assertFalse((temp / 'control').exists())  # nothing cloned
+            # A valid stand-in passes every configuration check and reaches the control checkout, which it refuses here.
+            publish('production', {'factory/config.json': config, installer: script})
+            result = install('production', control=dirty_control())
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn(f"control checkout {temp / 'dirty'} is not a clean clone of production", result.stderr)
+
+    def test_installer_starts_from_the_production_branches_github_protects(self):
+        config = branch_fixture.load(ROOT)
+        listed = branches.with_production(config, 'release', 'no')
+        legacy = {k: v for k, v in config.items() if k not in ('config_branch', 'branches')}
+        installer = 'tools/factory/cli/install-factory-cli.sh'
+        for rulesets, options, expected in (
+                # One protected production branch: taken, whatever the default branch carries.
+                (['production'], (), 'not a clean clone of production'),
+                # Several: asked on a terminal; without one, named with --config-branch.
+                (['production', 'release'], (), 'GitHub protects several production branches (production release): '
+                                                 'choose one with --config-branch NAME'),
+                (['production', 'release'], ('--config-branch', 'release'), 'not a clean clone of production'),
+                (['production', 'release'], ('--config-branch', 'testing'),
+                 'testing is not protected as a production branch on GitHub; choose one of: production release'),
+                # Only an active ruleset that protects exactly the branch counts; otherwise the default branch is read.
+                ([('production', 'testing', 'active')], (), 'factory/config.json on old names no config branch'),
+                ([('production', 'production', 'disabled')], (), 'factory/config.json on old names no config branch'),
+                # The configuration may not lead to a config branch that GitHub does not protect.
+                (['release'], (), 'the config branch production is not protected as a production branch on GitHub (release); refusing')):
+            with self.subTest(rulesets=rulesets, options=options), tempfile.TemporaryDirectory() as temp:
+                temp = Path(temp)
+                script, publish, install, dirty_control = self.stand_in(temp, rulesets)
+                publish('old', {'factory/config.json': legacy})  # the default branch before the branch model
+                for name in ('production', 'release'):
+                    publish(name, {'factory/config.json': listed, installer: script})
+                result = install('old', *options, control=dirty_control())
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(expected, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                if expected.startswith('not a clean clone'):
+                    self.assertNotIn('the default branch', result.stderr)  # it never read the default branch
+        # On a terminal, several protected production branches are listed and the maintainer picks one by number.
+        for answer, expected in (('2', 'not a clean clone of production'), ('9', 'no valid choice: 9'), ('x', 'no valid choice: x')):
+            with self.subTest(answer=answer), tempfile.TemporaryDirectory() as temp:
+                temp = Path(temp)
+                script, publish, install, dirty_control = self.stand_in(temp, ['production', 'release'])
+                publish('old', {'factory/config.json': legacy})
+                for name in ('production', 'release'):
+                    publish(name, {'factory/config.json': listed, installer: script})
+                result = install('old', control=dirty_control(), answer=answer)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('GitHub protects several production branches; take the initial configuration from:', result.stderr)
+                self.assertIn('1) production', result.stderr)
+                self.assertIn('2) release', result.stderr)
+                self.assertIn(expected, result.stderr)  # '2': release names production, which names itself
+
+    def test_no_main_literal_remains_in_the_cli(self):
+        for path in sorted((ROOT / 'tools/factory/cli').iterdir()):
+            if path.is_file():
+                self.assertNotRegex(path.read_text(), r'\bmain\b', path.name)
+
+    def test_option_combinations_are_checked_before_any_network(self):
+        parser = factory.build_parser()
+        for argv, problem in ((['add', 'production', 'branch', 'x', '--review', 'no', '--gate', 'full'], 'needs --review'),
+                              (['add', 'validation', 'branch', 'x', '--gate', 'full', '--kinds', 'factory,bogus'], 'distinct'),
+                              (['sync', 'workorders', '7'], 'takes none'), (['sync', 'workorder'], 'names one')):
+            self.assertIn(problem, factory.misuse(parser.parse_args(argv)), argv)
+        args = parser.parse_args(['add', 'validation', 'branch', 'x', '--gate', 'tests', '--kinds', 'smoke, factory'])
+        self.assertIsNone(factory.misuse(args))
+        self.assertEqual(args.kinds, ['smoke', 'factory'])
 
     def test_shim_is_marked_quoted_and_never_replaces_foreign_files(self):
         with tempfile.TemporaryDirectory() as temp:

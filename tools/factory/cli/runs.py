@@ -168,10 +168,10 @@ def cancel(path):
     if data.get('status') not in TERMINAL:
         data = update(path, status='cancelled', reason='cancelled', ended=time.strftime('%Y-%m-%d %H:%M:%S'))
     say(f'Run {path.name}: {data["status"]}. No GitHub state was changed by the cancel.')
-    if data.get('pr'):
+    if data.get('pr'):  # factory.yml always runs from the config branch
         say(f'Pull request #{data["pr"]} stays open. Pause it: gh pr ready {data["pr"]} --undo · close it: '
-            f'gh pr close {data["pr"]} --comment "<reason>" · a claimed review that got stuck: '
-            f'gh workflow run factory.yml --ref main -f pr={data["pr"]} -f retry=true')
+            f'gh pr close {data["pr"]} --comment "<reason>" · a claimed review that got stuck: gh workflow run '
+            f'factory.yml --ref {data.get("config_branch") or "<config branch>"} -f pr={data["pr"]} -f retry=true')
 
 
 def settle_stale(path):

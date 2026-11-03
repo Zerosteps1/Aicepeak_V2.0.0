@@ -8,14 +8,17 @@ on:
   workflow_run:
     workflows: [Factory review feedback ingress]
     types: [completed]
+  # Listed branch names never contain a slash. A push runs the pushed branch's copy of this
+  # workflow; the script acts only for listed branches of the config branch's configuration.
   push:
+    branches: ['*']
 
 permissions: {}
 cache-mode: none
 
 jobs:
   dispatch:
-    if: github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && (github.event_name == 'push' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

@@ -1,12 +1,15 @@
 """Control and candidate checkouts, disposable checkouts built from Git objects, and trusted helper calls.
 
-The control checkout is a clean clone of current main; trusted code runs only from it or from a pinned
-export of one of its commits. session.py never sees the candidate itself: it gets a disposable checkout
-whose files come byte-exact from Git objects (no checkout filters, hooks or attribute conversions).
+The control checkout is a clean clone on the device's control branch (a listed branch, default the config
+branch); trusted CLI code runs only from it or from a pinned export of one of its commits. Rules, branch list
+and policy always come from the tip of the config branch. session.py never sees the candidate itself: it gets a
+disposable checkout whose files come byte-exact from Git objects (no checkout filters, hooks or attribute
+conversions).
 """
 from __future__ import annotations
 
 import ast
+import collections
 import contextlib
 import json
 import os
@@ -18,6 +21,7 @@ import sys
 sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CLI use.
 import tempfile
 
+import branches
 import common
 from common import Blocked, git, is_ancestor, out, require
 import session
@@ -26,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[3]
 LOCAL_CONFIG = re.compile(r'core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)'
                           r'|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge|rebase|vscode-merge-base)'
                           r'|user\.(name|email)|pull\.rebase')
+Policy = collections.namedtuple('Policy', 'tip config model')  # config branch tip, its config.json, branches.Model
 
 
 def repository_config(root=None):
@@ -43,8 +48,18 @@ def device():
     require(isinstance(data, dict) and all(isinstance(data.get(key), str) and data[key].startswith('/')
                                            for key in ('control', 'candidate', 'python', 'bin')),
             f'invalid device configuration {common.CONFIG_FILE}; rerun the installer')
+    branch = data.get('branch')
+    require(branch is None or (isinstance(branch, str) and branches.NAME.fullmatch(branch)),
+            f'invalid control branch in {common.CONFIG_FILE}; rerun the installer')
     return {'control': Path(data['control']), 'candidate': Path(data['candidate']),
-            'python': data['python'], 'bin': Path(data['bin'])}
+            'python': data['python'], 'bin': Path(data['bin']), 'branch': branch}
+
+
+def record_branch(name):
+    """The device's control branch in cli.json; callers hold the control lock."""
+    data = json.loads(common.CONFIG_FILE.read_text())
+    data['branch'] = name
+    common.atomic_json(common.CONFIG_FILE, data)
 
 
 def toplevel(path):
@@ -86,34 +101,107 @@ def verify_candidate(candidate, config):
                 f'candidate has no local {key}; rerun the installer or run `git -C {candidate} config --local {key} ...`')
 
 
-def update_control(control, config, *, fetch=True):
-    """Verify the control checkout and fast-forward it to origin/main. Never deletes or resets files."""
+def config_at(repo, sha):
+    raw = git(repo, 'cat-file', 'blob', f'{sha}:factory/config.json').stdout
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise Blocked(f'factory/config.json at {sha[:12]} is not valid JSON') from None
+
+
+def remote_tip(repo, name):
+    found = git(repo, 'rev-parse', '--verify', '--quiet', f'refs/remotes/origin/{name}^{{commit}}', check=False)
+    return found.stdout.decode().strip() if found.returncode == 0 else None
+
+
+def read_policy(repo, config):
+    """The config branch tip last fetched into repo, its configuration and branch model (None before any fetch).
+    Branch names, gates, routing and review modes come only from here, never from the code's own copy. The code
+    names a config branch; a finished change of it is followed once (branches.follow), so the result may name
+    another one: every later use takes model.config_branch, never config['config_branch']."""
+    name, tips = config['config_branch'], {}
+    if not remote_tip(repo, name):
+        return None
+
+    def read(branch):
+        tips[branch] = remote_tip(repo, branch)
+        data = config_at(repo, tips[branch]) if tips[branch] else None
+        require(not isinstance(data, dict) or data.get('repository') == config['repository'],
+                f'factory/config.json on {branch} names another repository')
+        return data
+    followed, data = branches.follow(read, name)
+    return Policy(tips[followed], data, branches.parse(data))
+
+
+def fetch_policy(repo, config, *more):
+    """Fetch the config branch the code names (and more); when its configuration names another config branch, that
+    one too, so read_policy can follow a finished change. Returns the fetched tips."""
+    name = config['config_branch']
+    tips = fetch(repo, config, name, *more)
+    require(name in tips, f'the config branch {name} is not on GitHub; factory reads every rule from it and stops without it')
+    data = config_at(repo, tips[name])
+    target = data.get('config_branch') if isinstance(data, dict) else None
+    if isinstance(target, str) and target != name and branches.NAME.fullmatch(target) and target not in tips:
+        tips.update(fetch(repo, config, target))
+    return tips
+
+
+def unlisted(branch, name):
+    return (f'the control checkout follows {branch}, which factory/config.json on {name} does not list (any more); '
+            f'switch back with `factory use branch {name}`')
+
+
+def update_control(control, config, *, branch=None, online=True, listed=True):
+    """Verify the control checkout and fast-forward it to origin/<branch>, the device's control branch (default: the
+    config branch the code names). Also fetches the config branch, whose tip is the policy, following a finished
+    change of it. With listed=False (`factory use branch`) a control branch that is unlisted or missing on GitHub is
+    only verified, so the device can always switch away; so is a clean control checkout on another listed branch, as
+    an interrupted `factory use branch` leaves it. Never deletes or resets files."""
     control = Path(control)
+    branch = branch or config['config_branch']
     try:
         sha = session.identity(control, config)
-        require(out(control, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False) == 'main',
-                'it must stay on main')
         session.clean_tree(control, sha)
     except Blocked as exc:
         raise Blocked(f'control checkout {control}: {exc}. Never edit it; remove or revert the named '
                       'file yourself (factory never deletes files there), then retry') from None
-    if not fetch:
+    current = out(control, 'symbolic-ref', '--quiet', '--short', 'HEAD', check=False)
+    where = f'control checkout {control} is on {current or "a detached HEAD"}'
+    require(current == branch or not listed, f'{where}, but it must stay on {branch}, its recorded control branch: '
+            '`factory use branch <listed branch>` switches it')
+    if current != branch:  # e.g. an interrupted `factory use branch`: switched, not yet recorded; `use` finishes it
+        tips = fetch_policy(control, config, branch, *([current] if current else [])) if online else {}
+        policy = read_policy(control, config)
+        require(policy and current in policy.model.names, f'{where}, neither its recorded control branch {branch} nor '
+                f'a listed branch: switch it back yourself (`git -C {control} switch {branch}`), then retry')
+        # Its code runs `use` next, so it must be a commit GitHub has on that branch, never an own commit.
+        require(current not in tips or is_ancestor(control, sha, tips[current]),
+                f'{where} with own commits; it must never carry any. Recreate it with the installer')
         return sha, False
-    git(control, 'fetch', '--quiet', '--no-tags', github_url(config), '+refs/heads/main:refs/remotes/origin/main',
-        network=True)
-    main = out(control, 'rev-parse', '--verify', 'refs/remotes/origin/main^{commit}')
-    if main == sha:
+    if not online:
         return sha, False
-    require(is_ancestor(control, sha, main), f'control checkout {control} cannot fast-forward to origin/main; '
+    tips = fetch_policy(control, config, branch)
+    model = read_policy(control, config).model
+    name = model.config_branch
+    if branch not in model.names:
+        require(not listed, unlisted(branch, name))
+        return sha, False
+    if branch not in tips and not listed:
+        return sha, False
+    require(branch in tips, f'{branch} is not on GitHub; switch with `factory use branch {name}`')
+    remote = tips[branch]
+    if remote == sha:
+        return sha, False
+    require(is_ancestor(control, sha, remote), f'control checkout {control} cannot fast-forward to origin/{branch}; '
             'it must never carry own commits. Recreate it with the installer')
-    git(control, 'merge', '--ff-only', '--quiet', main)
-    session.clean_tree(control, main)
-    return main, True
+    git(control, 'merge', '--ff-only', '--quiet', remote)
+    session.clean_tree(control, remote)
+    return remote, True
 
 
 def fetch(repo, config, *branches):
     """Fetch named branches from GitHub over https into refs/remotes/origin/*; missing branches are skipped."""
-    url = github_url(config)
+    url, branches = github_url(config), list(dict.fromkeys(branches))
     present = set()
     listing = out(repo, 'ls-remote', '--heads', url, *[f'refs/heads/{name}' for name in branches], network=True)
     for line in listing.splitlines():
@@ -196,7 +284,7 @@ def scratch(prefix):
 
 @contextlib.contextmanager
 def policy_checkout(control, sha, config):
-    """Trusted tools at exactly the verified main commit, independent of later control updates."""
+    """Trusted tools and rules at exactly a verified config branch tip, independent of later control updates."""
     with scratch('policy-') as path:
         yield materialize(path / 'checkout', sha, objects=[objects_dir(control)], origin=github_url(config))
 

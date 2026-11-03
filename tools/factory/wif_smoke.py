@@ -1,4 +1,4 @@
-"""Main-only WIF diagnostic. No PR execution, App keys, review gate or author runner."""
+"""Config-branch-only WIF diagnostic. No PR execution, App keys, review gate or author runner."""
 import base64
 import json
 import os
@@ -8,13 +8,21 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import branches
+
 AUDIENCE = 'https://api.anthropic.com'
 REPOSITORY = 'Zerosteps1/Aicepeak_V2.0.0'
-WORKFLOW_REF = REPOSITORY + '/.github/workflows/factory.yml@refs/heads/main'
 
 
 class SmokeFailure(Exception):
     """Only fixed, secret-free diagnostic messages may cross this boundary."""
+
+
+def config_ref(config):
+    """The only ref the federation rule admits: the config branch of a valid branch model."""
+    if branches.problems(config):
+        raise SmokeFailure('configuration: invalid branch model; no config branch')
+    return 'refs/heads/' + config['config_branch']
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -46,14 +54,16 @@ def request_json(stage, url, headers, data=None):
 
 
 def smoke(config, env):
+    ref = config_ref(config)
+    workflow_ref = REPOSITORY + '/.github/workflows/factory.yml@' + ref
     expected_env = {
         'GITHUB_ACTIONS': 'true', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
-        'GITHUB_REPOSITORY': REPOSITORY, 'GITHUB_REF': 'refs/heads/main',
-        'GITHUB_WORKFLOW_REF': WORKFLOW_REF,
+        'GITHUB_REPOSITORY': REPOSITORY, 'GITHUB_REF': ref,
+        'GITHUB_WORKFLOW_REF': workflow_ref,
     }
     if any(env.get(key) != value for key, value in expected_env.items()):
-        raise SmokeFailure('context: requires factory.yml dispatched on the target repository main')
-    if (config.get('repository') != REPOSITORY or config.get('default_branch') != 'main'
+        raise SmokeFailure('context: requires factory.yml dispatched on the config branch of the target repository')
+    if (config.get('repository') != REPOSITORY
             or config.get('environment') != 'factory-control'
             or config.get('workflow') != '.github/workflows/factory.yml'):
         raise SmokeFailure('configuration: trusted repository/workflow/environment mismatch')
@@ -96,10 +106,10 @@ def smoke(config, env):
     # Diagnostic comparison only. Anthropic verifies the JWT signature and rule.
     expected_claims = {
         'iss': 'https://token.actions.githubusercontent.com', 'aud': AUDIENCE,
-        'repository': REPOSITORY, 'ref': 'refs/heads/main',
+        'repository': REPOSITORY, 'ref': ref,
         'repository_id': env.get('GITHUB_REPOSITORY_ID'),
         'repository_owner_id': env.get('GITHUB_REPOSITORY_OWNER_ID'),
-        'workflow_ref': WORKFLOW_REF, 'environment': 'factory-control',
+        'workflow_ref': workflow_ref, 'environment': 'factory-control',
         'event_name': 'workflow_dispatch',
     }
     for key, value in expected_claims.items():

@@ -1,6 +1,7 @@
 """Work orders for the factory CLI: IDs, references, template filling and validation.
 
 The gate's own block rules (engine.task_spec) decide validity; only the status may differ for drafts.
+Work orders are created on the config branch and read from its tip.
 """
 from __future__ import annotations
 
@@ -22,8 +23,8 @@ TASK_BLOCK = re.compile(r'```factory-task\s*\n(.*?)\n```', re.S)
 HANDOFF_BLOCK = re.compile(r'```factory-handoff\s*\n(.*?)\n```', re.S)
 PLACEHOLDERS = ('REPLACE-WITH-EXACT-PATHS', 'TASK-ID', 'Short outcome-oriented title',
                 'When ..., the ... shall ....', 'If ..., then the ... shall ....')
-DRAFT_STATUS = ('Status: draft until its `factory-task` block says `approved` and the file is merged to `main` '
-                '(`factory submit workorders`).')
+DRAFT_STATUS = ('Status: draft until its `factory-task` block says `approved` and the file is merged into the config '
+                'branch (`factory submit workorders`).')
 
 
 def path_of(name):
@@ -55,7 +56,7 @@ def text_on(repo, sha, name):
 
 
 def numbers_ever_added(repo, sha):
-    """Every number ever added on main, so deleted work orders never give their number away."""
+    """Every number ever added on the config branch, so deleted work orders never give their number away."""
     listing = out(repo, 'log', '--no-renames', '--diff-filter=A', '--name-only', '--format=', sha, '--', WORK)
     return {number(name_of(path)) for path in listing.splitlines() if is_order(path)} - {None}
 
@@ -98,7 +99,7 @@ def resolve(reference, names):
         matches = [name for name in names if number(name) == int(reference)]
     else:
         matches = [name for name in names if name.upper() == reference.upper()]
-    require(matches, f'no work order {reference} on main (docs/work/)')
+    require(matches, f'no work order {reference} on the config branch (docs/work/)')
     require(len(matches) == 1, f'work order {reference} is ambiguous: {", ".join(matches)}; use the full name')
     return matches[0]
 
@@ -182,7 +183,7 @@ def problems(path, text, *, new, used_numbers):
         except ValueError:
             found.append('the factory-handoff example is not valid JSON')
     if new and match and int(match[2]) in used_numbers:
-        found.append(f'number {match[2]} is already used on main or in an open pull request; '
+        found.append(f'number {match[2]} is already used on the config branch or in an open pull request; '
                      'rename it with `factory issue` numbering')
     return [f'{path}: {item}' for item in found]
 

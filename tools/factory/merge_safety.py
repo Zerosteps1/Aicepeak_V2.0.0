@@ -1,18 +1,21 @@
 """Merge safety for parallel pull requests: a read-only collision sweep and a verified human merge.
 
-Like session.py, both run from the clean control checkout on a maintainer host and never execute
-candidate code; `merge` acts with the maintainer's own gh login. Models never merge.
+Like session.py, both run from the clean config-branch control checkout on a maintainer host and never
+execute candidate code; `merge` acts with the maintainer's own gh login and only into gated validation
+branches. Models never merge; maintainers merge production PRs on GitHub.
 """
 import json
 import re
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
+import branches
+import bypass
 import engine
 import session  # attributes are read at call time, so either module may be imported first
 from contracts import Blocked, handoff, require
-
 
 
 def object_store(root):
@@ -49,16 +52,17 @@ def conflicts(trial, ours, theirs):
     return (names or None) if result.returncode else []
 
 
-def collisions(gh, candidate, task=None):
-    """Read-only sweep of the committed candidate against current main and the other open PRs."""
+def collisions(gh, candidate, task=None, base=None):
+    """Read-only sweep of the committed candidate against the current target tip and the other open PRs into it."""
     config, policy, _ = session.control(gh)
+    _, base = session.target(config, policy, base, task, fallback=config['default_branch'])
     candidate = Path(candidate).resolve()
     require(candidate != session.ROOT.resolve(), 'use a separate candidate checkout')
     sha = session.identity(candidate, config)
-    branch = session.git(candidate, 'symbolic-ref', '--quiet', '--short', 'HEAD').decode().strip()
-    require(branch and branch != config['default_branch'], 'candidate must be on a feature branch')
+    branch = session.feature_branch(candidate, config)
     if task is not None:
         session.task_order(config, policy, task)
+    tip = session.tip(gh, base)
     limitations, others = [], []
     with tempfile.TemporaryDirectory(prefix='factory-collisions-') as directory:
         trial = Path(directory) / 'trial.git'
@@ -66,19 +70,19 @@ def collisions(gh, candidate, task=None):
         # Read candidate and control objects in place; every write lands in this scratch repository.
         (trial / 'objects/info/alternates').write_text(object_store(session.ROOT) + '\n' + object_store(candidate) + '\n')
         # Local refs let the fetch send what it already has instead of downloading everything.
-        for name, value in (('main', policy), ('candidate', sha)):
+        for name, value in (('target', tip), ('candidate', sha)):
             require(trial_git(trial, 'update-ref', 'refs/factory/' + name, value).returncode == 0,
-                    'candidate or current main objects missing; fetch them fully')
-        found = trial_git(trial, 'merge-base', policy, sha)
-        require(found.returncode == 0, 'candidate shares no complete history with current main; fetch it fully')
-        base = found.stdout.decode().strip()
-        main = {'sha': policy, 'contains': base == policy, 'conflicts': [] if base == policy else conflicts(trial, sha, policy)}
-        if main['conflicts'] is None:
-            limitations.append('Trial merge with current main failed; its conflicts are unknown.')
-        listed = trial_git(trial, 'diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', '-z', base, sha)
+                    f'candidate or current {base} objects missing; fetch them fully')
+        found = trial_git(trial, 'merge-base', tip, sha)
+        require(found.returncode == 0, f'candidate shares no complete history with current {base}; fetch it fully')
+        common = found.stdout.decode().strip()
+        target = {'ref': base, 'sha': tip, 'contains': common == tip, 'conflicts': [] if common == tip else conflicts(trial, sha, tip)}
+        if target['conflicts'] is None:
+            limitations.append(f'Trial merge with current {base} failed; its conflicts are unknown.')
+        listed = trial_git(trial, 'diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', '-z', common, sha)
         require(listed.returncode == 0, 'candidate objects missing; fetch them fully')
         changed = {name.decode('utf-8') for name in listed.stdout.split(b'\0') if name}
-        for pr in gh.pages(f'/repos/{session.REPOSITORY}/pulls?state=open&base={config["default_branch"]}'):
+        for pr in gh.pages(f'/repos/{session.REPOSITORY}/pulls?state=open&base={quote(base, safe="")}'):
             if pr['head']['ref'] == branch and (pr['head'].get('repo') or {}).get('full_name') == session.REPOSITORY:
                 continue  # the candidate's own PR
             # Disjoint file lists do not prove a clean merge (directory renames), so every open PR,
@@ -110,7 +114,7 @@ def collisions(gh, candidate, task=None):
                 other['conflicts'] = conflicts(trial, sha, other['head_sha'])
                 if other['conflicts'] is None:
                     limitations.append(f"Trial merge with #{other['pr']} failed; its conflicts are unknown.")
-    return {'candidate': {'branch': branch, 'head_sha': sha, 'task': task}, 'main': main,
+    return {'candidate': {'branch': branch, 'head_sha': sha, 'task': task}, 'base': target,
             'open_prs': others, 'limitations': limitations}
 
 
@@ -118,10 +122,10 @@ def collision_summary(report):
     """Bounded Markdown for the PR body; PR numbers create cross-references, not comments."""
     def names(items):
         return ', '.join(f'`{n}`' for n in items[:10]) + (f' and {len(items) - 10} more' if len(items) > 10 else '')
-    main = report['main']
-    state = ('contains current main' if main['contains'] else 'does NOT contain current main; '
-             + ('conflicts in ' + names(main['conflicts']) if main['conflicts'] else 'merge it in'))
-    lines = [f"Collision check at `{report['candidate']['head_sha'][:12]}` against main `{main['sha'][:12]}`: {state}."]
+    target = report['base']
+    state = (f"contains current {target['ref']}" if target['contains'] else f"does NOT contain current {target['ref']}; "
+             + ('conflicts in ' + names(target['conflicts']) if target['conflicts'] else 'merge it in'))
+    lines = [f"Collision check at `{report['candidate']['head_sha'][:12]}` against {target['ref']} `{target['sha'][:12]}`: {state}."]
     quiet = [o for o in report['open_prs'] if o['conflicts'] == [] and o['overlap'] == [] and not o['same_task']]
     for other in [o for o in report['open_prs'] if o not in quiet][:20]:
         merge = ('trial merge not run' if other['conflicts'] is None else 'trial merge clean' if not other['conflicts']
@@ -132,7 +136,7 @@ def collision_summary(report):
         lines.append(f'{len(quiet)} further open PR(s) share no file and merge cleanly.')
     if len(quiet) < len(report['open_prs']):
         lines.append('Merge one PR at a time. The PR merged second updates its branch and resolves its own conflicts '
-                     'with main; nothing is resolved against unmerged PRs.')
+                     f"with {target['ref']}; nothing is resolved against unmerged PRs.")
     else:
         lines.append('No other open PR touches the same files or work order.')
     lines += ['Limitation: ' + item for item in report['limitations'][:10]]
@@ -167,63 +171,128 @@ def gh_merge(pr, head):
     return 'refused' if REFUSED.search(result.stderr or '') else 'unknown'
 
 
-def verify(gh, pr, config, policy):
-    """The PR's state and every reason not to merge it onto `policy` now."""
-    snapshot, _, _ = session.pr_state(gh, pr, config, policy)
+def bypass_record(check):
+    """The receipt of a `/bypass` check, or None for a normally published check."""
+    try:
+        data = json.loads((check.get('output') or {}).get('text') or '')
+    except (TypeError, ValueError):
+        return None
+    return data['bypass'] if isinstance(data, dict) and 'bypass' in data else None
+
+
+def authentic_bypass(gh, check, record, config, snapshot):
+    """None when a bypass names a configured maintainer (id and login), its comment and a bounded reason, and that
+    comment is still the maintainer's unedited `/bypass` on this PR; otherwise why the bypass does not count."""
+    maintainers = {(m['id'], m['login']) for m in config['maintainers']}
+    reason = record.get('reason') if isinstance(record, dict) else None
+    if not (isinstance(record, dict) and (record.get('id'), record.get('login')) in maintainers
+            and type(record.get('comment_id')) is int and record['comment_id'] > 0
+            and isinstance(reason, str) and 0 < len(reason.strip()) and len(reason) <= 500
+            and (check.get('output') or {}).get('title') == f"Bypassed by {record['login']}"):
+        return 'bypass without an authentic maintainer receipt'
+    # The receipt only names the comment: anyone with write access may edit it later, and a deletion withdraws it.
+    try:
+        current = bypass.read_bypass(gh, config, snapshot, record['comment_id'])[0]
+    except Blocked:
+        current = None
+    if current is None or (current['id'], current['login']) != (record['id'], record['login']):
+        return 'the `/bypass` comment could not be re-read, or was edited or deleted; retry, or post a new `/bypass`'
+    return None
+
+
+def check_problem(gh, runs, name, snapshot, config):
+    """None when the latest publisher-App check `name` passed for exactly this PR, head, target branch and
+    config tip, normally or by an authentic maintainer bypass; otherwise the reason it does not count."""
+    latest = max((c for c in runs if c.get('name') == name and (c.get('app') or {}).get('id') == config['publisher_app_id']),
+                 key=lambda c: c['id'], default=None)
+    if latest is None:
+        return name + ': missing from the publisher App'
+    if (latest.get('status'), latest.get('conclusion')) != ('completed', 'success'):
+        return f"{name}: {latest.get('conclusion') or latest.get('status')}"
+    bound = (latest.get('external_id') or '').split(':')
+    if len(bound) != 7 or not all(re.fullmatch('[0-9]+', field) for field in bound[5:]):
+        return name + ': legacy or malformed binding without a target branch; wait for a fresh run'
+    expected = [snapshot['repository'], str(snapshot['pr']), snapshot['head_sha'], snapshot['policy_sha'], snapshot['base_ref']]
+    if latest.get('head_sha') == snapshot['head_sha'] and bound[:5] != expected and bound[:3] + bound[4:5] == expected[:3] + expected[4:]:
+        # The dispatcher re-runs every open PR when the config tip moves.
+        return (f"{name}: the config branch moved after this run; a fresh run is dispatched automatically (if none arrives: "
+                f"`gh workflow run factory.yml --repo {snapshot['repository']} --ref {config['config_branch']} "
+                f"-f pr={snapshot['pr']} -f retry=true`)")
+    if latest.get('head_sha') != snapshot['head_sha'] or bound[:5] != expected:
+        return name + ': bound to another head, target branch or config revision; wait for the fresh run'
+    record = bypass_record(latest)
+    if record is not None:
+        problem = authentic_bypass(gh, latest, record, config, snapshot)
+        return problem and f'{name}: {problem}'
+    if name == branches.SENIOR:
+        reviewed = engine.receipt(latest).get('snapshot') or {}
+        if (reviewed.get('handoff'), reviewed.get('feedback_digest')) != (snapshot['handoff'], snapshot['feedback_digest']):
+            return name + ': handoff or human feedback changed after the review; wait for the fresh run'
+    return None
+
+
+def behind(base):
+    return (f'PR head does not contain the current {base} tip, so a merge would combine code that was never tested '
+            f'together. Use "Update branch" (or merge {base} into the branch); the new head gets a fresh run.')
+
+
+def verify(gh, pr, config, policy, base):
+    """The PR's state and every reason not to merge it onto the current tip of `base` now."""
+    snapshot, _, _ = session.pr_state(gh, pr, config, policy, base)
     head = snapshot['head_sha']
     problems = ['PR is a draft'] if snapshot['draft'] else []
-    if not engine.contains_base(gh, session.REPOSITORY, policy, head):
-        problems.append(engine.BEHIND_MAIN)
+    if not engine.contains_base(gh, session.REPOSITORY, snapshot['base_sha'], head):
+        problems.append(behind(base))
     runs = gh.pages(f'/repos/{session.REPOSITORY}/commits/{head}/check-runs?filter=all', 'check_runs')
-    for name in config['required_checks']:
-        latest = max((c for c in runs if c.get('name') == name and (c.get('app') or {}).get('id') == config['publisher_app_id']),
-                     key=lambda c: c['id'], default=None)
-        if latest is None:
-            problems.append(name + ': missing from the publisher App')
-        elif (latest.get('status'), latest.get('conclusion')) != ('completed', 'success'):
-            problems.append(f"{name}: {latest.get('conclusion') or latest.get('status')}")
-        elif (latest.get('external_id') or '').split(':')[:4] != [session.REPOSITORY, str(pr), head, policy]:
-            problems.append(name + ': bound to another head or an older main; wait for the fresh run')
-        elif name == 'factory/senior-review':
-            bound = engine.receipt(latest).get('snapshot') or {}
-            if (bound.get('handoff'), bound.get('feedback_digest')) != (snapshot['handoff'], snapshot['feedback_digest']):
-                problems.append(name + ': handoff or human feedback changed after the review; wait for the fresh run')
+    problems += [p for p in (check_problem(gh, runs, name, snapshot, config)
+                             for name in branches.parse(config).required_checks(base)) if p]
     unresolved = unresolved_threads(gh, pr)
     if unresolved:
         problems.append(f'{unresolved} unresolved review thread(s)')
     return snapshot, problems
 
 
-MERGE_LOCK = 'tags/factory-merge-lock'
+def lock_ref(base):
+    return f'tags/factory-merge-lock--{base}'
 
 
-def merge(gh, pr, dry_run=False):
-    """Human merge of exactly the verified head onto exactly the verified main; never run by a model."""
+def merge(gh, pr, dry_run=False, base=None):
+    """Human merge of exactly the verified head onto exactly the verified tip of a gated validation branch;
+    never run by a model."""
     config, policy, user = session.control(gh)
-    snapshot, problems = verify(gh, pr, config, policy)
-    head = snapshot['head_sha']
-    verdict = {'pr': pr, 'head_sha': head, 'main_sha': policy, 'mergeable': not problems, 'problems': problems}
+    model = branches.parse(config)
+    ref = gh.request('GET', f'/repos/{session.REPOSITORY}/pulls/{pr}')['base']['ref']
+    require(base in (None, ref), f'PR #{pr} targets {ref}, not {base}')
+    require(model.level(ref) != 'production', f'PR #{pr} targets the production branch {ref}: merge production PRs on GitHub')
+    require(model.gated(ref), f'PR #{pr} targets {ref}, which is not a gated validation branch; session.py merge does not merge it')
+    base = ref
+    snapshot, problems = verify(gh, pr, config, policy, base)
+    head, base_sha = snapshot['head_sha'], snapshot['base_sha']
+    verdict = {'pr': pr, 'head_sha': head, 'base_ref': base, 'base_sha': base_sha, 'policy_sha': policy,
+               'mergeable': not problems, 'problems': problems}
     if dry_run:
         return verdict
     require(not problems, 'not merged: ' + '; '.join(problems))
-    # GitHub pins only the head of a merge, never its base: merges through this helper are
+    # GitHub pins only the head of a merge, never its base: merges into one branch through this helper are
     # serialized by a ref that GitHub creates atomically, and fully re-validated while it is held.
-    release = f'gh api -X DELETE repos/{session.REPOSITORY}/git/refs/{MERGE_LOCK}'
+    lock = lock_ref(base)
+    release = f'gh api -X DELETE repos/{session.REPOSITORY}/git/refs/{lock}'
     try:
-        gh.request('POST', f'/repos/{session.REPOSITORY}/git/refs', {'ref': 'refs/' + MERGE_LOCK, 'sha': policy})
+        gh.request('POST', f'/repos/{session.REPOSITORY}/git/refs', {'ref': 'refs/' + lock, 'sha': base_sha})
     except Blocked:
-        raise Blocked(f'merge lock refs/{MERGE_LOCK} is held or could not be created; nothing was merged. '
+        raise Blocked(f'merge lock refs/{lock} is held or could not be created; nothing was merged. '
                       f'If no merge is running, remove it with: {release}') from None
-    unknown = (f'merge outcome of PR #{pr} unknown; the lock stays so nobody merges against an unverified main. '
-               f'Check PR #{pr}: once it is merged (verify main) or certainly not merged, remove the lock with: {release}')
+    unknown = (f'merge outcome of PR #{pr} unknown; the lock stays so nobody merges against an unverified {base}. '
+               f'Check PR #{pr}: once it is merged (verify {base}) or certainly not merged, remove the lock with: {release}')
     keep, released = False, False
     try:
-        current = gh.request('GET', f'/repos/{session.REPOSITORY}/git/ref/heads/main')['object']['sha']
-        again, still = verify(gh, pr, config, policy)
-        require(current == policy and again['head_sha'] == head and not still,
-                'main, the PR, its checks or threads changed before the merge; nothing was merged' + ''.join('; ' + p for p in still))
+        require(session.tip(gh, base) == base_sha and session.tip(gh, model.config_branch) == policy,
+                f'{base} or the config branch moved before the merge; nothing was merged')
+        again, still = verify(gh, pr, config, policy, base)
+        require(again['head_sha'] == head and not still,
+                'the PR, its checks or threads changed before the merge; nothing was merged' + ''.join('; ' + p for p in still))
         # From the merge request on, only GitHub's confirmation or refusal may release the lock:
-        # without one (no answer, failed read-back, abort) GitHub may still merge against this main.
+        # without one (no answer, failed read-back, abort) GitHub may still merge against this tip.
         keep = True
         try:
             outcome = gh_merge(pr, head)
@@ -242,16 +311,17 @@ def merge(gh, pr, dry_run=False):
     finally:
         if not keep:
             try:
-                gh.request('DELETE', f'/repos/{session.REPOSITORY}/git/refs/{MERGE_LOCK}')
+                gh.request('DELETE', f'/repos/{session.REPOSITORY}/git/refs/{lock}')
                 released = True
             except Blocked:
                 pass
     # With the lock held, only a merge outside this helper (the manual bypass) can change the base.
-    exact = parents == [policy, head]
-    note = ('both required checks were verified for exactly this head and main' if exact else
-            f"WARNING: main was `{(parents or ['unknown'])[0]}` at merge time (a merge outside session.py merge); this combination was never tested")
+    exact = parents == [base_sha, head]
+    note = ('every required check was verified for exactly this head, target tip and config revision' if exact else
+            f"WARNING: {base} was `{(parents or ['unknown'])[0]}` at merge time (a merge outside session.py merge); "
+            'this combination was never tested')
     gh.request('POST', f'/repos/{session.REPOSITORY}/issues/{pr}/comments', {'body':
-               f"Merged by {user['login']} with `session.py merge`: head `{head}` onto main `{policy}` as `{commit}`; {note}."})
-    require(exact, f'merged as {commit}, but main moved outside session.py merge; verify main before the next merge')
+               f"Merged by {user['login']} with `session.py merge`: head `{head}` onto {base} `{base_sha}` as `{commit}`; {note}."})
+    require(exact, f'merged as {commit}, but {base} moved outside session.py merge; verify {base} before the next merge')
     require(released, f'merged as {commit}, but the merge lock was not released; remove it with: {release}')
     return {**verdict, 'merged': True, 'merge_commit_sha': commit}

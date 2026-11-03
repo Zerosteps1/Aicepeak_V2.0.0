@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Inspect/reconcile this repository's factory controls through gh, without secrets.
 
+Rulesets follow the branch model of factory/config.json: one per validation branch (checks of its
+gate, maintainers may push), one per production branch (PR only, no bypass actors) and one lifecycle
+ruleset for listed and reserved names. Both factory environments admit only the config branch.
 No remote mutation occurs unless the explicit `apply` subcommand is invoked.
 App proof uses short-lived App JWTs supplied in environment variables, never files.
 """
@@ -19,12 +22,12 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote
 
+import branches
+
 REPOSITORY = "Zerosteps1/Aicepeak_V2.0.0"
 ROOT = Path(__file__).resolve().parents[2]
-CHECKS = ["factory/deterministic", "factory/senior-review"]
-# During the shadow phase the senior review is published but advisory (ADR-0005).
-SHADOW_CHECKS = CHECKS[:1]
 API_VERSION = "2026-03-10"
+WORKFLOWS = (".github/workflows/factory-dispatch.yml", ".github/workflows/factory-promotion.yml")
 
 
 class Blocked(RuntimeError):
@@ -115,9 +118,6 @@ def config_blockers(config):
     errors = []
     if config.get("repository") != REPOSITORY:
         errors.append("repository must be the exact authorized target " + REPOSITORY)
-    branch = config.get("default_branch")
-    if not isinstance(branch, str) or not branch or re.search(r"[\s~^:?*\[\\]", branch) or ".." in branch or "@{" in branch or branch.startswith(('-', '/')) or branch.endswith(('/', '.', '.lock')):
-        errors.append("default_branch is missing or invalid; verify it from repository metadata")
     maintainers = config.get("maintainers")
     if not isinstance(maintainers, list) or not maintainers:
         errors.append("maintainers must contain verified human login/id objects")
@@ -136,12 +136,11 @@ def config_blockers(config):
             errors.append(f"{key} is missing or invalid")
     if positive_id(config.get("publisher_app_id")) and config.get("publisher_app_id") == config.get("writer_app_id"):
         errors.append("publisher and writer must be different GitHub Apps")
-    if config.get("required_checks") not in (SHADOW_CHECKS, CHECKS):
-        errors.append("required_checks must be the deterministic check (shadow phase) or both factory App checks")
+    if all(isinstance(maintainer, dict) for maintainer in maintainers):
+        # Names, gates, review modes, routing, default and config branch; required checks follow from them.
+        errors += branches.problems(config)
     if type(config.get("require_second_human_review", True)) is not bool:
         errors.append("require_second_human_review must be a boolean")
-    if type(config.get("maintainer_check_bypass", False)) is not bool:
-        errors.append("maintainer_check_bypass must be a boolean")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", str(config.get("environment", ""))):
         errors.append("environment must be an explicit simple name")
     if config.get("workflow") != ".github/workflows/factory.yml":
@@ -149,43 +148,110 @@ def config_blockers(config):
     return errors
 
 
+def spec_blockers(config, spec):
+    errors = []
+    names = spec.get("ruleset_names") or {}
+    if spec.get("schema_version") != 2 or spec.get("repository") != REPOSITORY:
+        errors.append("unsupported or mismatched github-settings.json")
+    if (not isinstance(names, dict) or set(names) != {"validation", "production", "lifecycle"}
+            or not all(isinstance(names[k], str) and names[k].count("{branch}") == 1 and names[k].index("{branch}") > 0
+                       for k in ("validation", "production")) or not isinstance(names.get("lifecycle"), str)):
+        errors.append("github-settings.json ruleset_names need validation and production templates with {branch} and a lifecycle name")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", str(spec.get("promotion_environment", ""))) or spec.get("promotion_environment") == config.get("environment"):
+        errors.append("promotion_environment must be a simple name distinct from the control environment")
+    if spec.get("promotion_environment_secrets") != ["FACTORY_PUBLISHER_APP_PRIVATE_KEY"]:
+        errors.append("the promotion environment holds exactly the publisher key")
+    if not set(spec.get("production_merge_methods") or ["merge"]) <= {"squash", "rebase"}:
+        errors.append("production branches allow only squash or rebase merges")
+    return errors
+
+
+def ruleset_name(spec, level, branch=None):
+    return spec["ruleset_names"]["lifecycle"] if level == "lifecycle" else spec["ruleset_names"][level].format(branch=branch)
+
+
+def managed(spec, name):
+    """Rulesets this tool owns: the branch-model names and the retired single-branch names."""
+    names = spec["ruleset_names"]
+    return (name == names["lifecycle"] or name in spec.get("retired_ruleset_names", [])
+            or any(name.startswith(names[level].split("{branch}")[0]) for level in ("validation", "production")))
+
+
+def environments(config, spec):
+    """Environment name -> secrets it must hold. Both admit only the config branch."""
+    return {config["environment"]: spec["environment_secrets"], spec["promotion_environment"]: spec["promotion_environment_secrets"]}
+
+
 def desired_state(config, spec):
     errors = config_blockers(config)
-    if spec.get("schema_version") != 1 or spec.get("repository") != REPOSITORY or spec.get("required_checks") != config.get("required_checks"):
-        errors.append("unsupported or mismatched github-settings.json")
+    errors += spec_blockers(config, spec)
     if errors:
         raise Blocked("; ".join(errors))
+    model = branches.parse(config)
     # Existing configurations keep their second-review requirement unless the
     # versioned policy explicitly selects the maintainer's own merge decision.
     second_review = config.get("require_second_human_review", True)
-    # Checks always run; when the versioned policy allows it, verified human maintainers may
-    # merge a PR without them. GitHub records each bypass; Apps and bots never get one.
-    maintainers = [{"actor_type": "User", "actor_id": m["id"], "bypass_mode": "pull_request"} for m in config["maintainers"]]
-    conditions = {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}
-    quality = {
-        "name": spec["quality_ruleset_name"], "target": "branch", "enforcement": "active",
-        "bypass_actors": copy.deepcopy(maintainers) if config.get("maintainer_check_bypass", False) else [],
-        "conditions": conditions,
-        "rules": [
-            {"type": "deletion"}, {"type": "non_fast_forward"},
-            {"type": "pull_request", "parameters": {
-                "dismiss_stale_reviews_on_push": True, "require_code_owner_review": second_review,
-                "require_last_push_approval": second_review, "required_approving_review_count": int(second_review),
-                "required_review_thread_resolution": True}},
-            {"type": "required_status_checks", "parameters": {
-                "do_not_enforce_on_create": False, "strict_required_status_checks_policy": True,
-                "required_status_checks": [{"context": name, "integration_id": config["publisher_app_id"]} for name in config["required_checks"]]}}
-        ]}
-    human = {
-        "name": spec["human_ruleset_name"], "target": "branch", "enforcement": "active",
-        "conditions": conditions,
-        "bypass_actors": maintainers,
-        "rules": [{"type": "update", "parameters": {"update_allows_fetch_and_merge": False}}]}
-    return {"rulesets": [quality, human], "environment": {
-        "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}},
-        "branch_policies": [{"name": config["default_branch"], "type": "branch"}],
-        "actions": copy.deepcopy(spec["actions"]), "selected_actions": copy.deepcopy(spec["selected_actions"]),
-        "workflow_permissions": copy.deepcopy(spec["workflow_permissions"])}
+    maintainers = [{"actor_type": "User", "actor_id": m["id"], "bypass_mode": "always"} for m in config["maintainers"]]
+
+    def ruleset(name, refs, bypass, rules):
+        return {"name": name, "target": "branch", "enforcement": "active", "bypass_actors": bypass,
+                "conditions": {"ref_name": {"include": ["refs/heads/" + ref for ref in refs], "exclude": []}},
+                "rules": rules}
+
+    def pull_request(**extra):
+        return {"type": "pull_request", "parameters": {
+            "dismiss_stale_reviews_on_push": True, "require_code_owner_review": second_review,
+            "require_last_push_approval": second_review, "required_approving_review_count": int(second_review),
+            "required_review_thread_resolution": True, **extra}}
+
+    def checks(branch):
+        names = model.required_checks(branch)
+        # Each check is bound to the publisher App, so no other identity can satisfy it.
+        return [{"type": "required_status_checks", "parameters": {
+            "do_not_enforce_on_create": False, "strict_required_status_checks_policy": True,
+            "required_status_checks": [{"context": name, "integration_id": config["publisher_app_id"]} for name in names]}}] if names else []
+
+    # Validation: PR with the checks of its gate. Verified maintainers bypass ("always") so they may
+    # push directly; nobody else may update the branch, and Apps and bots never bypass.
+    rulesets = [ruleset(ruleset_name(spec, "validation", name), [name], copy.deepcopy(maintainers),
+                        [{"type": "update", "parameters": {"update_allows_fetch_and_merge": False}}, pull_request(), *checks(name)])
+                for name in model.validation]
+    # Production: PR only, squash or rebase, no bypass actors, so nobody pushes directly.
+    rulesets += [ruleset(ruleset_name(spec, "production", name), [name], [],
+                         [pull_request(allowed_merge_methods=list(spec["production_merge_methods"])), *checks(name)])
+                 for name in model.production]
+    # Listed branches are never deleted or force-pushed; listed and reserved names are never created.
+    rulesets.append(ruleset(ruleset_name(spec, "lifecycle"), [*model.names, *branches.RESERVED], [],
+                            [{"type": "creation"}, {"type": "deletion"}, {"type": "non_fast_forward"}]))
+    envs = environments(config, spec)
+    return {"rulesets": rulesets,
+            "environments": {name: {"deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}} for name in envs},
+            "branch_policies": {name: [{"name": model.config_branch, "type": "branch"}] for name in envs},
+            "actions": copy.deepcopy(spec["actions"]), "selected_actions": copy.deepcopy(spec["selected_actions"]),
+            "workflow_permissions": copy.deepcopy(spec["workflow_permissions"])}
+
+
+def wif_claim(config):
+    """Claims the Anthropic federation rule must match: factory.yml on the config branch only."""
+    ref = "refs/heads/" + config["config_branch"]
+    return {"federation_rule_id": (config.get("anthropic_federation") or {}).get("federation_rule_id"),
+            "repository": REPOSITORY, "ref": ref, "workflow_ref": f"{REPOSITORY}/{config['workflow']}@{ref}",
+            "environment": config["environment"], "event_name": "workflow_dispatch"}
+
+
+def owner_steps(config, report):
+    """What only the repository owner can do, in order, for the current inspection."""
+    claim, branch = wif_claim(config), config["config_branch"]
+    steps = [f"Create branch {name} on GitHub before apply; the lifecycle ruleset forbids creating listed names."
+             for name in report.get("missing_branches", [])]
+    if report.get("changes"):
+        steps.append("Review `settings.py diff`, then run `settings.py apply`; environment branch policies are set before any secret is added.")
+    for environment, names in sorted(report.get("missing_environment_secrets", {}).items()):
+        steps.append(f"After `settings.py inspect` shows {environment} limited to branch {branch}, add its secrets: {', '.join(names)}.")
+    steps.append(f"Set the Anthropic federation rule {claim['federation_rule_id']} to ref={claim['ref']} and "
+                 f"workflow_ref={claim['workflow_ref']}, then run "
+                 f"`gh workflow run factory.yml --ref {branch} -f pr=0 -f wif_smoke=true`.")
+    return steps
 
 
 def codeowners(config):
@@ -264,7 +330,7 @@ def inspect(config, spec, api, app_apis):
     rules = api.pages(prefix + "/rulesets?includes_parents=true")
     rulesets = []
     for rule in rules:
-        if rule.get("name") in (spec["quality_ruleset_name"], spec["human_ruleset_name"]):
+        if managed(spec, rule.get("name", "")):
             if rule.get("source_type") != "Repository" or rule.get("source", "").lower() != REPOSITORY.lower():
                 blockers.append("managed ruleset name collides with an inherited ruleset")
                 continue
@@ -272,40 +338,52 @@ def inspect(config, spec, api, app_apis):
     names = [r["name"] for r in rulesets]
     if len(names) != len(set(names)):
         blockers.append("duplicate managed ruleset names; resolve explicitly")
-    environments = api.pages(prefix + "/environments", "environments")
-    envname = quote(config["environment"], safe="")
-    environment = None
-    policies = []
-    secret_names = []
-    if any(env.get("name") == config["environment"] for env in environments):
-        environment = api.request("GET", prefix + "/environments/" + envname)
-        if (environment.get("deployment_branch_policy") or {}).get("custom_branch_policies"):
-            policies = api.pages(prefix + "/environments/" + envname + "/deployment-branch-policies", "branch_policies")
-        secret_names = [s["name"] for s in api.pages(prefix + "/environments/" + envname + "/secrets", "secrets")]
+    # The lifecycle ruleset forbids creating listed names, so every listed branch must exist first.
+    missing_branches = [name for name in branches.parse(config).names
+                        if get_optional(api, prefix + "/branches/" + quote(name, safe="")) is None]
+    blockers += [f"listed branch {name} does not exist; create it before apply" for name in missing_branches]
+    existing = {env.get("name") for env in api.pages(prefix + "/environments", "environments")}
+    current = {"rulesets": rulesets, "environments": {}, "branch_policies": {}}
+    missing_secrets = {}
+    for name, required in environments(config, spec).items():
+        envpath = prefix + "/environments/" + quote(name, safe="")
+        environment, policies, secret_names = None, [], []
+        if name in existing:
+            environment = api.request("GET", envpath)
+            if (environment.get("deployment_branch_policy") or {}).get("custom_branch_policies"):
+                policies = api.pages(envpath + "/deployment-branch-policies", "branch_policies")
+            secret_names = [s["name"] for s in api.pages(envpath + "/secrets", "secrets")]
+        current["environments"][name], current["branch_policies"][name] = environment, policies
+        if set(required) - set(secret_names):
+            missing_secrets[name] = sorted(set(required) - set(secret_names))
+        if name == spec["promotion_environment"] and set(secret_names) - set(required):
+            blockers.append(f"{name} must hold only the publisher key; remove: " + ", ".join(sorted(set(secret_names) - set(required))))
     repo_secrets = api.pages(prefix + "/actions/secrets", "secrets")
-    sensitive_names = set(spec["environment_secrets"] + spec.get("optional_environment_secrets", []))
+    sensitive_names = set(spec["environment_secrets"] + spec.get("optional_environment_secrets", []) + spec["promotion_environment_secrets"])
     if any(secret["name"] in sensitive_names for secret in repo_secrets):
-        blockers.append("factory credentials exist as repository secrets; move them to the default-branch environment")
-    current = {"rulesets": rulesets, "environment": environment, "branch_policies": policies,
-               "actions": api.request("GET", prefix + "/actions/permissions"),
-               "workflow_permissions": api.request("GET", prefix + "/actions/permissions/workflow")}
+        blockers.append("factory credentials exist as repository secrets; move them to the config-branch environments")
+    current.update(actions=api.request("GET", prefix + "/actions/permissions"),
+                   workflow_permissions=api.request("GET", prefix + "/actions/permissions/workflow"))
     current["selected_actions"] = (api.request("GET", prefix + "/actions/permissions/selected-actions")
                                    if current["actions"].get("allowed_actions") == "selected" else {})
-    for path in (".github/CODEOWNERS", config["workflow"]):
-        remote = get_optional(api, prefix + "/contents/" + path + "?ref=" + quote(config["default_branch"], safe=""))
-        if not remote or remote.get("type") != "file":
-            blockers.append(path + " must be reviewed and present on the default branch before activation")
-        elif path.endswith("CODEOWNERS"):
-            try:
-                text = base64.b64decode(remote["content"]).decode()
-            except (ValueError, KeyError, UnicodeError):
-                text = ""
-            if text != codeowners(config):
-                blockers.append("default-branch CODEOWNERS does not match verified human ownership")
+    # Gate jobs run from the config branch; the dispatcher runs from the default branch (and pushed branches).
+    for branch in dict.fromkeys((config["config_branch"], config["default_branch"])):
+        for path in (".github/CODEOWNERS", config["workflow"], *WORKFLOWS):
+            remote = get_optional(api, prefix + "/contents/" + path + "?ref=" + quote(branch, safe=""))
+            if not remote or remote.get("type") != "file":
+                blockers.append(f"{path} must be reviewed and present on {branch} before activation")
+            elif path.endswith("CODEOWNERS"):
+                try:
+                    text = base64.b64decode(remote["content"]).decode()
+                except (ValueError, KeyError, UnicodeError):
+                    text = ""
+                if text != codeowners(config):
+                    blockers.append(f"CODEOWNERS on {branch} does not match verified human ownership")
     return {"repository": {"id": repository["id"], "full_name": repository["full_name"],
                            "default_branch": repository["default_branch"], "private": repository["private"]},
             "plan": plan, "apps": apps, "blockers": blockers, "desired": desired, "current": current,
-            "missing_environment_secrets": sorted(set(spec["environment_secrets"]) - set(secret_names))}
+            "missing_branches": missing_branches, "missing_environment_secrets": missing_secrets,
+            "wif_claim": wif_claim(config)}
 
 
 def canonical(value):
@@ -350,16 +428,17 @@ def diff(report, config):
     changes = []
     def change(method, endpoint, body, reason):
         changes.append({"method": method, "endpoint": endpoint, "body": body, "reason": reason})
-    envpath = prefix + "/environments/" + quote(config["environment"], safe="")
-    if not same(current["environment"], desired["environment"]):
-        change("PUT", envpath, desired["environment"], "restrict credential environment")
-    # Remove broad policies before adding the exact branch. A transition can deny all, never permit extra refs.
-    for policy in current["branch_policies"]:
-        if not any(same(policy, wanted) for wanted in desired["branch_policies"]):
-            change("DELETE", envpath + "/deployment-branch-policies/" + str(policy["id"]), None, "remove extra environment branch/tag policy")
-    for policy in desired["branch_policies"]:
-        if not any(same(actual, policy) for actual in current["branch_policies"]):
-            change("POST", envpath + "/deployment-branch-policies", policy, "allow default branch only")
+    for name, wanted in desired["environments"].items():
+        envpath = prefix + "/environments/" + quote(name, safe="")
+        if not same(current["environments"].get(name), wanted):
+            change("PUT", envpath, wanted, "restrict credential environment " + name)
+        # Remove broad policies before adding the exact branch. A transition can deny all, never permit extra refs.
+        for policy in current["branch_policies"].get(name, []):
+            if not any(same(policy, allowed) for allowed in desired["branch_policies"][name]):
+                change("DELETE", envpath + "/deployment-branch-policies/" + str(policy["id"]), None, "remove extra environment branch/tag policy")
+        for policy in desired["branch_policies"][name]:
+            if not any(same(actual, policy) for actual in current["branch_policies"].get(name, [])):
+                change("POST", envpath + "/deployment-branch-policies", policy, "allow the config branch only")
     for key, suffix in (("actions", ""), ("selected_actions", "/selected-actions"), ("workflow_permissions", "/workflow")):
         if not same(current[key], desired[key]):
             change("PUT", prefix + "/actions/permissions" + suffix, desired[key], "reconcile " + key)
@@ -367,6 +446,11 @@ def diff(report, config):
         actual = next((r for r in current["rulesets"] if r["name"] == rule["name"]), None)
         if not same(actual, rule):
             change("PUT" if actual else "POST", prefix + "/rulesets" + ("/" + str(actual["id"]) if actual else ""), rule, "reconcile " + rule["name"])
+    # Retired and unlisted-branch rulesets go only after their replacements exist.
+    wanted = {rule["name"] for rule in desired["rulesets"]}
+    for rule in current["rulesets"]:
+        if rule["name"] not in wanted:
+            change("DELETE", prefix + "/rulesets/" + str(rule["id"]), None, "remove retired or unlisted ruleset " + rule["name"])
     return changes
 
 
@@ -381,7 +465,7 @@ def apply(report, config, api):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("inspect", "diff", "apply", "codeowners"))
+    parser.add_argument("command", choices=("inspect", "diff", "apply", "codeowners", "wif"))
     parser.add_argument("--config", type=Path, default=ROOT / "factory/config.json")
     parser.add_argument("--spec", type=Path, default=ROOT / "factory/github-settings.json")
     args = parser.parse_args(argv)
@@ -390,6 +474,9 @@ def main(argv=None):
         spec = json.loads(args.spec.read_text())
         # Fail before network access when placeholders remain; no inferred identity fills.
         desired_state(config, spec)
+        if args.command == "wif":
+            print(json.dumps(wif_claim(config), indent=2))
+            return 0
         api = GitHub()
         if args.command == "codeowners":
             repository = api.request("GET", f"/repos/{REPOSITORY}")
@@ -412,6 +499,7 @@ def main(argv=None):
             report["applied_count"] = len(changes)
         report["changes"] = changes if args.command != "apply" else []
         report["configuration_ready"] = not report["blockers"] and not report["missing_environment_secrets"] and not report["changes"]
+        report["owner_steps"] = owner_steps(config, report)
         if args.command == "diff":
             report.pop("current")
             report.pop("desired")

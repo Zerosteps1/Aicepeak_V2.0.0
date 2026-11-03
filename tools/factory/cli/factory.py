@@ -2,8 +2,8 @@
 """factory – the maintainer's daily command for the Aicepeak software factory.
 
 Installed once per device by tools/factory/cli/install-factory-cli.sh. It runs trusted code only from the clean
-control checkout on current main (or a run's pinned export of it) and acts on the configured candidate checkout,
-whatever the current directory. See docs/factory-cli.md.
+control checkout on its listed control branch (or a run's pinned export of it), takes every rule from the config
+branch tip and acts on the configured candidate checkout, whatever the current directory. See docs/factory-cli.md.
 """
 from __future__ import annotations
 
@@ -18,9 +18,11 @@ sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CL
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path[:0] = [str(HERE), str(HERE.parent)]
+import branches  # noqa: E402  standard library only
 import helptext  # noqa: E402  standard library only
 
-VERSION = '0.1.0'
+VERSION = '0.2.0'
+LOCAL = ('status', 'continue', 'stop', 'cancel')  # no network, no policy
 REEXEC = 'FACTORY_CLI_REEXEC'
 REEXECS = int(os.environ.pop(REEXEC, '0') or 0)  # never inherited by editors or other children
 
@@ -71,6 +73,37 @@ def build_parser():
     item = command('merge')
     item.add_argument('pr', type=int)
     item.add_argument('--dry-run', action='store_true', help='show the verdict only; merge nothing')
+    item = command('promote')
+    item.add_argument('branch', help='the validation branch to promote')
+    item.add_argument('--to', help='the production branch (default: the only one listed)')
+    item = command('sync', 'sync workorders')
+    item.add_argument('target', choices=('workorder', 'workorders'))
+    item.add_argument('workorder', nargs='?', help='with `workorder`: 7, 007 or FACTORY-007')
+    item.description = (helptext.description('sync workorders') + '\n\n`factory sync workorder <n>`: '
+                        + helptext.COMMANDS['sync workorder']['what'])
+    item.epilog = helptext.epilog('sync workorders') + '\n\n' + helptext.epilog('sync workorder')
+    item = command('branches')
+    item.add_argument('--show', action='store_true', help='also write and open a self-contained HTML page')
+    item = command('use', 'use branch')
+    item.add_argument('noun', choices=('branch',), metavar='branch')
+    item.add_argument('name', help='a listed production or validation branch')
+    item = command('add', 'add validation branch')
+    item.add_argument('level', choices=('validation', 'production'))
+    item.add_argument('noun', choices=('branch',), metavar='branch')
+    item.add_argument('name', help='lowercase letters, digits and inner hyphens, at most 40')
+    item.add_argument('--gate', choices=branches.GATES, help='validation branches: full, tests or none')
+    item.add_argument('--kinds', default='', help='validation branches: work-order kinds routed to it, e.g. factory,smoke')
+    item.add_argument('--review', choices=branches.REVIEWS, help='production branches: no, initiated or maintainer-manual')
+    item.description = (helptext.description('add validation branch') + '\n\n`factory add production branch`: '
+                        + helptext.COMMANDS['add production branch']['what'])
+    item.epilog = helptext.epilog('add validation branch') + '\n\n' + helptext.epilog('add production branch')
+    item = command('remove', 'remove branch')
+    item.add_argument('noun', choices=('branch',), metavar='branch')
+    item.add_argument('name')
+    item = command('set', 'set config branch')
+    item.add_argument('what', choices=('config',), metavar='config')
+    item.add_argument('noun', choices=('branch',), metavar='branch')
+    item.add_argument('name', help='a listed production branch')
     command('status')
     command('doctor')
     hidden = commands.add_parser('_run')
@@ -81,8 +114,25 @@ def build_parser():
     hidden.add_argument('--control-dir', required=True)
     hidden.add_argument('--candidate-dir', required=True)
     hidden.add_argument('--bin-dir', required=True)
+    hidden.add_argument('--branch', required=True)
     hidden.add_argument('--author-keys', action='store_true')
     return parser
+
+
+def misuse(args):
+    """Option combinations argparse cannot express; answered before any lock or network."""
+    if args.command == 'add':
+        kinds = [kind.strip() for kind in args.kinds.split(',') if kind.strip()]
+        if args.level == 'validation' and (not args.gate or args.review):
+            return '`factory add validation branch` needs --gate and takes no --review'
+        if args.level == 'production' and (not args.review or args.gate or kinds):
+            return '`factory add production branch` needs --review and takes no --gate or --kinds'
+        if not set(kinds) <= set(branches.KINDS) or len(set(kinds)) != len(kinds):
+            return '--kinds takes distinct values of ' + ', '.join(branches.KINDS)
+        args.kinds = kinds
+    if args.command == 'sync' and (args.target == 'workorder') != bool(args.workorder):
+        return '`factory sync workorder <n>` names one work order; `factory sync workorders` takes none'
+    return None
 
 
 def control_head(root):
@@ -112,13 +162,18 @@ def reexec(fresh=False):
 
 
 class Context:
-    """Paths, configuration and lazily resolved GitHub identity for one command."""
-    def __init__(self, device, config, sha):
+    """Paths, the pinned policy and lazily resolved GitHub identity for one command.
+
+    sha is the control checkout's code; policy the config branch tip whose config.json (config) and branch model
+    (model) every rule comes from. Local commands have no policy."""
+    def __init__(self, device, config, sha, policy=None):
         import checkouts
         import common
         self.common, self.checkouts = common, checkouts
-        self.root, self.device, self.config, self.sha = ROOT, device, config, sha
+        self.root, self.device, self.sha = ROOT, device, sha
         self.control, self.candidate = device['control'], device['candidate']
+        self.branch = device.get('branch') or config['config_branch']
+        self.policy, self.config, self.model = (policy.tip, policy.config, policy.model) if policy else (None, config, None)
         self._gh = self._user = None
 
     @property
@@ -136,9 +191,19 @@ class Context:
     def candidate_lock(self):
         return self.common.Lock(self.common.STATE_DIR / 'locks/candidate.lock', 'the candidate checkout')
 
-    def main(self):
+    def tips(self, *names):
+        """Fetch branches into the candidate; missing ones are left out."""
         with self.candidate_lock():
-            return self.checkouts.fetch(self.candidate, self.config, 'main')['main']
+            return self.checkouts.fetch(self.candidate, self.config, *names)
+
+    def tip(self, name):
+        found = self.tips(name)
+        self.common.require(name in found, f'branch {name} is not on GitHub')
+        return found[name]
+
+    def config_tip(self):
+        """The newest config branch tip in the candidate: work orders are read from here."""
+        return self.tip(self.model.config_branch)
 
     def identity_values(self):
         return {key: self.common.out(self.candidate, 'config', '--local', '--get', f'user.{key}') for key in ('name', 'email')}
@@ -159,25 +224,37 @@ def bootstrap(command):
     device = checkouts.device()
     common.require(os.path.samefile(device['control'] / 'tools/factory/cli/factory.py', __file__),
                    f'this is not the installed control checkout ({device["control"]}); run the `factory` command')
-    config = checkouts.repository_config()
+    config = checkouts.repository_config()  # the code's own copy: repository and the name of the config branch
     lock = common.Lock(common.STATE_DIR / 'locks/control.lock', 'the control checkout').acquire()
+    policy = None
     try:
-        local = command in ('status', 'continue', 'stop', 'cancel')
-        sha, changed = checkouts.update_control(device['control'], config, fetch=not local and not REEXECS)
+        local = command in LOCAL
+        branch = device['branch'] or config['config_branch']
+        sha, changed = checkouts.update_control(device['control'], config, branch=branch,
+                                                online=not local and not REEXECS, listed=command != 'use')
+        if device['branch'] is None:  # pin the verified branch: after a fast-forward the code may name another config branch
+            checkouts.record_branch(branch)
+            device['branch'] = branch
         if sha != before or changed:  # the code already imported may be older than the verified commit
             lock.release()
             reexec()
             lock.acquire()
-        import commands  # noqa: F401  every module is imported while the control checkout is locked
+        import branching  # noqa: F401  every module is imported while the control checkout is locked
+        import commands  # noqa: F401
         import pipeline  # noqa: F401
         import runs  # noqa: F401
         import workorders  # noqa: F401
-        if not local:
+        if not local:  # fail closed: every network command needs the pinned config branch tip
+            policy = checkouts.read_policy(device['control'], config)  # follows a finished change of the config branch
+            common.require(policy, f'the config branch {config["config_branch"]} was never fetched; check your '
+                           'network and gh login, then retry')
+            common.require(command == 'use' or branch in policy.model.names,
+                           checkouts.unlisted(branch, policy.model.config_branch))
             checkouts.separate(device['control'], device['candidate'])
-            checkouts.verify_candidate(device['candidate'], config)
+            checkouts.verify_candidate(device['candidate'], policy.config)
     finally:
         lock.release()
-    return Context(device, config, sha)
+    return Context(device, config, sha, policy)
 
 
 def run_reference(reference):
@@ -192,7 +269,7 @@ def run_reference(reference):
 def dispatch(args):
     if args.command == '_install':
         import install
-        return install.install(args.control_dir, args.candidate_dir, args.bin_dir, args.author_keys)
+        return install.install(args.control_dir, args.candidate_dir, args.bin_dir, args.author_keys, args.branch)
     if args.command == '_run':
         import pipeline
         import runs
@@ -201,12 +278,13 @@ def dispatch(args):
             raise ValueError('the runner only starts from its own pinned export')
         return pipeline.execute(args.run_id, args.keys_fd, args.lock_fd)
     ctx = bootstrap(args.command)
+    import branching
     import commands
     import pipeline
     import runs
     candidate = ctx.candidate.resolve()
     here = Path.cwd().resolve()
-    if args.command not in ('status', 'continue', 'stop', 'cancel') and not (here == candidate or candidate in here.parents):
+    if args.command not in LOCAL + ('use',) and not (here == candidate or candidate in here.parents):
         ctx.common.say(f'(working on the candidate checkout {ctx.candidate})')
     if args.command == 'issue':
         return commands.issue(ctx, args.title, args.kind, args.noedit)
@@ -236,15 +314,34 @@ def dispatch(args):
         return commands.merge(ctx, args.pr, args.dry_run)
     if args.command == 'status':
         return runs.listing()
+    if args.command == 'promote':
+        return branching.promote(ctx, args.branch, args.to)
+    if args.command == 'sync':
+        return branching.sync(ctx, args.workorder)
+    if args.command == 'branches':
+        return branching.diagram(ctx, args.show)
+    if args.command == 'use':
+        return branching.use(ctx, args.name)
+    if args.command == 'add' and args.level == 'validation':
+        return branching.add_validation(ctx, args.name, args.gate, args.kinds)
+    if args.command == 'add':
+        return branching.add_production(ctx, args.name, args.review)
+    if args.command == 'remove':
+        return branching.remove(ctx, args.name)
+    if args.command == 'set':
+        return branching.set_config(ctx, args.name)
     return commands.doctor(ctx)
 
 
-def main(argv=None):
+def entry(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         return 0
+    problem = misuse(args)
+    if problem:
+        parser.error(problem)
     # Relative PATH entries would resolve inside the candidate checkout for every tool, also in session.py.
     os.environ['PATH'] = os.pathsep.join(entry for entry in os.environ.get('PATH', '').split(os.pathsep)
                                          if entry.startswith('/')) or '/usr/bin:/bin'
@@ -263,4 +360,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(entry())

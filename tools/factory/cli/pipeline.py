@@ -3,6 +3,7 @@
 Steps: author (fix: review, then fix) -> advisory preflight -> corrections while P0/P1 findings remain -> apply,
 or for hotfix the push gate. Model work happens only in the isolated launcher (clients.py run) under the run's
 Docker label; the run's own trusted code is a pinned export, so control updates never change a running job.
+A run targets the validation branch routed for its work order's kind; its policy is the config branch tip.
 """
 from __future__ import annotations
 
@@ -107,27 +108,27 @@ def local_heads(repo, prefix):
     return dict(line.split(' ', 1) for line in listing.splitlines() if ' ' in line)
 
 
-def start_target(ctx, order, main):
-    """Continue the newest unmerged <login>/<ID>[-k] branch, or open the next one from main."""
+def start_target(ctx, order, tip):
+    """Continue the newest <login>/<ID>[-k] branch not yet merged into the target, or open the next one from its tip."""
     stem = f'{ctx.login}/{order}'
     pattern = re.compile(re.escape(stem) + r'(?:-(\d+))?')
     remote = {name: sha for name, sha in remote_heads(ctx).items() if pattern.fullmatch(name)}
     local = {name: sha for name, sha in local_heads(ctx.candidate, stem).items() if pattern.fullmatch(name)}
     names = set(remote) | set(local)
     if not names:
-        return stem, main, False
+        return stem, tip, False
     rank = {name: int(pattern.fullmatch(name)[1] or 1) for name in names}
     last = max(names, key=rank.get)
     if last in remote:
         with ctx.candidate_lock():
             checkouts.fetch(ctx.candidate, ctx.config, last)
-    tip = local.get(last) or remote[last]
+    found = local.get(last) or remote[last]
     if last in local and last in remote:
         require(is_ancestor(ctx.candidate, remote[last], local[last]), f'{last} on GitHub has commits your local '
                 f'branch lacks: run `git -C {ctx.candidate} pull --ff-only` on it first')
-    if not is_ancestor(ctx.candidate, tip, main):
-        return last, tip, True
-    return f'{stem}-{max(rank.values()) + 1}', main, False
+    if not is_ancestor(ctx.candidate, found, tip):
+        return last, found, True
+    return f'{stem}-{max(rank.values()) + 1}', tip, False
 
 
 def order_pulls(ctx, order):
@@ -142,7 +143,7 @@ def order_pulls(ctx, order):
     return found
 
 
-def fix_target(ctx, order, main, pr=None):
+def fix_target(ctx, order, tip, pr=None):
     matching = order_pulls(ctx, order)
     if pr is not None:
         matching = [item for item in matching if item[0]['number'] == pr]
@@ -164,7 +165,7 @@ def fix_target(ctx, order, main, pr=None):
     stem = f'{ctx.login}/{order}-fix-'
     taken = [int(name[len(stem):]) for name in [*remote_heads(ctx), *local_heads(ctx.candidate, stem)]
              if name.startswith(stem) and name[len(stem):].isdigit()]
-    return f'{stem}{max(taken, default=0) + 1}', main, False, None
+    return f'{stem}{max(taken, default=0) + 1}', tip, False, None
 
 
 def pull_findings(ctx, pull):
@@ -208,49 +209,55 @@ def request_text(ctx, prompt):
 
 def launch(ctx, kind, reference, prompt=None, pr=None):
     """Validate everything in the foreground, then start the background runner and attach to it."""
-    config, candidate = ctx.config, ctx.candidate
-    main = ctx.main()
-    if main != ctx.sha:
-        warn('main moved while this command started; the run uses the policy of the verified control checkout')
-    names = workorders.names_on(candidate, main)
-    order = workorders.resolve(reference, names)
+    policy = ctx.config_tip()
+    if policy != ctx.policy:
+        warn(f'{ctx.model.config_branch} moved while this command started; work orders are read from its newest tip')
+    order = workorders.resolve(reference, workorders.names_on(ctx.candidate, policy))
     starting = common.Lock(common.STATE_DIR / f'locks/start-{order}.lock', f'another start of {order}').acquire(wait=0)
     try:
-        return prepare_and_spawn(ctx, kind, order, main, prompt, pr)
+        return prepare_and_spawn(ctx, kind, order, policy, prompt, pr)
     finally:
         starting.release()
 
 
-def prepare_and_spawn(ctx, kind, order, main, prompt, pr):
+def prepare_and_spawn(ctx, kind, order, policy, prompt, pr):
     config, candidate = ctx.config, ctx.candidate
     require(not runs.active(order), f'a run for {order} is already active: `factory continue {order}`')
-    text = workorders.text_on(candidate, main, order)
+    text = workorders.text_on(candidate, policy, order)
     spec = workorders.approved_spec(text, config)
     author_scope(spec)
     host, keys = docker_ready(), author_keys()
+    target = ctx.model.route(spec['kind'])
+    tip = ctx.tip(target)
     findings = request = pull = None
     if kind == 'start':
-        branch, base, exists = start_target(ctx, order, main)
+        branch, base, exists = start_target(ctx, order, tip)
     else:
-        branch, base, exists, pull = fix_target(ctx, order, main, pr)
+        branch, base, exists, pull = fix_target(ctx, order, tip, pr)
+        if pull and pull['base']['ref'] != target:  # the fix lands on the PR, so it keeps the PR's target
+            target = pull['base']['ref']
+            require(ctx.model.level(target) == 'validation', f'PR #{pull["number"]} targets {target}, not a validation branch')
+            tip = ctx.tip(target)
         request = request_text(ctx, prompt)
         if request is None and pull:
             findings = pull_findings(ctx, pull)
         elif request is None:
             request = f'the implementation of work order {order} against its acceptance criteria'
     if exists:
-        require(is_ancestor(candidate, main, base), f'{branch} does not contain current main; update it first '
-                f'(`git -C {candidate} switch {branch} && git -C {candidate} merge origin/main`, or `gh pr update-branch '
+        require(is_ancestor(candidate, tip, base), f'{branch} does not contain current {target}; update it first '
+                f'(`git -C {candidate} switch {branch} && git -C {candidate} merge origin/{target}`, or `gh pr update-branch '
                 '<n>` for an open PR), then start again')
     path = runs.create(order, kind)
     lock = runs.claim(path)
-    runs.update(path, kind=kind, order=order, text=text, allowed_paths=spec['allowed_paths'], base=base, main=main,
+    runs.update(path, kind=kind, order=order, text=text, allowed_paths=spec['allowed_paths'], base=base, target=target,
+                target_tip=tip, config_branch=ctx.model.config_branch, listed=ctx.model.names, policy_config=config,
                 branch=branch, branch_exists=exists, pr=pull['number'] if pull else None, request=request,
                 findings=findings, control=str(ctx.control), candidate=str(candidate), trusted_sha=ctx.sha,
                 docker_host=host, login=ctx.login, identity=ctx.identity_values(), runner=config['runners'][0],
                 status='starting', started=time.strftime('%Y-%m-%d %H:%M:%S'))
     checkouts.export_tree(ctx.control, ctx.sha, path / 'trusted')
-    say(f'{kind} {order}: branch {branch} ({"continuing" if exists else "new, from main"}), candidate {candidate}')
+    say(f'{kind} {order}: branch {branch} ({"continuing" if exists else "new, from " + target}), target {target}, '
+        f'candidate {candidate}')
     runs.spawn(path, sys.executable, keys, lock)
     return runs.follow(path, order)
 
@@ -376,10 +383,12 @@ class Runner(Worker):
         data = runs.state(path)
         super().__init__(path, Path(path) / 'trusted', keys, Path(path).name, data['runner'], data.get('docker_host'))
         self.data = data
+        self.config = data.get('policy_config') or self.config  # limits and protected paths of the config branch tip
         self.control, self.candidate = Path(data['control']), Path(data['candidate'])
         self.order, self.kind, self.task = data['order'], data['kind'], workorders.path_of(data['order'])
         self.work, self.url = self.path / 'work', checkouts.github_url(self.config)
-        self.merged_main, self.last_review = None, None
+        self.target = data['target']
+        self.merged_base, self.last_review = None, None
 
     def stopping(self):
         return (self.path / 'stop').exists()
@@ -439,10 +448,13 @@ class Runner(Worker):
         git(self.work, *INTERNAL, 'commit', '--quiet', '-m', f'factory {step}')
         return True
 
-    def fetch_main(self):
+    def fetch_tips(self):
+        """Current tips of the run's target and of the config branch (the policy), fetched into the control repo."""
+        names = (self.target, self.data['config_branch'])
         with common.Lock(common.STATE_DIR / 'locks/control.lock', 'the control checkout'):
-            git(self.control, 'fetch', '--quiet', '--no-tags', self.url, '+refs/heads/main:refs/remotes/origin/main', network=True)
-            return out(self.control, 'rev-parse', 'refs/remotes/origin/main')
+            git(self.control, 'fetch', '--quiet', '--no-tags', self.url,
+                *[f'+refs/heads/{name}:refs/remotes/origin/{name}' for name in dict.fromkeys(names)], network=True)
+            return tuple(out(self.control, 'rev-parse', f'refs/remotes/origin/{name}^{{commit}}') for name in names)
 
     def review_loop(self):
         rounds = int(self.config['limits']['max_rounds'])
@@ -460,33 +472,34 @@ class Runner(Worker):
 
     def preflight(self):
         self.step('preflight')
-        head, main = checkouts.head(self.work), self.fetch_main()
-        if not is_ancestor(self.work, main, head):
-            merged = git(self.work, *INTERNAL, 'merge', '--no-edit', '--quiet', main, check=False)
+        head, (tip, policy) = checkouts.head(self.work), self.fetch_tips()
+        target = self.target
+        if not is_ancestor(self.work, tip, head):
+            merged = git(self.work, *INTERNAL, 'merge', '--no-edit', '--quiet', tip, check=False)
             if merged.returncode:
                 git(self.work, 'merge', '--abort', check=False)
-                raise Skip(f'main moved to {main[:12]} and conflicts with this run; merge main yourself')
-            self.merged_main, head = main, checkouts.head(self.work)
-            self.log(f'main moved: the preflight reviews this run merged with {main[:12]}')
-        names = [name for name in out(self.work, 'diff', '--name-only', '--no-renames', '-z', main, head).split('\0') if name]
+                raise Skip(f'{target} moved to {tip[:12]} and conflicts with this run; merge {target} yourself')
+            self.merged_base, head = tip, checkouts.head(self.work)
+            self.log(f'{target} moved: the preflight reviews this run merged with {tip[:12]}')
+        names = [name for name in out(self.work, 'diff', '--name-only', '--no-renames', '-z', tip, head).split('\0') if name]
         limit = int(self.config['limits']['max_changed_files'])
         if not names:
-            raise Skip('nothing differs from main')
+            raise Skip(f'nothing differs from {target}')
         if len(names) > limit:
             raise Skip(f'{len(names)} changed files exceed the limit of {limit}; split the work')
         outside = [name for name in names if not in_scope(name, self.data['allowed_paths'])]
         if outside:
             raise Skip('changes outside the work order: ' + ', '.join(outside))
-        args = ['preflight', '--candidate', str(self.work), '--task', self.task]
-        for path in checkouts.direct_imports(self.work, main, head):
+        args = ['preflight', '--candidate', str(self.work), '--task', self.task, '--base', target]
+        for path in checkouts.direct_imports(self.work, tip, head):
             args += ['--context', path]
-        with checkouts.policy_checkout(self.control, main, self.config) as policy:
-            code, stdout, stderr = self.child(checkouts.tool_command(policy, 'session.py', *args), checkouts.tool_env())
+        with checkouts.policy_checkout(self.control, policy, self.config) as checkout:
+            code, stdout, stderr = self.child(checkouts.tool_command(checkout, 'session.py', *args), checkouts.tool_env())
         result = checkouts.last_json(stdout)
         if not result or 'review' not in result:
             raise Skip('the preflight did not run: ' + checkouts.blocked_reason(stderr))
         review = result['review']
-        self.last_review = (review, head, main)
+        self.last_review = (review, head, tip)
         self.log(f'preflight: {review["outcome"]} – {common.printable(review["summary"], 1500)}')
         for finding in review['findings']:
             self.log(f'  {finding["priority"]} {finding["id"]} {finding["file"]}:{finding.get("line")} '
@@ -495,7 +508,7 @@ class Runner(Worker):
 
     def changes(self):
         head = checkouts.head(self.work)
-        parent = self.merged_main or self.data['base']
+        parent = self.merged_base or self.data['base']
         names = [n for n in out(self.work, 'diff', '--name-only', '--no-renames', '-z', parent, head).split('\0') if n]
         problems = []
         outside = [n for n in names if not in_scope(n, self.data['allowed_paths'])]
@@ -508,8 +521,9 @@ class Runner(Worker):
                              ('symlink or submodule', special), ('binary', binary)):
             if items:
                 problems.append(f'{label}: ' + ', '.join(items))
-        if self.merged_main and self.data['branch_exists']:
-            problems.append(f'main was merged for the preflight; merge main into {self.data["branch"]} before applying')
+        if self.merged_base and self.data['branch_exists']:
+            problems.append(f'{self.target} was merged for the preflight; merge {self.target} into {self.data["branch"]} '
+                            'before applying')
         return parent, head, names, problems
 
     def apply(self):
@@ -528,7 +542,8 @@ class Runner(Worker):
             self.log('Patch kept, not applied: ' + '; '.join(problems))
             switch = (f'git -C {shlex.quote(str(self.candidate))} switch {shlex.quote(target)}' if self.data['branch_exists']
                       else f'git -C {shlex.quote(str(self.candidate))} switch -c {shlex.quote(target)} {parent}')
-            fetch = f'git -C {shlex.quote(str(self.candidate))} fetch origin main && ' if self.merged_main else ''
+            fetch = (f'git -C {shlex.quote(str(self.candidate))} fetch origin {shlex.quote(self.target)} && '
+                     if self.merged_base else '')
             self.log(f'Apply it yourself after checking: {fetch}{switch} && git -C {shlex.quote(str(self.candidate))} apply {patch}')
         self.next_steps(applied=not problems)
 
@@ -541,12 +556,12 @@ class Runner(Worker):
     def try_apply(self, patch, parent, names):
         target, candidate = self.data['branch'], self.candidate
         with common.Lock(common.STATE_DIR / 'locks/candidate.lock', 'the candidate checkout'):
-            if self.merged_main:  # the new main exists only in the control checkout so far
-                checkouts.fetch(candidate, self.config, 'main')
+            if self.merged_base:  # the new target tip exists only in the control checkout so far
+                checkouts.fetch(candidate, self.config, self.target)
             if out(candidate, 'status', '--porcelain', '--untracked-files=no'):
                 return ['the candidate has uncommitted changes in tracked files']
             current = checkouts.current_branch(candidate)
-            if current not in ('', 'main', target):
+            if current not in ('', target, *self.data['listed']):  # a listed branch holds none of your own work
                 return [f'the candidate is on {current}; factory does not switch away from your branch']
             found = git(candidate, 'rev-parse', '--verify', '--quiet', f'refs/heads/{target}^{{commit}}', check=False)
             local = found.stdout.decode().strip() if found.returncode == 0 else None
@@ -598,9 +613,9 @@ class Runner(Worker):
         review = self.last_review
         if not review or review[0]['outcome'] != 'pass' or review[1] != head:
             problems.append('the last preflight did not pass on exactly this result')
-        main = self.fetch_main()
-        if review and review[2] != main:
-            problems.append('main moved after the preflight')
+        tip, policy = self.fetch_tips()
+        if review and review[2] != tip:
+            problems.append(f'{self.target} moved after the preflight')
         target = self.data['branch']
         with common.Lock(common.STATE_DIR / 'locks/candidate.lock', 'the candidate checkout'):
             tips = checkouts.fetch(self.candidate, self.config, target)
@@ -614,7 +629,7 @@ class Runner(Worker):
             return
         identity = self.data['identity']
         title = f'fix({self.order}): {self.headline()}'
-        parents = [self.merged_main or self.data['base']]  # changes() refuses a merged main on an existing branch
+        parents = [self.merged_base or self.data['base']]  # changes() refuses a merged target on an existing branch
         tree = out(self.work, 'rev-parse', f'{head}^{{tree}}')
         people = {'GIT_AUTHOR_NAME': identity['name'], 'GIT_AUTHOR_EMAIL': identity['email'],
                   'GIT_COMMITTER_NAME': identity['name'], 'GIT_COMMITTER_EMAIL': identity['email']}
@@ -631,8 +646,9 @@ class Runner(Worker):
         body.write_text(f'Hotfix by `factory hotfix` run {self.path.name}; the advisory preflight passed on {head[:12]}.\n\n'
                         'Problem (maintainer request):\n\n' + '\n'.join('> ' + line for line in
                         (self.data.get('request') or '').splitlines()[:40]) + '\n')
-        args = ['submit', '--task', self.task, '--runner', self.runner, '--title', title, '--body-file', str(body)]
-        for path in checkouts.direct_imports(self.work, main, head):
+        args = ['submit', '--task', self.task, '--base', self.target, '--runner', self.runner, '--title', title,
+                '--body-file', str(body)]
+        for path in checkouts.direct_imports(self.work, tip, head):
             args += ['--context', path]
 
         def record(line):
@@ -643,15 +659,15 @@ class Runner(Worker):
                 except (ValueError, KeyError):
                     pass
         with checkouts.candidate_snapshot(self.candidate, self.control, sha, target, self.config) as snapshot, \
-                checkouts.policy_checkout(self.control, main, self.config) as policy:
-            code, _, stderr = self.child(checkouts.tool_command(policy, 'session.py', *args[:1], '--candidate', snapshot, *args[1:]),
+                checkouts.policy_checkout(self.control, policy, self.config) as checkout:
+            code, _, stderr = self.child(checkouts.tool_command(checkout, 'session.py', *args[:1], '--candidate', snapshot, *args[1:]),
                                          checkouts.tool_env(), on_line=record,
                                          stoppable=lambda: bool(runs.state(self.path).get('pr')))
         if not runs.state(self.path).get('pr'):
             raise Blocked('no pull request was created: ' + checkouts.blocked_reason(stderr))
 
     def watch(self, pr):
-        with checkouts.policy_checkout(self.control, self.fetch_main(), self.config) as policy:
+        with checkouts.policy_checkout(self.control, self.fetch_tips()[1], self.config) as policy:
             self.child(checkouts.tool_command(policy, 'session.py', 'watch', '--pr', pr), checkouts.tool_env(),
                        stoppable=True, on_line=lambda line: say('    ' + common.printable(line.rstrip('\n'), 4000)))
 
@@ -724,9 +740,9 @@ def review_now(ctx, prompt, workorder=None):
     host, keys = docker_ready(), author_keys()
     task, text = 'none', '(no work order given)'
     if workorder:
-        main = ctx.main()
-        order = workorders.resolve(workorder, workorders.names_on(ctx.candidate, main))
-        task, text = workorders.path_of(order), workorders.text_on(ctx.candidate, main, order)
+        policy = ctx.config_tip()
+        order = workorders.resolve(workorder, workorders.names_on(ctx.candidate, policy))
+        task, text = workorders.path_of(order), workorders.text_on(ctx.candidate, policy, order)
     label = f'review-{time.strftime("%Y%m%d-%H%M%S")}-{os.urandom(2).hex()}'
     with checkouts.scratch('review-') as scratch:
         source = scratch / 'input'
@@ -750,5 +766,5 @@ def review_now(ctx, prompt, workorder=None):
     if skipped:
         say('Not reviewed (symlinks or special files): ' + ', '.join(skipped))
     if unseen:
-        say('Not reviewed (control paths: the reviewer sees the version on main): ' + ', '.join(unseen))
+        say('Not reviewed (control paths: the reviewer sees the version of the control checkout): ' + ', '.join(unseen))
     return 0

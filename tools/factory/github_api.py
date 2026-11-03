@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 import re
+import branches
 from contracts import Blocked, require
 
 # The compare route needs "base...head"; every other ".." stays an unsafe path.
@@ -65,6 +66,15 @@ class GitHub:
             raise Blocked("non-UTF-8 source cannot be completely reviewed") from None
 
 
+def tip(client, repo, branch):
+    """Current commit of a listed branch; the name is checked before it enters the route."""
+    require(isinstance(branch, str) and branches.NAME.fullmatch(branch) is not None, "invalid branch name")
+    ref = client.request("GET", f"/repos/{repo}/git/ref/heads/{branch}")
+    sha = ((ref or {}).get("object") or {}).get("sha")
+    require(isinstance(sha, str) and re.fullmatch("[0-9a-f]{40}", sha) is not None, "invalid branch tip: " + branch)
+    return sha
+
+
 def installation(config, role):
     app_id = config[role + "_app_id"]
     key = os.environ.get("FACTORY_" + role.upper() + "_APP_PRIVATE_KEY")
@@ -99,7 +109,8 @@ def verify_run(client, snapshot, config, required_jobs, run_id=None):
     run = client.request("GET", f"/repos/{repo}/actions/runs/{run_id}")
     require(run["run_attempt"] == snapshot["run_attempt"], "wrong run attempt")
     require(run["repository"]["full_name"] == repo and run["event"] == "workflow_dispatch", "wrong run origin")
-    require(run["head_sha"] == snapshot["policy_sha"] and run["head_branch"] == config["default_branch"], "wrong workflow revision")
+    # Every factory job runs the config branch tip (the snapshot's policy revision).
+    require(run["head_sha"] == snapshot["policy_sha"] and run["head_branch"] == config["config_branch"], "wrong workflow revision")
     workflow = client.request("GET", f"/repos/{repo}/actions/workflows/{run['workflow_id']}")
     require(workflow["path"] == config["workflow"], "wrong workflow identity")
     jobs = client.pages(f"/repos/{repo}/actions/runs/{run_id}/jobs?filter=latest", "jobs")

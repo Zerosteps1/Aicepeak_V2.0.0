@@ -1,7 +1,7 @@
 """Shared local-review ownership and publication, executed only by factory.yml.
 
-The main-only workflow's PR concurrency group serializes this module with snapshots,
-retries and corrections. A local process may POST result evidence, never PATCH the gate.
+factory.yml runs only on the config branch; its PR concurrency group serializes this module
+with snapshots, retries and corrections. A local process may POST result evidence, never PATCH the gate.
 Claims have no lease: a fresh maintainer retry creates a newer ledger gate and invalidates
 all results for the old one. Every granted claim consumes a review slot, even on a crash.
 """
@@ -12,8 +12,9 @@ import re
 import sys
 sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CLI use.
 
+import branches
 import engine
-from contracts import Blocked, digest, gates, require, validate_review
+from contracts import Blocked, binding, digest, gates, require, validate_review
 from github_api import installation, verify_run
 
 CODEX_VERSION = 'codex-cli 0.164.0'
@@ -42,7 +43,9 @@ def verified_gate(gh, pr, check_id, config):
     snapshot = record.get('snapshot')
     require(isinstance(snapshot, dict) and snapshot.get('repository') == repo and snapshot.get('pr') == pr
             and snapshot.get('check_id') == check_id, 'pending receipt does not match its check')
-    require(check['app']['id'] == config['publisher_app_id'] and check['external_id'] == engine.bind(snapshot)
+    # Receipts from before the target branch joined the binding never count; they need a fresh run.
+    require(isinstance(snapshot.get('base_ref'), str), 'legacy review binding; dispatch a fresh run')
+    require(check['app']['id'] == config['publisher_app_id'] and check['external_id'] == binding(snapshot)
             and check['head_sha'] == snapshot['head_sha']
             and check['details_url'] == f"https://github.com/{repo}/actions/runs/{snapshot['run_id']}",
             'unauthenticated pending review')
@@ -69,10 +72,14 @@ def workflow_run(gh, config, snapshot, run_id, jobs):
 
 def require_tests(gh, record, config):
     snapshot, tests = record['snapshot'], record.get('tests', {})
-    require(tests.get('ok') is True and tests.get('exit_code') == 0
-            and all(tests.get(key) == snapshot[key] for key in ('repository', 'head_sha', 'policy_sha', 'run_id')),
+    # A /review snapshot reuses the pipeline run that tested its head; a pipeline snapshot carries its own.
+    run_id = tests.get('run_id') if snapshot.get('review_request') else snapshot['run_id']
+    require(tests.get('ok') is True and tests.get('exit_code') == 0 and type(run_id) is int and run_id > 0
+            and tests.get('run_id') == run_id
+            and all(tests.get(key) == snapshot[key] for key in ('repository', 'head_sha', 'policy_sha')),
             'deterministic checks did not pass with this binding')
-    verify_run(gh, snapshot, config, {'Snapshot': ['success'], config['test_job']: ['success'], 'Publish gates': ['success']})
+    verify_run(gh, snapshot, config, {'Snapshot': ['success'], config['test_job']: ['success'], 'Publish gates': ['success']},
+               run_id=run_id)
 
 
 def claim_review(gh, config, check, record, claim_id, run_id, actor):
@@ -97,7 +104,7 @@ def claim_review(gh, config, check, record, claim_id, run_id, actor):
 
 
 def result_binding(snapshot, claim):
-    return engine.bind(snapshot) + ':review-result:' + claim['id']
+    return binding(snapshot) + ':review-result:' + claim['id']
 
 
 def validate_reviewer(reviewer):
@@ -179,13 +186,18 @@ def notify_review(gh, config, snapshot, value, outcome, reason, result_id):
     bodies = [c.get('body', '') for c in comments
               if (c.get('performed_via_github_app') or {}).get('id') == config['publisher_app_id']]
     marker = f'<!-- factory-review-result:{result_id} -->'
-    advisory = '' if 'factory/senior-review' in config['required_checks'] else ' · advisory (shadow phase)'
+    base, model = snapshot['base_ref'], branches.parse(config)
+    # A maintainer-manual production target requires the review through its production check, not as a check of its own.
+    required = branches.SENIOR in model.required_checks(base) or model.review_required(base)
+    advisory = '' if required else f' · advisory (not required for {base})'
     body = f"Factory · Head `{snapshot['head_sha'][:12]}` · Astra/high `{outcome}` (maintainer-local reviewer){advisory}\n\n{reason or value['review']['summary']}"
     if not any(b.startswith(marker + '\n') for b in bodies):
         gh.request('POST', f"/repos/{snapshot['repository']}/issues/{snapshot['pr']}/comments", {'body': marker + '\n' + body})
     engine.remove_label(gh, snapshot, engine.AWAITING_REVIEW)
-    automatic = (outcome == 'changes_requested' and not snapshot['control_changed']
+    automatic = (outcome == 'changes_requested' and not snapshot['control_changed'] and engine.full_gate(snapshot)
                  and config.get('automatic_correction') is True and value['dispatch_correction'])
+    if snapshot.get('mode') == 'production':
+        return  # A production review informs the maintainers; there is no author handoff.
     if outcome != 'pass' and not automatic:
         handoff_marker = f'<!-- factory-review-handoff:{result_id} -->'
         if not any(b.startswith('needs-author-action: ') and handoff_marker in b for b in bodies):
@@ -199,6 +211,7 @@ def coordinate(gh, config, pr, check_id, claim_id, result_id=0):
     require(type(pr) is int and pr > 0 and type(check_id) is int and check_id > 0
             and type(result_id) is int and result_id >= 0 and re.fullmatch('[0-9a-f]{32}', claim_id or ''),
             'invalid review coordination request')
+    engine.on_config_branch(config)
     check, record = verified_gate(gh, pr, check_id, config)
     snapshot = record['snapshot']
     require(os.environ.get('GITHUB_SHA') == snapshot['policy_sha'], 'review coordination must run the snapshot policy revision')

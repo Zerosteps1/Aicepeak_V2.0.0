@@ -18,6 +18,9 @@ import workorders
 
 WATCH_ALL_INTERVAL = 60
 VERBS = {'add': 'add', 'edit': 'update', 'delete': 'remove'}
+ORDERS_TASK = 'docs/work/FACTORY-001.md'  # the preflight task of work-order PRs (config PRs have none)
+APPROVALS = ('Next: two maintainers approve the pull request at its current head; a maintainer merges it on GitHub '
+             '(`factory merge` never merges into a production branch).')
 
 
 def open_editor(path):
@@ -38,8 +41,7 @@ def editor_command():
 
 def issue(ctx, title=None, kind='factory', noedit=False):
     candidate = ctx.candidate
-    main = ctx.main()
-    used = workorders.numbers_ever_added(candidate, main) | workorders.numbers_in(candidate)
+    used = workorders.numbers_ever_added(candidate, ctx.config_tip()) | workorders.numbers_in(candidate)
     try:
         used |= workorders.numbers_in_pulls(ctx.gh, ctx.config)
     except (Blocked, OSError, ValueError, subprocess.SubprocessError):
@@ -87,13 +89,16 @@ def show_diff(path, before, after):
 
 
 def submit_workorders(ctx):
+    """Work orders live on the config branch: their PR goes there (type b), so numbers stay unique."""
     candidate, config, gh = ctx.candidate, ctx.config, ctx.gh
+    name = ctx.model.config_branch
     branch = f'{ctx.login}/new-workorders'
     require(checkouts.current_branch(candidate) != branch,
             f'the candidate is on {branch}: commit there with `factory submit --workorder FACTORY-001`, or switch branches')
     with ctx.candidate_lock():
-        tips = checkouts.fetch(candidate, config, 'main', branch)
-        main, tip, head = tips['main'], tips.get(branch), checkouts.head(candidate)
+        tips = checkouts.fetch(candidate, config, name, branch)
+        require(name in tips, f'the config branch {name} is not on GitHub')
+        policy, tip, head = tips[name], tips.get(branch), checkouts.head(candidate)
         changes = collect_orders(candidate)
     require(changes, 'no uncommitted work-order changes in docs/work/ (new files, edits or deletions)')
     pulls = workorders.open_pulls(gh, config)
@@ -102,25 +107,28 @@ def submit_workorders(ctx):
     if own:
         base, pull = own[0]['head']['sha'], own[0]
         require(base == tip, f'pull request #{pull["number"]} moved while fetching; retry')
-    elif tip and not is_ancestor(candidate, tip, main):
-        say(f'Branch {branch} has commits that are not on main and no open pull request:')
-        say(common.printable(out(candidate, 'log', '--oneline', f'{main}..{tip}'), 4000))
+        target = (pull.get('base') or {}).get('ref')
+        require(target == name, f'pull request #{pull["number"]} of {branch} targets {target}, not the config branch '
+                f'{name}; close it, then submit again')
+    elif tip and not is_ancestor(candidate, tip, policy):
+        say(f'Branch {branch} has commits that are not on {name} and no open pull request:')
+        say(common.printable(out(candidate, 'log', '--oneline', f'{policy}..{tip}'), 4000))
         require(common.ask(f'Replace {branch} with this submission?'), 'nothing submitted')
-        base, pull, replace = main, None, tip
+        base, pull, replace = policy, None, tip
     else:
-        base, pull = main, None
+        base, pull = policy, None
     other = [p for p in pulls if p['head']['ref'] != branch]
-    used = workorders.numbers_ever_added(candidate, main) | workorders.numbers_in_pulls(gh, config, other)
+    used = workorders.numbers_ever_added(candidate, policy) | workorders.numbers_in_pulls(gh, config, other)
     errors, kinds = [], {}
     for path, data in sorted(changes.items()):
         in_head, in_base = blob(candidate, head, path), blob(candidate, base, path)
         if in_head is not None and in_base != in_head and not (own and in_base is not None):
-            errors.append(f'{path}: changed on main since your branch; update the candidate first (git pull / merge main)')
+            errors.append(f'{path}: changed on {name} since your branch; update the candidate first (merge origin/{name})')
         new = data is not None and in_base is None
         if data is None:
             kinds[path] = 'delete'
             if in_base is None:
-                errors.append(f'{path}: not present on {"the pull request" if own else "main"}; nothing to delete')
+                errors.append(f'{path}: not present on {"the pull request" if own else name}; nothing to delete')
             continue
         kinds[path] = 'add' if new else 'edit'
         errors += workorders.problems(path, data.decode('utf-8', 'replace'), new=new,
@@ -130,7 +138,7 @@ def submit_workorders(ctx):
     require(not errors, 'work orders not submitted:\n  ' + '\n  '.join(errors))
     for path, data in sorted(changes.items()):
         if kinds[path] == 'delete':
-            require(common.ask(f'Delete {path} on main?'), 'nothing submitted')
+            require(common.ask(f'Delete {path} on {name}?'), 'nothing submitted')
         elif kinds[path] == 'edit':
             show_diff(path, blob(candidate, base, path), data)
             require(common.ask(f'Submit this change to {path}?'), 'nothing submitted')
@@ -148,9 +156,9 @@ def submit_workorders(ctx):
         repo = checkouts.materialize(scratch / 'repo', base, origin=checkouts.github_url(config), branch=branch,
                                      objects=[checkouts.objects_dir(candidate), checkouts.objects_dir(ctx.control)])
         identity = ctx.identity()
-        if not is_ancestor(repo, main, base):
-            merged = git(repo, *identity, 'merge', '--no-edit', '--quiet', main, check=False)
-            require(merged.returncode == 0, f'pull request #{pull["number"]} conflicts with main; resolve it on its branch first')
+        if not is_ancestor(repo, policy, base):
+            merged = git(repo, *identity, 'merge', '--no-edit', '--quiet', policy, check=False)
+            require(merged.returncode == 0, f'pull request #{pull["number"]} conflicts with {name}; resolve it on its branch first')
         for path, data in changes.items():
             if data is None:
                 git(repo, 'rm', '--quiet', '--', path)
@@ -173,11 +181,13 @@ def submit_workorders(ctx):
             body.write_text('Work orders submitted with `factory submit workorders`:\n\n' + '\n'.join(
                 f'- {kinds[p]}: `{p}`' + ('' if changes[p] is None else f' – {workorders.title_of(changes[p].decode())}')
                 for p in sorted(changes)) + '\n')
-            created = session_submit(ctx, repo, 'docs/work/FACTORY-001.md', message, body,
+            created = session_submit(ctx, repo, ORDERS_TASK, message, body, base=name,
                                      on_created=lambda _: move_out(candidate, head, changes))
+            if created:
+                say(APPROVALS + ' Then copy the work orders to the validation branches: `factory sync workorders`.')
     if pull:
         move_out(candidate, head, changes)
-        return finish_open_pr(ctx, pull, sha, branch, 'docs/work/FACTORY-001.md', [])
+        return finish_open_pr(ctx, pull, sha, branch, ORDERS_TASK, [])
     return 0 if created else 1
 
 
@@ -204,7 +214,7 @@ def move_out(candidate, head, changes):
 
 def run_session_submit(ctx, snapshot, args, on_created=None):
     """Run session.py submit; on_created runs as soon as the PR line is printed, before the watch."""
-    with checkouts.policy_checkout(ctx.control, ctx.sha, ctx.config) as policy:
+    with checkouts.policy_checkout(ctx.control, ctx.policy, ctx.config) as policy:
         command = checkouts.tool_command(policy, 'session.py', 'submit', '--candidate', snapshot, *args)
         process = subprocess.Popen(command, cwd=policy, env=checkouts.tool_env(), stdout=subprocess.PIPE, text=True)
         created = None
@@ -228,8 +238,11 @@ def run_session_submit(ctx, snapshot, args, on_created=None):
     return created['pr'] if created else None
 
 
-def session_submit(ctx, snapshot, task, title, body_file, context=(), draft=False, on_created=None):
-    args = ['--task', task, '--runner', ctx.config['runners'][0], '--title', title, '--body-file', body_file]
+def session_submit(ctx, snapshot, task, title, body_file, context=(), draft=False, on_created=None, *, base):
+    """session.py submit into base: a validation branch, or a production branch for work-order and config PRs. Without
+    a task (config PRs) there is no advisory preflight: two maintainer approvals and factory/deterministic decide."""
+    args = [*(['--task', task] if task else []), '--base', base, '--runner', ctx.config['runners'][0], '--title', title,
+            '--body-file', body_file]
     for path in context:
         args += ['--context', path]
     if draft:
@@ -237,10 +250,10 @@ def session_submit(ctx, snapshot, task, title, body_file, context=(), draft=Fals
     return run_session_submit(ctx, snapshot, args, on_created)
 
 
-def preflight(ctx, snapshot, task, context=()):
+def preflight(ctx, snapshot, task, context=(), *, base):
     """Advisory Astra preflight through session.py; returns the parsed review (or raises with the reason)."""
-    with checkouts.policy_checkout(ctx.control, ctx.sha, ctx.config) as policy:
-        args = ['preflight', '--candidate', snapshot, '--task', task]
+    with checkouts.policy_checkout(ctx.control, ctx.policy, ctx.config) as policy:
+        args = ['preflight', '--candidate', snapshot, '--task', task, '--base', base]
         for path in context:
             args += ['--context', path]
         code, stdout, stderr = checkouts.run_tool(policy, 'session.py', *args, capture=True)
@@ -268,27 +281,32 @@ def finish_open_pr(ctx, pull, sha, branch, task, context):
     number = pull['number']
     if pull.get('draft'):
         with checkouts.candidate_snapshot(ctx.candidate, ctx.control, sha, branch, ctx.config) as snapshot:
-            review = preflight(ctx, snapshot, task, context)
+            review = preflight(ctx, snapshot, task, context, base=pull['base']['ref'])
         describe_review(review)
         if review['outcome'] != 'pass':
             say(f'Pull request #{number} stays a draft; fix the findings and run `factory submit --finished` again.')
             return 1
         ctx.gh.command(['pr', 'ready', str(number), '--repo', ctx.config['repository']])
         say(f'Pull request #{number} is ready for review.')
+    if ctx.model.level(pull['base']['ref']) == 'production':  # type b: no senior review to watch for
+        say(APPROVALS)
+        return 0
     say(f'Watching pull request #{number}; Ctrl-C stops watching (the PR keeps waiting for a watcher).')
     return watch(ctx, number)
 
 
 def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=None, context=()):
-    candidate, config = ctx.candidate, ctx.config
+    candidate, config, model = ctx.candidate, ctx.config, ctx.model
     branch = checkouts.current_branch(candidate)
     require(branch, 'the candidate has a detached HEAD; switch to a branch first')
-    require(branch != config['default_branch'], f'never on {branch}: create a branch first, e.g. '
-            f'`git -C {candidate} switch -c {ctx.login}/<ID>`')
+    require(branch not in model.names, f'never on {branch}, a listed {model.level(branch)} branch: create a feature '
+            f'branch first, e.g. `git -C {candidate} switch -c {ctx.login}/<ID>`')
+    name = model.config_branch
     with ctx.candidate_lock():
-        tips = checkouts.fetch(candidate, config, 'main', branch)
-        main, remote = tips['main'], tips.get(branch)
-        names = workorders.names_on(candidate, main)
+        tips = checkouts.fetch(candidate, config, name, branch)
+        require(name in tips, f'the config branch {name} is not on GitHub')
+        policy, remote = tips[name], tips.get(branch)
+        names = workorders.names_on(candidate, policy)
         order = workorders.resolve(workorder, names) if workorder else workorders.branch_order(branch, names)
         if not order:
             require(not finished, f'{branch} belongs to no work order; pass --workorder <n> with --finished')
@@ -300,7 +318,7 @@ def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=No
                     f'`git -C {candidate} pull --ff-only` (or merge) first')
         staged = git(candidate, 'diff', '--cached', '--quiet', check=False).returncode == 1
         if staged:
-            heading = title or (f'{order}: {workorders.title_of(workorders.text_on(candidate, main, order))}' if order else None)
+            heading = title or (f'{order}: {workorders.title_of(workorders.text_on(candidate, policy, order))}' if order else None)
             if heading:
                 git(candidate, 'commit', '--quiet', '-m', heading, *(['-m', desc] if desc else []))
             else:
@@ -319,56 +337,82 @@ def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=No
         if order:
             say('When the work order is done: `factory submit --finished`.')
         return 0
-    require(is_ancestor(candidate, main, local), f'{branch} does not contain current main. Run '
-            f'`git -C {candidate} merge origin/main`, resolve conflicts, then `factory submit --finished` again '
-            '(for an open PR, `gh pr update-branch <n>` merges main on GitHub)')
-    task = workorders.path_of(order)
-    imports = list(dict.fromkeys([*checkouts.direct_imports(candidate, main, local), *context]))
+    task, text = workorders.path_of(order), workorders.text_on(candidate, policy, order)
     pull = open_pull_for(ctx, branch)
+    # An open PR keeps its target; a new one goes to the validation branch routed for the work order's kind.
+    target = pull['base']['ref'] if pull else model.route(workorders.task_block(text)['kind'])
+    tip = ctx.tip(target)
+    require(is_ancestor(candidate, tip, local), f'{branch} does not contain current {target}. Run '
+            f'`git -C {candidate} merge origin/{target}`, resolve conflicts, then `factory submit --finished` again '
+            '(for an open PR, `gh pr update-branch <n>` merges it on GitHub)')
+    imports = list(dict.fromkeys([*checkouts.direct_imports(candidate, tip, local), *context]))
     if pull:
         if draft:
             warn(f'--draft is ignored: pull request #{pull["number"]} already exists')
         return finish_open_pr(ctx, pull, local, branch, task, imports)
-    text = workorders.text_on(candidate, main, order)
     heading = title or f'{order}: {workorders.title_of(text)}'
-    commits = out(candidate, 'log', '--format=- %s', f'{main}..{local}')
+    commits = out(candidate, 'log', '--format=- %s', f'{tip}..{local}')
     with checkouts.scratch('submit-') as scratch:
         body = scratch / 'body.md'
         body.write_text((desc.strip() + '\n\n' if desc else '') + f'Work order: `{task}`\n\nCommits:\n{commits}\n')
         with checkouts.candidate_snapshot(candidate, ctx.control, local, branch, config) as snapshot:
-            created = session_submit(ctx, snapshot, task, heading, body, imports, draft)
+            created = session_submit(ctx, snapshot, task, heading, body, imports, draft, base=target)
     return 0 if created else 1
 
 
 # --- watch, merge ------------------------------------------------------------------------------------
 
+def session_watch(policy, pr, *args):
+    """session.py watch with its output streamed as it comes; a stale `/review` is said in plain words, not waited on."""
+    command = checkouts.tool_command(policy, 'session.py', 'watch', '--pr', pr, *args)
+    process = subprocess.Popen(command, cwd=policy, env=checkouts.tool_env(), stdout=subprocess.PIPE, text=True)
+    lines = []
+    try:
+        for line in process.stdout:
+            say(common.printable(line.rstrip('\n'), 20000))
+            lines.append(line)
+        code = process.wait()
+    except KeyboardInterrupt:
+        checkouts.settle(process)
+        raise
+    finally:
+        process.stdout.close()
+    result = checkouts.last_json(''.join(lines)) or {}
+    if result.get('status') == 'stale':
+        warn(f'PR #{pr}: ' + common.printable(result.get('message') or 'the pending review is stale', 500))
+    return code
+
+
 def watch(ctx, pr=None, everything=False):
     if not everything:
-        with checkouts.policy_checkout(ctx.control, ctx.sha, ctx.config) as policy:
-            code, _, _ = checkouts.run_tool(policy, 'session.py', 'watch', '--pr', pr)
-        return code
+        with checkouts.policy_checkout(ctx.control, ctx.policy, ctx.config) as policy:
+            return session_watch(policy, pr)
     say(f'Reviewing every PR labelled awaiting-senior-review every {WATCH_ALL_INTERVAL} s; Ctrl-C stops.')
     while True:
         with common.Lock(common.STATE_DIR / 'locks/control.lock', 'the control checkout'):
-            sha, changed = checkouts.update_control(ctx.control, ctx.config)
+            _, changed = checkouts.update_control(ctx.control, ctx.config, branch=ctx.branch)
+            current = checkouts.read_policy(ctx.control, ctx.config)
         if changed:
             ctx.reexec(fresh=True)
         waiting = ctx.gh.pages(f"/repos/{ctx.config['repository']}/issues?state=open&labels=awaiting-senior-review")
-        with checkouts.policy_checkout(ctx.control, sha, ctx.config) as policy:
+        with checkouts.policy_checkout(ctx.control, current.tip, ctx.config) as policy:
             for item in waiting:
                 if item.get('pull_request'):
                     say(f'PR #{item["number"]}: {common.printable(item.get("title", ""), 200)}')
-                    checkouts.run_tool(policy, 'session.py', 'watch', '--pr', item['number'], '--once')
+                    session_watch(policy, item['number'], '--once')  # a stale or failed PR never stops the others
         time.sleep(WATCH_ALL_INTERVAL)
 
 
 def merge(ctx, pr, dry_run=False):
-    with checkouts.policy_checkout(ctx.control, ctx.sha, ctx.config) as policy:
+    """session.py merge takes the target from the PR (validation branches only; production PRs merge on GitHub)."""
+    with checkouts.policy_checkout(ctx.control, ctx.policy, ctx.config) as policy:
         code, _, _ = checkouts.run_tool(policy, 'session.py', 'merge', '--pr', pr, *(['--dry-run'] if dry_run else []))
     if code == 0 and not dry_run:
-        with ctx.candidate_lock():
-            checkouts.fetch(ctx.candidate, ctx.config, 'main')
-        say('Merged. Update your branches from origin/main when you continue.')
+        pull = ctx.gh.request('GET', f"/repos/{ctx.config['repository']}/pulls/{int(pr)}")
+        target = (pull.get('base') or {}).get('ref')
+        require(target in ctx.model.names, f'pull request #{pr} targets an unlisted branch')
+        ctx.tips(target)
+        say(f'Merged. Update your branches from origin/{target} when you continue.')
     return code
 
 
@@ -402,7 +446,7 @@ def doctor(ctx):
     check('gh maintainer login', _quiet(checkouts.maintainer, ctx.gh, ctx.config), 'gh auth login; see docs/dev-setup.md')
     for name, ok, fix in checks:
         say(f'{"ok  " if ok else "FAIL"} {name}' + ('' if ok else f'  → {fix}'))
-    with checkouts.policy_checkout(ctx.control, ctx.sha, ctx.config) as policy:
+    with checkouts.policy_checkout(ctx.control, ctx.policy, ctx.config) as policy:
         code, stdout, _ = checkouts.run_tool(policy, 'doctor.py', '--root', policy, '--runner', ctx.config['runners'][0],
                                             capture=True)
     report = checkouts.last_json(stdout) or {}

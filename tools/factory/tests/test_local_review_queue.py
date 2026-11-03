@@ -14,11 +14,13 @@ from unittest.mock import patch
 ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(ROOT / 'tools/factory'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import branch_fixture
+import contracts
 import engine
 import local_review
 import local_review_queue as queue
 from contracts import Blocked
-from test_engine import Transport
+from test_engine import ENV, Transport, job
 
 
 class QueueTransport(Transport):
@@ -30,7 +32,7 @@ class QueueTransport(Transport):
 
     def add_run(self, number, names=None):
         self.runs[number] = {'id': number, 'run_attempt': 1, 'repository': {'full_name': 'fixture/repo'},
-                             'event': 'workflow_dispatch', 'head_sha': 'b' * 40, 'head_branch': 'main',
+                             'event': 'workflow_dispatch', 'head_sha': 'b' * 40, 'head_branch': 'production',
                              'workflow_id': 10, 'triggering_actor': {'type': 'User', 'id': 1, 'login': 'test-human'}}
         self.jobs[number] = [{'name': name, 'status': 'completed', 'conclusion': 'success'}
                              for name in (names or ['Review coordination'])]
@@ -62,10 +64,10 @@ def reviewer():
 
 class Coordination(unittest.TestCase):
     def setUp(self):
-        self.config = json.loads((ROOT / 'factory/config.json').read_text())
+        self.config = branch_fixture.load(ROOT)
         self.config.update(repository='fixture/repo', publisher_app_id=7, maintainers=[{'id': 1, 'login': 'test-human'}])
         self.gh = QueueTransport(self.config)
-        env = patch.dict(os.environ, {'GITHUB_SHA': 'b' * 40, 'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1', 'FACTORY_RETRY': 'false'})
+        env = patch.dict(os.environ, ENV)
         env.start()
         self.addCleanup(env.stop)
         self.snapshot = self.pending()
@@ -304,7 +306,7 @@ class Coordination(unittest.TestCase):
             self.finalize(result_id)
         self.assertNotEqual(self.gh.checks[self.snapshot['check_id']].get('conclusion'), 'success')
 
-    def test_claim_requires_verified_source_jobs_and_fresh_main_maintainer_run(self):
+    def test_claim_requires_verified_source_jobs_and_fresh_config_branch_maintainer_run(self):
         self.gh.jobs[1][1]['conclusion'] = 'failure'
         with self.assertRaisesRegex(Blocked, 'trusted job'):
             self.claim()
@@ -381,11 +383,156 @@ class Coordination(unittest.TestCase):
         self.assertIn('group: factory-${{ github.repository }}-pr-${{ fromJSON(inputs.pr) }}', workflow)
         self.assertIn('cancel-in-progress: false', workflow)
         self.assertIn('name: Review coordination', workflow)
-        job = workflow.split('\n  review-coordinate:\n', 1)[1].split('\n  correction:\n', 1)[0]
-        self.assertIn("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)", job)
-        self.assertIn('local_review_queue.py', job)
+        self.assertIn('local_review_queue.py', job(workflow, 'review-coordinate'))
         self.assertNotIn('CODEX_ACCESS_TOKEN', workflow)
         self.assertNotIn('actions: write', workflow)
+
+    def test_coordination_runs_only_on_the_config_branch(self):
+        self.gh.calls.clear()
+        for ref in ('refs/heads/testing', 'refs/heads/ftrutschnig/TEST'):
+            with self.subTest(ref=ref), patch.dict(os.environ, {'GITHUB_REF': ref}), \
+                    self.assertRaisesRegex(Blocked, 'factory jobs must run on the config branch'):
+                self.claim()
+        self.assertEqual(self.gh.calls, [])
+
+    def test_legacy_six_field_pending_binding_never_counts(self):
+        check = self.gh.checks[self.snapshot['check_id']]
+        fields = check['external_id'].split(':')
+        check['external_id'] = ':'.join(fields[:4] + fields[5:])
+        with self.assertRaisesRegex(Blocked, 'unauthenticated'):
+            self.claim()
+        check['external_id'] = contracts.binding(self.snapshot)
+        record = engine.receipt(check)
+        record['snapshot'] = {k: v for k, v in self.snapshot.items() if k != 'base_ref'}
+        check['output']['text'] = json.dumps(record)
+        with self.assertRaisesRegex(Blocked, 'legacy'):
+            self.claim()
+        self.assertNotIn('claim', engine.receipt(check))
+
+    def requested(self, review='maintainer-manual'):
+        """A promotion PR: pipeline run 10 tests the head, then a maintainer's /review (run 30) reserves the review."""
+        self.config['branches']['production'][0]['review'] = review
+        self.gh = QueueTransport(self.config)
+        self.gh.pr['base'] = {'ref': 'production', 'sha': 'b' * 40}
+        self.gh.pr['head']['ref'] = 'testing'
+        self.gh.pr['body'] = 'Promote testing'
+        plain = self.pending(run_id=10)
+        self.assertIsNone(plain['check_id'])
+        comment = self.gh.comment('/review')
+        self.gh.add_run(30, ['Review request'])
+        captured = {}
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '30'}), patch.object(engine, 'installation', return_value=self.gh), \
+                patch.object(engine, 'emit', side_effect=lambda name, value: captured.update({name: value})):
+            engine.review_request_stage(argparse.Namespace(pr=1, comment_id=comment, head=self.gh.pr['head']['sha']), self.config)
+        self.snapshot = captured['snapshot']
+        return self.snapshot
+
+    def local_review(self, outcome):
+        with patch.object(local_review, 'require_trusted_checkout'), \
+                patch.object(local_review, 'dispatch_review', side_effect=self.dispatch), \
+                patch.object(local_review, 'dispatch_correction') as correction, \
+                patch.object(local_review.subprocess, 'run') as run, \
+                patch.object(local_review, 'run_codex', return_value=(review_for(self.snapshot, outcome),
+                             {'thread_id': 't', 'turns': 1, 'usage': {}})) as model:
+            self.assertEqual(local_review.review_pr(self.gh, 1, self.config, dispatch=True, dry_run=False), outcome)
+        correction.assert_not_called()
+        # The finished production review re-runs the production check, which needs it (maintainer's own gh).
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ['gh', 'workflow', 'run', 'factory-promotion.yml', '--repo', 'fixture/repo',
+                                                 '--ref', 'production', '-f', 'pr=1'])
+        return model.call_args.args[:2]
+
+    def test_production_review_uses_the_tested_head_and_never_hands_off_to_an_author(self):
+        self.config['automatic_correction'] = True
+        snapshot = self.requested('initiated')
+        self.assertEqual((snapshot['mode'], snapshot['run_id'], self.record()['tests']['run_id']), ('production', 30, 10))
+        instructions, material = self.local_review('changes_requested')
+        self.assertNotIn('APPROVED WORK ORDER', material)
+        self.assertIn(f"PRODUCTION REVIEW of the PR into production: no work-order scope. Review the complete diff {'b' * 40}..{'a' * 40}", material)
+        self.assertIn('targets the production branch production', instructions)
+        self.assertEqual(self.gh.checks[snapshot['check_id']]['conclusion'], 'failure')
+        self.assertIn('advisory (not required for production)', self.gh.comments[-1]['body'])
+        self.assertNotIn('needs-author-action', self.gh.labels)
+        self.assertFalse(any(c['body'].startswith('needs-author-action') for c in self.gh.comments))
+
+    def test_required_production_review_passes_through_the_queue(self):
+        snapshot = self.requested()
+        self.local_review('pass')
+        self.assertEqual(self.gh.checks[snapshot['check_id']]['conclusion'], 'success')
+        self.assertNotIn('advisory', self.gh.comments[-1]['body'])
+        self.assertEqual(self.gh.labels, set())
+
+    def test_failed_production_dispatch_keeps_the_review_and_names_the_command(self):
+        import io
+        from contextlib import redirect_stderr
+        snapshot = self.requested()
+        stderr = io.StringIO()
+        with patch.object(local_review, 'require_trusted_checkout'), \
+                patch.object(local_review, 'dispatch_review', side_effect=self.dispatch), \
+                patch.object(local_review.subprocess, 'run', side_effect=FileNotFoundError('gh')), \
+                patch.object(local_review, 'run_codex', return_value=(review_for(self.snapshot, 'pass'),
+                             {'thread_id': 't', 'turns': 1, 'usage': {}})), redirect_stderr(stderr):
+            self.assertEqual(local_review.review_pr(self.gh, 1, self.config, dispatch=True, dry_run=False), 'pass')
+        self.assertEqual(self.gh.checks[snapshot['check_id']]['conclusion'], 'success')
+        self.assertEqual(stderr.getvalue(), 'Production check not dispatched; run: gh workflow run factory-promotion.yml '
+                                            '--repo fixture/repo --ref production -f pr=1\n')
+
+    def test_an_unfinished_production_review_names_the_production_check_rerun(self):
+        rerun = ('Once the review is complete, re-run the production check: '
+                 '`gh workflow run factory-promotion.yml --repo fixture/repo --ref production -f pr=1`.')
+        snapshot = self.requested()
+        self.claim()
+        check, record = queue.verified_gate(self.gh, 1, snapshot['check_id'], self.config)
+        publish = lambda: local_review.publish_review(self.gh, self.config, check, record, review_for(snapshot, 'pass'),
+                                                      reviewer(), dispatch=True)
+        # The result is saved, but the coordination is not dispatched.
+        with patch.object(local_review, 'dispatch_review', side_effect=subprocess.CalledProcessError(1, ['gh'])), \
+                self.assertRaises(Blocked) as raised:
+            publish()
+        self.assertIn('saved without completing the gate', str(raised.exception))
+        self.assertTrue(str(raised.exception).endswith(rerun))
+        # The coordination is dispatched but does not finish in time, or the maintainer interrupts the wait.
+        for timeout, message in ((0, 'review coordination timed out; no claim is stolen'),
+                                 (900, 'interrupted while waiting for the review coordination')):
+            self.config['limits']['timeout_seconds'] = timeout
+            with self.subTest(message=message), patch.object(local_review, 'dispatch_review'), \
+                    patch.object(local_review.time, 'sleep', side_effect=KeyboardInterrupt()), self.assertRaises(Blocked) as raised:
+                publish()
+            self.assertIn(message, str(raised.exception))
+            self.assertTrue(str(raised.exception).endswith(rerun))
+        self.assertEqual(self.gh.checks[snapshot['check_id']]['status'], 'in_progress')
+
+    def test_an_unfinished_validation_review_names_no_production_check(self):
+        self.claim()
+        check, record = queue.verified_gate(self.gh, 1, self.snapshot['check_id'], self.config)
+        publish = lambda: local_review.publish_review(self.gh, self.config, check, record, review_for(self.snapshot, 'pass'),
+                                                      reviewer(), dispatch=False)
+        with patch.object(local_review, 'dispatch_review', side_effect=subprocess.CalledProcessError(1, ['gh'])), \
+                self.assertRaises(Blocked) as raised:
+            publish()
+        self.assertNotIn('factory-promotion.yml', str(raised.exception))
+        with patch.object(local_review, 'dispatch_review'), patch.object(local_review.time, 'sleep', side_effect=KeyboardInterrupt()), \
+                self.assertRaises(KeyboardInterrupt):
+            publish()
+
+    def test_validation_review_does_not_dispatch_the_production_check(self):
+        with patch.object(local_review, 'require_trusted_checkout'), \
+                patch.object(local_review, 'dispatch_review', side_effect=self.dispatch), \
+                patch.object(local_review.subprocess, 'run') as run, \
+                patch.object(local_review, 'run_codex', return_value=(review_for(self.snapshot, 'pass'),
+                             {'thread_id': 't', 'turns': 1, 'usage': {}})):
+            self.assertEqual(local_review.review_pr(self.gh, 1, self.config, dispatch=True, dry_run=False), 'pass')
+        run.assert_not_called()
+
+    def test_production_review_claim_needs_the_pipeline_test_run(self):
+        snapshot = self.requested()
+        check = self.gh.checks[snapshot['check_id']]
+        record = engine.receipt(check)
+        record['tests']['run_id'] = 30  # the /review run itself has no test jobs
+        check['output']['text'] = json.dumps(record)
+        with self.assertRaisesRegex(Blocked, 'trusted job'):
+            self.claim()
+        self.assertNotIn('claim', engine.receipt(check))
 
 
 if __name__ == '__main__':

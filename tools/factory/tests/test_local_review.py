@@ -18,11 +18,17 @@ from unittest.mock import patch
 ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(ROOT / 'tools/factory'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import branch_fixture
+import contracts
 import engine
 import local_review
 from contracts import Blocked
 from test_local_review_queue import QueueTransport, reviewer as reviewer_metadata
 import local_review_queue as queue
+
+# The engine tests' job environment, inlined: importing test_engine would put it into review material too.
+ENV = {'GITHUB_SHA': 'b' * 40, 'GITHUB_REF': 'refs/heads/production', 'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1',
+       'FACTORY_RETRY': 'false'}
 
 
 def review_for(snapshot, outcome='changes_requested'):
@@ -399,14 +405,14 @@ class TrustedCheckout(unittest.TestCase):
 
 class Publication(unittest.TestCase):
     def setUp(self):
-        self.config = json.loads((ROOT / 'factory/config.json').read_text())
+        self.config = branch_fixture.load(ROOT)
         self.config.update(repository='fixture/repo', publisher_app_id=7, automatic_correction=False, maintainers=[{'id': 1, 'login': 'test-human'}])
         self.transport = QueueTransport(self.config)
         self.next_run = 100
         dispatcher = patch.object(local_review, 'dispatch_review', side_effect=self.dispatch)
         dispatcher.start()
         self.addCleanup(dispatcher.stop)
-        env = patch.dict(os.environ, {'GITHUB_SHA': 'b' * 40, 'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1', 'FACTORY_RETRY': 'false'})
+        env = patch.dict(os.environ, ENV)
         env.start()
         self.addCleanup(env.stop)
 
@@ -443,7 +449,7 @@ class Publication(unittest.TestCase):
         self.transport.checks[snapshot['check_id']]['external_id'] = 'fixture/repo:1:forged'
         with self.assertRaisesRegex(Blocked, 'unauthenticated'):
             local_review.pending_review(self.transport, 1, self.config)
-        self.transport.checks[snapshot['check_id']]['external_id'] = engine.bind(snapshot)
+        self.transport.checks[snapshot['check_id']]['external_id'] = contracts.binding(snapshot)
         self.transport.checks[snapshot['check_id']]['status'] = 'completed'
         with self.assertRaisesRegex(Blocked, 'no senior review awaiting'):
             local_review.pending_review(self.transport, 1, self.config)
@@ -490,7 +496,8 @@ class Publication(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[:3], ['gh', 'workflow', 'run'])
         self.assertIn(f"correction={snapshot['check_id']}", command)
-        self.assertIn('--ref', command)
+        # Corrections run the config branch's workflow, never the target branch's.
+        self.assertEqual(command[command.index('--ref') + 1], 'production')
 
     def test_stale_pending_review_cannot_write_a_verdict(self):
         snapshot = self.pending()

@@ -3,7 +3,8 @@ run-name: factory-feedback:${{ github.event.pull_request.number }}:${{ github.ev
 
 on:
   pull_request_review:
-    types: [submitted, edited]
+    # A dismissal re-runs the production check (it counts approvals) or a full gate's pipeline (its feedback changed).
+    types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited]
 

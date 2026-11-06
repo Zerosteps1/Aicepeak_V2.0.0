@@ -108,8 +108,10 @@ def inspect(root, runner):
     add("native_adapters", adapters, "Canonical skills and native adapters checked for drift.",
         "python3 tools/factory/clients.py check --root .; after an authorized source change run sync, then check again.")
     for tool in ("git", "gh", "docker", "actionlint", "gitleaks"):
+        pinned = tool in ("actionlint", "gitleaks")  # the check tools of factory/tools.lock.json
         add("tool_" + tool, bool(shutil.which(tool)), "Required tool: " + tool,
-            "Install the tool; use factory/tools.lock.json for the check tools.")
+            f"Install the pinned tool: python3 factory/install_tools.py --lock factory/tools.lock.json --destination <a folder on PATH> --only {tool}."
+            if pinned else "Install the tool: docs/dev-setup.md step 2.")
     git_ok = bool(shutil.which("git")) and probe(
         ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "rev-parse", "--verify", "HEAD"], root=root)
     add("git_head", git_ok, "Local commit present; remote branch not checked.", "Check out the reviewed factory commit.")

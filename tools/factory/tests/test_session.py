@@ -248,6 +248,31 @@ class SessionBoundaries(unittest.TestCase):
             self.assertEqual(list(self.control.rglob('*.pyc')), [], name)
         session.clean_tree(self.control,git(self.control,'rev-parse','HEAD'))
 
+    def test_clean_tree_tolerates_only_finders_ds_store(self):
+        sha = git(self.control, 'rev-parse', 'HEAD')
+        (self.control / 'docs').mkdir(exist_ok=True)
+        for place in (self.control / '.DS_Store', self.control / 'docs/.DS_Store'):
+            place.write_bytes(b'Bud1\x00finder settings')
+        session.clean_tree(self.control, sha)  # Finder writes these into every folder it shows
+        for name, make, problem in (
+                ('.DS_Store.py', lambda p: p.write_text('x'), 'untracked file'),
+                ('ds_store', lambda p: p.write_text('x'), 'untracked file'),
+                ('evil.pth', lambda p: p.write_text('import os'), 'untracked file')):
+            with self.subTest(name=name):
+                make(self.control / name)
+                with self.assertRaisesRegex(Blocked, problem):
+                    session.clean_tree(self.control, sha)
+                (self.control / name).unlink()
+        (self.control / '.DS_Store').chmod(0o755)  # executable: not Finder's file
+        with self.assertRaisesRegex(Blocked, 'untracked file .DS_Store'):
+            session.clean_tree(self.control, sha)
+        (self.control / '.DS_Store').unlink()
+        (self.control / '.DS_Store').symlink_to(self.control / 'docs/.DS_Store')
+        with self.assertRaisesRegex(Blocked, 'untracked file .DS_Store'):
+            session.clean_tree(self.control, sha)
+        (self.control / '.DS_Store').unlink()
+        session.clean_tree(self.control, sha)
+
     def test_watch_does_not_revive_superseded_pending_gates(self):
         old=self.gh.pending(1)
         for new_head in (self.head, 'c'*40):

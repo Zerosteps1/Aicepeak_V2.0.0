@@ -432,7 +432,7 @@ def publish_stage(config):
     elif snapshot['mode'] == 'validation':
         state = f"not part of the `tests` gate of {base}"
     elif snapshot.get('production_kind') == 'work-order':
-        state = 'not used for work-order and config PRs: two maintainer approvals decide them'
+        state = 'not used for work-order and config PRs: maintainer approvals decide them'
     elif model.review(base) == 'no':
         state = f"not used for {base}"
     elif model.review_required(base):
@@ -495,7 +495,7 @@ def tested(gh, snapshot, config):
             'exit_code': 0, 'summary': str((latest.get('output') or {}).get('summary') or '')[:6000]}
 
 
-NO_REVIEW = 'work-order and config PRs need no AI review: two maintainer approvals decide them'
+NO_REVIEW = 'work-order and config PRs need no AI review: maintainer approvals decide them'
 
 
 def review_request_stage(args, config):
@@ -544,7 +544,7 @@ def bypass_stage(args, config):
     require(pr['head']['repo']['full_name'] == repo, 'forks require manual author handling')
     # Only work-order/config PRs are refused, classified as the production check does: a promotion is never one of them.
     require(model.level(base) != 'production' or bypass.production_kind(model, repo, pr, lambda: bypass.pr_files(gh, repo, pr)) != 'work-order',
-            'work-order and config PRs into a production branch cannot be bypassed; they need two maintainer approvals')
+            'work-order and config PRs into a production branch cannot be bypassed; they need maintainer approvals')
     # The command binds the head it was posted for, committed before it, in a run its author or the dispatcher started.
     bypass.commanded_head(args.head, pr['head']['sha'], '/bypass')
     bypass.bypass_origin(gh, repo, pr['head']['sha'], item, int(os.environ['GITHUB_RUN_ID']))

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -242,10 +243,13 @@ class CheckoutTests(Repos):
         self.assertEqual(checkouts.update_control(self.control, self.config), (newer, True))
         self.assertEqual(git(self.control, 'rev-parse', 'HEAD'), newer)
         self.assertEqual(checkouts.read_policy(self.control, self.config).tip, newer)
-        (self.control / '.DS_Store').write_text('x')
-        with self.assertRaisesRegex(Blocked, r'untracked file \.DS_Store.*factory never deletes'):
+        (self.control / '.DS_Store').write_text('x')  # Finder's folder settings are tolerated
+        self.assertEqual(checkouts.update_control(self.control, self.config), (newer, False))
+        (self.control / 'notes.txt').write_text('x')
+        with self.assertRaisesRegex(Blocked, r'untracked file notes\.txt.*factory never deletes'):
             checkouts.update_control(self.control, self.config)
-        (self.control / '.DS_Store').unlink()
+        for stray in ('.DS_Store', 'notes.txt'):
+            (self.control / stray).unlink()
         git(self.control, 'switch', '--quiet', '-c', 'other')
         with self.assertRaisesRegex(Blocked, 'stay on production'):
             checkouts.update_control(self.control, self.config)
@@ -417,7 +421,7 @@ class CommandTests(Repos):
                 mock.patch.object(commands, 'session_submit', side_effect=lambda *a, **k: calls.append((a, k)) or k['on_created'](12) or 12), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(commands.submit_workorders(self.ctx()), 0)
-        self.assertEqual((calls[0][0][2], calls[0][1]['base']), ('docs/work/FACTORY-001.md', 'production'))
+        self.assertEqual((calls[0][0][2], calls[0][1]['base']), (None, 'production'))  # no advisory preflight
         self.assertEqual(git(self.origin, 'rev-parse', 'ftrutschnig/new-workorders^'), git(self.origin, 'rev-parse', 'production'))
         pushed = git(self.origin, 'show', 'refs/heads/ftrutschnig/new-workorders:docs/work/FACTORY-007.md')
         self.assertEqual(workorders.task_block(pushed)['status'], 'approved')
@@ -768,7 +772,7 @@ class BranchTests(Repos):
             self.assertEqual(branching.add_production(self.ctx(), 'release', 'initiated'), 0)
             self.assertEqual(branching.remove(self.ctx(), 'staging'), 0)
             self.assertEqual(branching.add_validation(self.ctx(), 'testing', 'full', ['factory', 'product']), 0)
-        self.assertIn('Next: two maintainers approve', output.getvalue())
+        self.assertIn(commands.approvals(self.ctx().model), output.getvalue())  # the number comes from work_order_approvals
         self.assertIn('already says this; nothing to propose', output.getvalue())  # testing is unchanged
         expected = {'ftrutschnig/config-add-qa': lambda c: branches.with_validation(c, 'qa', 'none', []),
                     'ftrutschnig/config-change-release': lambda c: branches.with_production(c, 'release', 'initiated'),
@@ -923,15 +927,24 @@ class BranchTests(Repos):
         self.assertIn(f'`gh pr ready 9 --repo {REPOSITORY}`', output.getvalue())
         self.assertEqual((git(self.origin, 'rev-parse', branch), len(calls)), (replaced, 2))
 
-    def test_only_config_prs_skip_the_advisory_preflight(self):
+    def test_work_order_and_config_prs_skip_the_advisory_preflight(self):
         captured, ctx = [], self.ctx()
         with mock.patch.object(commands, 'run_session_submit', side_effect=lambda ctx, snapshot, args, on_created=None:
                                captured.append(args) or 5):
-            for task in (None, commands.ORDERS_TASK):
+            for task in (None, 'docs/work/FACTORY-SMOKE.md'):
                 self.assertEqual(commands.session_submit(ctx, self.tmp, task, 'title', self.tmp / 'body.md',
-                                                         base='production'), 5)
+                                                         base='production' if task is None else 'testing'), 5)
         self.assertNotIn('--task', captured[0])
-        self.assertEqual(captured[1][:4], ['--task', 'docs/work/FACTORY-001.md', '--base', 'production'])
+        self.assertEqual(captured[1][:4], ['--task', 'docs/work/FACTORY-SMOKE.md', '--base', 'testing'])
+        # An open draft work-order PR becomes ready without any model call.
+        gh = mock.Mock()
+        with mock.patch.object(type(ctx), 'gh', new_callable=mock.PropertyMock, return_value=gh), \
+                mock.patch.object(commands, 'preflight') as preflight, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(commands.finish_open_pr(ctx, {'number': 7, 'draft': True, 'base': {'ref': 'production'}},
+                                                     'a' * 40, 'ftrutschnig/new-workorders', None, []), 0)
+        preflight.assert_not_called()
+        gh.command.assert_called_once_with(['pr', 'ready', '7', '--repo', REPOSITORY])
+        self.assertIn('Pull request #7 is ready for review.', output.getvalue())
 
     def test_use_branch_switches_a_clean_control_to_listed_branches_only(self):
         common.CONFIG_FILE.write_text(json.dumps({'control': str(self.control), 'candidate': str(self.candidate),
@@ -1166,6 +1179,135 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertIn('needs --gate', result.stderr)
             self.assertEqual(list(tree.rglob('*.pyc')), [])
             self.assertFalse((Path(temp) / '.config').exists())
+
+    def test_doctor_report_names_each_blocked_check_and_its_fix(self):
+        import doctor
+        report = doctor.inspect(ROOT, 'claude')  # the real producer, so its record keys and these lines stay in step
+        blocked = [item['check'] for item in report['factory']['local_prerequisites'] if item['status'] == 'blocked']
+        lines = commands.doctor_report(report)
+        self.assertEqual(lines[0], f"doctor.py: {report['status']}" + ('' if blocked or report.get('reason') else '; no blocked checks'))
+        for name in blocked:
+            self.assertTrue(any(line.startswith(f'  blocked  {name}  → ') for line in lines), name)
+        self.assertNotIn('?', ''.join(lines))
+        sample = {'status': 'blocked', 'factory': {'local_prerequisites': [
+            {'check': 'python', 'status': 'passed', 'detail': 'Python >= 3.11 required.', 'continuation': ''},
+            {'check': 'docker_daemon', 'status': 'blocked', 'detail': 'Docker endpoint', 'continuation': 'Start Docker'},
+            {'check': 'environment_ANTHROPIC_API_KEY', 'status': 'blocked', 'detail': 'd', 'continuation': 'Provide it'},
+            {'check': 'environment_CONTEXT7_API_KEY', 'status': 'blocked', 'detail': 'd', 'continuation': 'Provide it'}]}}
+        self.assertEqual(commands.doctor_report(sample, {'ANTHROPIC_API_KEY'}), [
+            'doctor.py: blocked', '  blocked  docker_daemon  → Start Docker',
+            '  expected environment_ANTHROPIC_API_KEY: the key is in the keychain; doctor.py sees only exported keys',
+            '  blocked  environment_CONTEXT7_API_KEY  → Provide it'])  # not in the keychain: a real gap
+        self.assertEqual(commands.doctor_report({'status': 'blocked', 'read_only': True, 'reason': 'Repository unreadable.'}),
+                         ['doctor.py: blocked', '  Repository unreadable.'])
+        self.assertEqual(commands.doctor_report({}), ['doctor.py: produced no report'])
+        # Missing pinned check tools get one command; other tools keep doctor.py's own hint.
+        tools = {'status': 'blocked', 'factory': {'local_prerequisites': [
+            {'check': f'tool_{name}', 'status': 'blocked', 'detail': f'Required tool: {name}', 'continuation': f'Install {name}'}
+            for name in ('actionlint', 'gh', 'gitleaks')]}}
+        with tempfile.TemporaryDirectory() as temp:
+            control = Path(temp) / 'a control'  # a space: every part of the command is quoted
+            (control / 'factory').mkdir(parents=True)
+            shutil.copy(ROOT / 'factory/tools.lock.json', control / 'factory/tools.lock.json')
+            bin_dir = Path(temp) / 'bin'
+            lines = commands.doctor_report(tools, (), lambda names: commands.tools_command(control, bin_dir, names))
+            command = shlex.join(['python3', '-I', '-B', str(control / 'factory/install_tools.py'), '--lock',
+                                  str(control / 'factory/tools.lock.json'), '--destination', str(bin_dir),
+                                  '--only', 'actionlint', '--only', 'gitleaks'])
+            self.assertEqual(lines, ['doctor.py: blocked', '  blocked  tool_actionlint  → installed by the command below',
+                                     '  blocked  tool_gh  → Install gh', '  blocked  tool_gitleaks  → installed by the command below',
+                                     f'  install the missing check tools: {command}'])
+            self.assertEqual(shlex.split(command)[3], str(control / 'factory/install_tools.py'))
+            self.assertIsNone(commands.tools_command(control, bin_dir, ['gh', 'docker']))
+            self.assertIsNone(commands.tools_command(Path(temp) / 'missing', bin_dir, ['actionlint']))
+
+    def wait(self, daemon_from=None, inspect_from=None, listed=True, hang=False, timeout=120, asleep=False,
+             desktop=False, environ=None):
+        """common.wait_for_docker against a fake docker on a simulated clock: the daemon answers from `daemon_from` s
+        (None: never; `desktop`: once `docker desktop start` ran), the image inspects from `inspect_from` s (None: never;
+        `asleep`: once a container ran, as Docker Desktop's resource saver wakes only then) and is `listed` meanwhile."""
+        now, said, calls, state = [0.0], [], [], {'started': False, 'woken': False}
+
+        def run(command, **kwargs):
+            calls.append(command[1:])
+            verb = command[1:3]
+            if verb == ['info', '--format']:
+                if hang:
+                    raise subprocess.TimeoutExpired(command, 30)
+                ok = (daemon_from is not None and now[0] >= daemon_from) or state['started']
+            elif verb == ['image', 'inspect']:
+                ok = (inspect_from is not None and now[0] >= inspect_from) or state['woken']
+            elif verb == ['run', '--rm']:
+                state['woken'] = ok = asleep  # a present image wakes the VM; --pull never fails for a missing one
+            elif verb == ['desktop', 'start']:
+                state['started'] = ok = desktop
+            else:  # image ls --quiet
+                return subprocess.CompletedProcess(command, 0, '3bf1ef2fc96c\n' if listed else '', '')
+            return subprocess.CompletedProcess(command, 0 if ok else 1, 'answer\n' if ok else '', '')
+        with mock.patch.object(common, 'tool', return_value='/usr/local/bin/docker'), \
+                mock.patch.object(common, 'docker_host', return_value='unix:///docker.sock'), \
+                mock.patch.dict(common.os.environ, environ or {}), \
+                mock.patch.object(common.subprocess, 'run', side_effect=run), mock.patch.object(common, 'say', side_effect=said.append):
+            if not environ:
+                common.os.environ.pop('FACTORY_DOCKER_HOST', None)
+            result = common.wait_for_docker('image:tag', timeout=timeout, interval=2, clock=lambda: now[0],
+                                            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
+        return result, now[0], said, calls
+
+    def test_docker_is_nudged_awake_and_waited_for_until_it_holds_the_image(self):
+        ready = ('unix:///docker.sock', None)
+        result, waited, said, calls = self.wait(daemon_from=0, inspect_from=0)
+        self.assertEqual((result, waited, said), (ready, 0, []))
+        self.assertFalse(any(call[0] in ('run', 'desktop') for call in calls))  # an awake Docker is never nudged
+        # Resource saver: queries answered without the VM, the image called missing until a container run wakes it.
+        result, waited, said, calls = self.wait(daemon_from=0, asleep=True)
+        self.assertEqual((result, waited, said), (ready, 0, []))
+        self.assertEqual([call for call in calls if call[0] == 'run'],
+                         [['run', '--rm', '--pull', 'never', '--network', 'none', '--cap-drop', 'ALL', '--read-only',
+                           '--entrypoint', 'true', 'image:tag']])
+        # Docker Desktop not running: started once, then used at once.
+        result, waited, said, calls = self.wait(desktop=True, inspect_from=0)
+        self.assertEqual((result, waited, said), (ready, 0, ['Starting Docker Desktop…']))
+        self.assertEqual([call[:2] for call in calls if call[0] == 'desktop'], [['desktop', 'start']])
+        # Another engine named by FACTORY_DOCKER_HOST is never replaced by starting Docker Desktop.
+        result, waited, said, calls = self.wait(desktop=True, inspect_from=0, environ={'FACTORY_DOCKER_HOST': 'tcp://other:2375'})
+        self.assertEqual((result, waited), (('unix:///docker.sock', 'docker'), 120))
+        self.assertFalse(any(call[0] == 'desktop' for call in calls))
+        # Docker Desktop starting slowly, then its image store calling the listed image missing: waited for.
+        result, waited, said, _ = self.wait(daemon_from=6, inspect_from=12)
+        self.assertEqual((result, waited), (ready, 12))
+        self.assertEqual(said, ['Starting Docker Desktop…', 'Waiting for Docker to be ready, up to 120 s…'])
+        # A missing image is never pulled and is reported soon after Docker answers, not after the whole wait.
+        result, waited, _, calls = self.wait(daemon_from=4, listed=False)
+        self.assertEqual((result, waited), (('unix:///docker.sock', 'image'), 14))
+        self.assertEqual(sum(call[0] == 'run' for call in calls), 1)
+        # Docker that never answers, or hangs, ends the wait at its limit.
+        self.assertEqual(self.wait()[:2], (('unix:///docker.sock', 'docker'), 120))
+        self.assertEqual(self.wait(hang=True)[:2], (('unix:///docker.sock', 'docker'), 120))
+        # Docker answering late with the image still loading at the limit: the image is the problem.
+        self.assertEqual(self.wait(daemon_from=110)[:2], (('unix:///docker.sock', 'image'), 120))
+        with mock.patch.object(common, 'tool', return_value=None):
+            self.assertEqual(common.wait_for_docker('image:tag'), ('', 'docker'))
+
+    def test_author_runs_wait_for_docker_and_name_what_is_missing(self):
+        for problem, message in (('docker', 'Docker did not answer within 120 s, not even after starting Docker Desktop'),
+                                 ('image', 'is missing: `factory doctor` prints the build command')):
+            with self.subTest(problem=problem), mock.patch.object(common, 'wait_for_docker', return_value=('unix:///d', problem)), \
+                    self.assertRaisesRegex(Blocked, re.escape(message)):
+                pipeline.docker_ready()
+        with mock.patch.object(common, 'wait_for_docker', return_value=('unix:///d', None)) as wait:
+            self.assertEqual(pipeline.docker_ready(), 'unix:///d')
+        wait.assert_called_once_with(pipeline.clients.IMAGE)
+
+    def test_sandbox_script_runs_the_author_image_without_network_or_writes(self):
+        script = ROOT / 'tools/factory/sandbox-verify.sh'
+        text = script.read_text()
+        self.assertTrue(script.stat().st_mode & 0o111)
+        self.assertEqual(subprocess.run(['sh', '-n', str(script)], capture_output=True).returncode, 0)
+        for expected in ('--network none', '--read-only', '--cap-drop ALL', 'no-new-privileges', ',readonly"',
+                         '--exclude .git', 'tools/factory/clients.py', 'verify.py --root /candidate --trusted-root /candidate --ci',
+                         'sh "$1"'):
+            self.assertIn(expected, text)
 
     def test_installer_is_executable_valid_bash(self):
         script = ROOT / 'tools/factory/cli/install-factory-cli.sh'

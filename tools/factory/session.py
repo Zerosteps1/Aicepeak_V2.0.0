@@ -96,6 +96,9 @@ def identity(root, config):
     return sha
 
 
+DS_STORE = '.DS_Store'  # the only untracked file a clean checkout may hold: a plain, non-executable file of that name
+
+
 def clean_tree(root, sha):
     """Check tracked/index/worktree bytes directly, without running Git filters or hooks."""
     tree = {}
@@ -126,8 +129,10 @@ def clean_tree(root, sha):
         for name in files:
             file = Path(directory) / name
             relative = file.relative_to(root).as_posix()
-            require(relative in tree, 'checkout must be clean: untracked file ' + relative)
             info = file.lstat()
+            if name == DS_STORE and relative not in tree and stat.S_ISREG(info.st_mode) and not info.st_mode & 0o111:
+                continue  # Finder's folder settings: written by macOS into every folder it shows, never loaded or run.
+            require(relative in tree, 'checkout must be clean: untracked file ' + relative)
             require(stat.S_ISREG(info.st_mode), 'symlink/special file unsupported: ' + relative)
             mode, oid = tree[relative]
             require(bool(info.st_mode & 0o111) == (mode == '100755'), 'dirty executable mode: ' + relative)
@@ -575,7 +580,7 @@ def submit(gh, candidate, task, context, title, body_file, runner, base=None, dr
             f'candidate or {base} changed after the collision sweep; submit again')
     remote = gh.request('GET', f'/repos/{REPOSITORY}/git/ref/heads/{quote(binding["branch"], safe="")}')
     require(remote['object']['sha'] == binding['head_sha'], 'push the reviewed candidate branch yourself before submit')
-    # A production branch takes no handoff: its own check classifies the PR (two maintainer approvals for type b).
+    # A production branch takes no handoff: its own check classifies the PR (maintainer approvals for type b).
     transfer = None if production else {'runner': runner, 'task': task, 'owner': user['login']}
     body = prose.rstrip() + '\n\n'
     if transfer:

@@ -1107,12 +1107,12 @@ class EngineBoundaries(unittest.TestCase):
         snapshot,_=self.publish()
         self.assertEqual(snapshot['production_kind'],'work-order')
         body=self.transport.comments[-1]['body']
-        self.assertIn('senior review not used for work-order and config PRs: two maintainer approvals decide them',body)
+        self.assertIn('senior review not used for work-order and config PRs: maintainer approvals decide them',body)
         self.assertNotIn('`/review`',body)
         comment=self.transport.comment('/review')
         for files in (self.transport.files,[{'filename':'docs/work/NEW.md','status':'renamed','previous_filename':'docs/work/OLD.md'}]):
             self.transport.files=files;self.transport.pr['changed_files']=len(files)
-            with self.subTest(files=files),self.assertRaisesRegex(Blocked,'^work-order and config PRs need no AI review: two maintainer approvals decide them$'):
+            with self.subTest(files=files),self.assertRaisesRegex(Blocked,'^work-order and config PRs need no AI review: maintainer approvals decide them$'):
                 self.review_request(comment)
         self.assertEqual(self.senior_checks(),[])
         # A promotion is reviewed like every promotion, even when its diff holds only work orders and config.
@@ -1154,10 +1154,10 @@ class EngineBoundaries(unittest.TestCase):
         self.transport.files=[{'filename':'docs/work/FACTORY-009.md','status':'modified'},{'filename':'factory/config.json','status':'modified'}]
         self.bypass('/bypass runner outage')
         self.assertEqual([c['name'] for c in self.bypasses()],['factory/deterministic'])
-        # A feature branch with the same diff is a work-order/config PR: two maintainer approvals decide it.
+        # A feature branch with the same diff is a work-order/config PR: maintainer approvals decide it.
         self.transport.checks.clear()
         self.transport.pr['head']['ref']='ftrutschnig/workorders'
-        with self.assertRaisesRegex(Blocked,'cannot be bypassed; they need two maintainer approvals'):
+        with self.assertRaisesRegex(Blocked,'cannot be bypassed; they need maintainer approvals'):
             self.bypass('/bypass runner outage')
         self.assertEqual(self.bypasses(),[])
 

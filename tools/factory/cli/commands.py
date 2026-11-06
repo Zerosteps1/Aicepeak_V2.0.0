@@ -18,9 +18,12 @@ import workorders
 
 WATCH_ALL_INTERVAL = 60
 VERBS = {'add': 'add', 'edit': 'update', 'delete': 'remove'}
-ORDERS_TASK = 'docs/work/FACTORY-001.md'  # the preflight task of work-order PRs (config PRs have none)
-APPROVALS = ('Next: two maintainers approve the pull request at its current head; a maintainer merges it on GitHub '
-             '(`factory merge` never merges into a production branch).')
+def approvals(model):
+    """What a work-order or config PR needs next: work_order_approvals maintainers, then a merge on GitHub."""
+    needed = model.work_order_approvals
+    return (f'Next: {needed} maintainer{"" if needed == 1 else "s"} other than its author approve{"s" if needed == 1 else ""} '
+            'the pull request at its current head; a maintainer merges it on GitHub (`factory merge` never merges into a '
+            'production branch).')
 
 
 def open_editor(path):
@@ -181,13 +184,14 @@ def submit_workorders(ctx):
             body.write_text('Work orders submitted with `factory submit workorders`:\n\n' + '\n'.join(
                 f'- {kinds[p]}: `{p}`' + ('' if changes[p] is None else f' – {workorders.title_of(changes[p].decode())}')
                 for p in sorted(changes)) + '\n')
-            created = session_submit(ctx, repo, ORDERS_TASK, message, body, base=name,
+            # No advisory preflight: maintainer approvals and factory/deterministic decide work-order PRs.
+            created = session_submit(ctx, repo, None, message, body, base=name,
                                      on_created=lambda _: move_out(candidate, head, changes))
             if created:
-                say(APPROVALS + ' Then copy the work orders to the validation branches: `factory sync workorders`.')
+                say(approvals(ctx.model) + ' Then copy the work orders to the validation branches: `factory sync workorders`.')
     if pull:
         move_out(candidate, head, changes)
-        return finish_open_pr(ctx, pull, sha, branch, ORDERS_TASK, [])
+        return finish_open_pr(ctx, pull, sha, branch, None, [])
     return 0 if created else 1
 
 
@@ -240,7 +244,8 @@ def run_session_submit(ctx, snapshot, args, on_created=None):
 
 def session_submit(ctx, snapshot, task, title, body_file, context=(), draft=False, on_created=None, *, base):
     """session.py submit into base: a validation branch, or a production branch for work-order and config PRs. Without
-    a task (config PRs) there is no advisory preflight: two maintainer approvals and factory/deterministic decide."""
+    a task (work-order and config PRs) there is no advisory preflight: maintainer approvals and
+    factory/deterministic decide."""
     args = [*(['--task', task] if task else []), '--base', base, '--runner', ctx.config['runners'][0], '--title', title,
             '--body-file', body_file]
     for path in context:
@@ -277,19 +282,21 @@ def open_pull_for(ctx, branch):
 
 
 def finish_open_pr(ctx, pull, sha, branch, task, context):
-    """An existing PR: a draft becomes ready only after a passing preflight; then this device watches it."""
+    """An existing PR: a draft becomes ready after a passing preflight (none without a task: work-order and config
+    PRs); then this device watches a PR into a validation branch."""
     number = pull['number']
-    if pull.get('draft'):
+    if pull.get('draft') and task:
         with checkouts.candidate_snapshot(ctx.candidate, ctx.control, sha, branch, ctx.config) as snapshot:
             review = preflight(ctx, snapshot, task, context, base=pull['base']['ref'])
         describe_review(review)
         if review['outcome'] != 'pass':
             say(f'Pull request #{number} stays a draft; fix the findings and run `factory submit --finished` again.')
             return 1
+    if pull.get('draft'):
         ctx.gh.command(['pr', 'ready', str(number), '--repo', ctx.config['repository']])
         say(f'Pull request #{number} is ready for review.')
     if ctx.model.level(pull['base']['ref']) == 'production':  # type b: no senior review to watch for
-        say(APPROVALS)
+        say(approvals(ctx.model))
         return 0
     say(f'Watching pull request #{number}; Ctrl-C stops watching (the PR keeps waiting for a watcher).')
     return watch(ctx, number)
@@ -418,6 +425,45 @@ def merge(ctx, pr, dry_run=False):
 
 # --- doctor ------------------------------------------------------------------------------------------
 
+def tools_command(control, destination, names):
+    """(command, tools) installing those of `names` that factory/tools.lock.json pins into `destination`, with the
+    control checkout's reviewed installer (release binaries, SHA-256 checked); None when it pins none of them."""
+    lock = Path(control) / 'factory/tools.lock.json'
+    try:
+        locked = [name for name in names if name in json.loads(lock.read_text())]
+    except (OSError, ValueError):
+        return None
+    if not locked:
+        return None
+    return shlex.join(['python3', '-I', '-B', str(Path(control) / 'factory/install_tools.py'), '--lock', str(lock),
+                       '--destination', str(destination), *[part for name in locked for part in ('--only', name)]]), locked
+
+
+def doctor_report(report, keychain=(), install=None):
+    """doctor.py's status, then each of its blocked checks with its fix. Its environment check of an author key is
+    expected to block when that key is in the keychain: factory hands it to each author run, never to doctor.py.
+    install(names) returns (one command, the tools it installs) for the missing tools, or None."""
+    if not report:
+        return ['doctor.py: produced no report']
+    blocked = [item for item in report.get('factory', {}).get('local_prerequisites', []) if item.get('status') == 'blocked']
+    lines = [f'doctor.py: {report.get("status", "unknown")}' + ('' if blocked or report.get('reason') else '; no blocked checks')]
+    if report.get('reason'):
+        lines.append(f'  {report["reason"]}')
+    tools = [str(item.get('check'))[len('tool_'):] for item in blocked if str(item.get('check')).startswith('tool_')]
+    command, covered = (install(tools) if install and tools else None) or (None, ())
+    for item in blocked:
+        name = str(item.get('check') or '?')
+        if name.startswith('environment_') and name[len('environment_'):] in keychain:
+            lines.append(f'  expected {name}: the key is in the keychain; doctor.py sees only exported keys')
+        elif name.startswith('tool_') and name[len('tool_'):] in covered:
+            lines.append(f'  blocked  {name}  → installed by the command below')
+        else:
+            lines.append(f'  blocked  {name}  → {item.get("continuation") or item.get("detail") or "see doctor.py"}')
+    if command:
+        lines.append(f'  install the missing check tools: {command}')
+    return lines
+
+
 def doctor(ctx):
     import clients
     checks = []
@@ -435,11 +481,11 @@ def doctor(ctx):
                           ('aicepeak-factory-context7-api-key', 'CONTEXT7_API_KEY')):
         check(f'author key {name}', os.environ.get(name) or keychain_present(service),
               'rerun the installer with --author-keys, or export it')
-    docker = common.tool('docker', required=False)
-    host = common.docker_host()
-    image = bool(docker) and subprocess.run([docker, 'image', 'inspect', clients.IMAGE], capture_output=True,
-                                            env={**common.child_env(), **({'DOCKER_HOST': host} if host else {})}).returncode == 0
-    check('author image', image, f'docker build -f {ctx.control}/factory/Dockerfile -t {clients.IMAGE} {ctx.control}/factory')
+    _, problem = common.wait_for_docker(clients.IMAGE)
+    check('Docker running', problem != 'docker', f'no answer within {common.DOCKER_WAIT} s, not even after starting Docker '
+          'Desktop: check that it is installed (docs/dev-setup.md)')
+    check('author image', problem is None, f'docker build -f {ctx.control}/factory/Dockerfile -t {clients.IMAGE} {ctx.control}/factory'
+          if problem == 'image' else 'needs Docker running (above)')
     codex = common.tool('codex', required=False)
     version = subprocess.run([codex, '--version'], capture_output=True, text=True).stdout.strip() if codex else ''
     check('pinned Codex 0.164.0', version == 'codex-cli 0.164.0', 'docs/dev-setup.md step 2')
@@ -450,9 +496,10 @@ def doctor(ctx):
         code, stdout, _ = checkouts.run_tool(policy, 'doctor.py', '--root', policy, '--runner', ctx.config['runners'][0],
                                             capture=True)
     report = checkouts.last_json(stdout) or {}
-    blocked = [item for item in report.get('factory', {}).get('local_prerequisites', []) if item.get('status') == 'blocked']
-    say(f'doctor.py: {report.get("status", "unknown")}; blocked checks: ' + (', '.join(i.get('name', '?') for i in blocked) or 'none'))
-    say('(doctor.py sees only exported author keys and always exits 2: it never certifies live acceptance.)')
+    keychain = {name.split()[-1] for name, ok, _ in checks if ok and name.startswith('author key ')}
+    for line in doctor_report(report, keychain, lambda names: tools_command(ctx.control, ctx.device['bin'], names)):
+        say(line)
+    say('(doctor.py always exits 2: it never certifies live acceptance.)')
     return 0 if all(ok for _, ok, _ in checks) else 1
 
 

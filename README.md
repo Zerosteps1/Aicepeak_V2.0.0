@@ -32,7 +32,7 @@ All development runs through the software factory, driven by the global **`facto
 
 The software factory is the set of tools, rules and GitHub automation in this repository that turns an approved **work order** (a task description in `docs/work/`) into a reviewed pull request. In short:
 
-1. A maintainer writes a work order with goal, acceptance criteria and allowed paths. Its own PR into the config branch `production` needs approvals from two maintainer accounts; after the merge `factory sync workorders` copies it to the validation branches.
+1. A maintainer writes a work order with goal, acceptance criteria and allowed paths. Its own PR into the config branch `production` needs approvals from as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1); after the merge `factory sync workorders` copies it to the validation branches.
 2. Claude Code implements it as an **isolated author** in a disposable container without personal configuration or credentials; `factory` applies the result, unstaged, to a branch in the candidate checkout.
 3. The maintainer reviews and stages the change and submits it with `factory submit --finished`, which opens the PR into the validation branch `testing` through `session.py submit`.
 4. **Deterministic tests** run in GitHub Actions without secrets or network.

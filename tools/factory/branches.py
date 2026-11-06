@@ -22,6 +22,7 @@ CHECKS = {'full': (DETERMINISTIC, SENIOR), 'tests': (DETERMINISTIC,), 'none': ()
 NAME = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?')
 RESERVED = ('main', 'master', 'head')
 LIMITS = {'validation': 20, 'production': 5}
+WORK_ORDER_APPROVALS = 2  # maintainer accounts that approve a work-order/config PR when config.json names no number
 
 
 def production_check(name):
@@ -88,6 +89,10 @@ def problems(config):
         found.append('config_branch must be a production branch')
     if config.get('default_branch') not in validation:
         found.append('default_branch must be a validation branch')
+    approvals = config.get('work_order_approvals')  # absent: WORK_ORDER_APPROVALS, the rule from before the setting
+    if 'work_order_approvals' in config and (type(approvals) is not int
+                                             or not 1 <= approvals <= len(config.get('maintainers') or [])):
+        found.append('work_order_approvals must be a whole number from 1 to the number of maintainers')
     return found
 
 
@@ -97,6 +102,7 @@ class Model:
         found = problems(config)
         require(not found, 'invalid branch configuration: ' + '; '.join(found))
         self.config_branch, self.default_branch = config['config_branch'], config['default_branch']
+        self.work_order_approvals = config.get('work_order_approvals', WORK_ORDER_APPROVALS)
         self.validation = {e['name']: e for e in config['branches']['validation']}
         self.production = {e['name']: e for e in config['branches']['production']}
 

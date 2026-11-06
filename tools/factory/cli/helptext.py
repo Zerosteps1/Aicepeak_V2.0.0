@@ -17,9 +17,10 @@ COMMANDS = {
         'summary': 'Create a new work order as a GitHub issue, written in your editor first.',
         'what': 'Opens the work-order template (.github/ISSUE_TEMPLATE/factory-task.md, status draft, the chosen kind) in '
                 '$VISUAL/$EDITOR (vi otherwise) with the title as first line, asks for confirmation and creates the issue '
-                'under your own GitHub login. The issue number is the work-order ID. No file is written. Then comment '
-                '/review on the issue: the factory proposes allowed_paths and fixes for weak sections; /accept applies '
-                'the paths and approves the work order.',
+                'under your own GitHub login. The issue number is the work-order ID. No file is written, so the issue '
+                'needs no `factory update`: every branch sees it on GitHub. Then comment /review on the issue: the '
+                'factory proposes allowed_paths and fixes for weak sections; /accept applies the paths and approves the '
+                'work order.',
         'when': 'You want the factory to build something new: one work order per feature, not per commit.',
         'examples': ['factory issue --title "Export energy costs as CSV"',
                      'factory issue --kind smoke --title "Reviewer device smoke" --noedit',
@@ -34,8 +35,7 @@ COMMANDS = {
                 'Two maintainers approve it and one merges it on GitHub. Other changes in your checkout stay untouched; '
                 'submitted files move to the work-order branch.',
         'when': 'To change or remove a legacy work-order file in docs/work/ (new work orders are issues). A file authorizes '
-                'work only once merged into the config branch; then `factory sync workorders` copies it to the validation '
-                'branches.',
+                'work only once merged into the config branch; then `factory update` brings it into your branch.',
         'examples': ['factory submit workorders'],
         'docs': ['docs/factory-cli.md#factory-submit-workorders', FLOW],
     },
@@ -132,7 +132,8 @@ COMMANDS = {
         'summary': 'Merge a PR into a validation branch with the verified, locked merge (session.py merge).',
         'what': "Verifies the required checks of the target's gate on exactly this head and the current target tip, the "
                 'handoff, feedback and open threads, takes the merge lock of the target and merges with '
-                '--match-head-commit. --dry-run shows the verdict. PRs into production branches are merged on GitHub.',
+                '--match-head-commit. --dry-run shows the verdict. PRs into production branches are merged on GitHub '
+                'with a merge commit.',
         'when': 'The required checks are green and you decided to merge. One PR at a time.',
         'examples': ['factory merge 42 --dry-run', 'factory merge 42'],
         'docs': ['docs/factory-cli.md#factory-merge', 'docs/way-of-working.md#merge-rules'],
@@ -145,9 +146,10 @@ COMMANDS = {
         'docs': ['docs/factory-cli.md#factory-status'],
     },
     'promote': {
-        'summary': 'Promote a validation branch: merge production into it, or open the promotion PR.',
-        'what': 'When the production branch is not contained in the validation branch, merges it into that branch in '
-                'the clean candidate (a merge commit, never pushed; conflicts stay for you) and prints the push command. '
+        'summary': 'Promote a validation branch: bring production into it, or open the promotion PR.',
+        'what': 'When the production branch is not contained in the validation branch, brings it into that branch in '
+                'the clean candidate (a fast-forward when the validation branch has nothing production lacks, otherwise '
+                'a merge commit; never pushed; conflicts stay for you) and prints the push command. '
                 'Once it is contained, opens the PR <validation> → <production> and prints the /review hint; when the '
                 'promotion of this validation branch is already open, it reports that the PR now carries the new head. '
                 'A promotion from another validation branch into it refuses. Never merges.',
@@ -156,26 +158,25 @@ COMMANDS = {
         'examples': ['factory promote testing', 'factory promote testing --to production'],
         'docs': ['docs/factory-cli.md#factory-promote'],
     },
-    'sync workorders': {
-        'summary': 'Push every work order of the config branch to the validation branches lacking it.',
-        'what': 'Copies the work orders of the config branch tip byte-exact into every validation branch that lacks '
-                'them: one commit per branch, pushed directly. Existing files are never changed or deleted (a differing '
-                'copy is reported); branches that already have them are skipped. Reports per branch.',
-        'when': 'After a work-order PR was merged into the config branch, before `factory start workorder`.',
-        'examples': ['factory sync workorders'],
-        'docs': ['docs/factory-cli.md#factory-sync-workorders'],
-    },
-    'sync workorder': {
-        'summary': 'Push one work order of the config branch to the validation branches lacking it.',
-        'what': 'Like `factory sync workorders`, for one work order (7, 007 or FACTORY-007).',
-        'when': 'One newly merged work order should reach the validation branches now.',
-        'examples': ['factory sync workorder 9'],
-        'docs': ['docs/factory-cli.md#factory-sync-workorders'],
+    'update': {
+        'summary': 'Bring the config branch (work orders, factory/config.json) into a branch of the candidate.',
+        'what': 'Fast-forwards the target (default: the branch checked out in the candidate; a named one is switched to, '
+                'created from GitHub if missing) to the config branch tip, or creates the local merge commit "Merge '
+                '<config branch> into <target> (factory update)" when the target has commits the config branch lacks. '
+                'Refuses before touching the working tree when that would change anything but docs/work/*.md and '
+                'factory/config.json, and refuses production branches, a candidate with uncommitted or untracked files '
+                'and a local branch that diverged from GitHub. Never pushes: it prints the push command for a '
+                'validation branch; a feature branch goes up with your next `factory submit`. Conflicts stay for you.',
+        'when': 'After a promotion, a work-order or a config PR was merged into the config branch, so that the validation '
+                'branches (and your branch) contain it and GitHub no longer reports production ahead of them.',
+        'examples': ['factory update', 'factory update testing'],
+        'docs': ['docs/factory-cli.md#factory-update', 'docs/way-of-working.md#branches-and-promotion'],
     },
     'branches': {
         'summary': 'Show the branches, gates, routing and review modes; write docs/factory-branches.md.',
         'what': 'Prints the branch table of the config branch and writes the generated docs/factory-branches.md (a '
-                'Mermaid diagram: feature → validation (gate, kinds) → production (review mode), dotted work-order sync) '
+                'Mermaid diagram: feature → validation (gate, kinds) → production (review mode), dotted arrows back from '
+                'the config branch for the work orders that `factory update` brings in) '
                 'into the candidate. --show also writes a self-contained HTML page with the diagram and opens it.',
         'when': 'You want to see how work flows, or the branch list changed and the diagram should follow.',
         'examples': ['factory branches', 'factory branches --show'],
@@ -243,7 +244,7 @@ COMMANDS = {
 }
 
 OVERVIEW = [
-    ('Work orders', ['issue', 'submit workorders', 'sync workorders', 'sync workorder']),
+    ('Work orders', ['issue', 'submit workorders', 'update']),
     ('Implementation', ['start', 'continue', 'stop', 'cancel', 'fix', 'hotfix']),
     ('Review and publication', ['review', 'submit', 'watch', 'merge', 'promote']),
     ('Branches', ['branches', 'add validation branch', 'add production branch', 'remove branch', 'set config branch']),
@@ -279,7 +280,8 @@ def epilog(name):
 
 def overview():
     lines = ['Daily flow: factory issue → /review and /accept on the issue → factory start workorder <n> → factory submit '
-             '→ factory submit --finished → factory watch → factory merge → factory promote <validation branch>', '']
+             '→ factory submit --finished → factory watch → factory merge → factory promote <validation branch> '
+             '→ merge on GitHub → factory update <validation branch>', '']
     for title, names in OVERVIEW:
         lines.append(title + ':')
         lines += [f'  factory {name:<22} {COMMANDS[name]["summary"]}' for name in names]

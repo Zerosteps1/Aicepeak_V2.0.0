@@ -21,9 +21,11 @@ sys.path[:0] = [str(HERE), str(HERE.parent)]
 import branches  # noqa: E402  standard library only
 import helptext  # noqa: E402  standard library only
 
-VERSION = '0.3.0'
+VERSION = '0.4.0'
 LOCAL = ('status', 'continue', 'stop', 'cancel')  # no network, no policy
 REEXEC = 'FACTORY_CLI_REEXEC'
+SYNC_REPLACED = ('`factory sync` was replaced by `factory update [<target-branch>]`, which brings the config branch '
+                 '(work orders and factory/config.json) into a branch of the candidate: docs/factory-cli.md#factory-update')
 REEXECS = int(os.environ.pop(REEXEC, '0') or 0)  # never inherited by editors or other children
 
 
@@ -76,12 +78,12 @@ def build_parser():
     item = command('promote')
     item.add_argument('branch', help='the validation branch to promote')
     item.add_argument('--to', help='the production branch (default: the only one listed)')
-    item = command('sync', 'sync workorders')
-    item.add_argument('target', choices=('workorder', 'workorders'))
-    item.add_argument('workorder', nargs='?', help='with `workorder`: 7, 007 or FACTORY-007')
-    item.description = (helptext.description('sync workorders') + '\n\n`factory sync workorder <n>`: '
-                        + helptext.COMMANDS['sync workorder']['what'])
-    item.epilog = helptext.epilog('sync workorders') + '\n\n' + helptext.epilog('sync workorder')
+    item = command('update')
+    item.add_argument('target', nargs='?', metavar='<target-branch>',
+                      help='the branch to bring the config branch into (default: the branch checked out in the candidate)')
+    # Replaced by update: not listed in the help; every use names the replacement and exits 2 (misuse).
+    item = commands.add_parser('sync', description=SYNC_REPLACED)
+    item.add_argument('words', nargs='*', help=argparse.SUPPRESS)
     item = command('branches')
     item.add_argument('--show', action='store_true', help='also write and open a self-contained HTML page')
     item = command('use', 'use branch')
@@ -130,8 +132,8 @@ def misuse(args):
         if not set(kinds) <= set(branches.KINDS) or len(set(kinds)) != len(kinds):
             return '--kinds takes distinct values of ' + ', '.join(branches.KINDS)
         args.kinds = kinds
-    if args.command == 'sync' and (args.target == 'workorder') != bool(args.workorder):
-        return '`factory sync workorder <n>` names one work order; `factory sync workorders` takes none'
+    if args.command == 'sync':
+        return SYNC_REPLACED
     return None
 
 
@@ -316,8 +318,8 @@ def dispatch(args):
         return runs.listing()
     if args.command == 'promote':
         return branching.promote(ctx, args.branch, args.to)
-    if args.command == 'sync':
-        return branching.sync(ctx, args.workorder)
+    if args.command == 'update':
+        return branching.update(ctx, args.target)
     if args.command == 'branches':
         return branching.diagram(ctx, args.show)
     if args.command == 'use':

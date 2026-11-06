@@ -38,7 +38,7 @@ The software factory is the set of tools, rules and GitHub automation in this re
 4. **Deterministic tests** run in GitHub Actions without secrets or network.
 5. **GPT-6 Astra** reviews the PR on a maintainer's device. Blocking findings start a bounded **automatic correction**.
 6. With both required checks green, a **maintainer merges** into `testing` with `factory merge`, one PR at a time.
-7. When `testing` should go to production, `factory promote testing` opens the **promotion PR** into `production`; a maintainer starts its AI review with the comment `/review`, the production check passes once that review of the PR's head passed, and a maintainer merges it on GitHub. Nobody pushes to `production`; agents and bots never push to a listed branch or merge.
+7. When `testing` should go to production, `factory promote testing` opens the **promotion PR** into `production`; a maintainer starts its AI review with the comment `/review`, the production check passes once that review of the PR's head passed, and a maintainer merges it on GitHub with a merge commit. Then `factory update testing` fast-forwards `testing` to `production` in the candidate, and the maintainer pushes it. Nobody pushes to `production`; agents and bots never push to a listed branch or merge.
 
 How each step works is in [docs/software-factory.md](docs/software-factory.md). How you take part in each step is in [docs/way-of-working.md](docs/way-of-working.md).
 
@@ -58,7 +58,7 @@ A task is a **work order**: a GitHub issue opened by a maintainer; the issue num
 1. **Write:** `factory issue --title "…"` opens the [work-order template](.github/ISSUE_TEMPLATE/factory-task.md) in your editor and creates the issue under your GitHub login with status `draft`. You write goal, non-goals, acceptance criteria and verification.
 2. **Review and accept:** comment `/review` on the issue. The factory proposes the `allowed_paths` and fixes for weak or missing sections as comments; copy what you agree with into the description and `/review` again. `/accept` writes the proposed paths and `status: approved` into the issue. Any later edit withdraws the approval until it is accepted again.
 
-Legacy work orders in `docs/work/` keep working; they change through `factory submit workorders` and `factory sync workorders`.
+Legacy work orders in `docs/work/` keep working; they change through `factory submit workorders`, and `factory update` brings them into the validation branches once merged.
 
 Details: [way of working, steps 1–2](docs/way-of-working.md#daily-use-step-by-step).
 
@@ -95,7 +95,7 @@ Details and side effects: [way of working, stop or cancel a task](docs/way-of-wo
 | Fix findings marked `needs-author-action` | `factory fix <n>` (or `factory hotfix <n>` for urgent fixes outside protected paths) | [factory fix](docs/factory-cli.md#factory-fix-and-factory-hotfix) |
 | Review your candidate locally | `factory review "<question>"` (read-only, advisory) | [factory review](docs/factory-cli.md#factory-review) |
 | Merge into `testing` | `factory merge <n>` (`--dry-run` for the verdict only) | [Merge rules](docs/way-of-working.md#merge-rules) |
-| Promote `testing` to `production` | `factory promote testing`, then `/review` on the PR, `factory watch <n>`, and merge on GitHub once the production check is green | [Branches and promotion](docs/way-of-working.md#branches-and-promotion) |
+| Promote `testing` to `production` | `factory promote testing`, then `/review` on the PR, `factory watch <n>`, and merge on GitHub with a merge commit once the production check is green; then `factory update testing` and push | [Branches and promotion](docs/way-of-working.md#branches-and-promotion) |
 | Pass a stuck PR's checks deliberately | Comment `/bypass <reason>` on the PR for its current head; post a new comment instead of editing it or re-running its dispatch (every promotion accepts it, work-order and config PRs never) | [Branches and promotion](docs/way-of-working.md#branches-and-promotion) |
 | See or change the branches | `factory branches [--show]`; `factory add validation branch`, `factory add production branch`, `factory remove branch`, `factory set config branch` | [factory branches](docs/factory-cli.md#factory-branches) |
 | Run another branch's CLI code | `factory use branch <n>` | [factory use branch](docs/factory-cli.md#factory-use-branch) |
@@ -119,6 +119,6 @@ Details and side effects: [way of working, stop or cancel a task](docs/way-of-wo
 | `.github/` | Trusted pipeline, production check, dispatcher, feedback ingress, CODEOWNERS, templates |
 | `tools/factory/` | Factory tools and their regression tests |
 | `tools/factory/cli/` | The global `factory` command and its installer |
-| [docs/work/](docs/work/TEMPLATE.md) | Legacy work-order files (on the config branch, synced to the validation branches); new work orders are issues |
+| [docs/work/](docs/work/TEMPLATE.md) | Legacy work-order files (on the config branch, brought into the validation branches with `factory update`); new work orders are issues |
 | [docs/decisions/](docs/decisions/0005-maintainer-local-senior-review.md) | Decision records |
 | [docs/architecture/](docs/architecture/AICEPEAK_SPEC_AND_ARCHITECTURE.md) | Non-binding architecture proposal and its validation |

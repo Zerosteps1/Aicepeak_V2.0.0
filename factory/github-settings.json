@@ -11,8 +11,7 @@
     "Factory human PR merges only"
   ],
   "production_merge_methods": [
-    "squash",
-    "rebase"
+    "merge"
   ],
   "actions": {
     "enabled": true,

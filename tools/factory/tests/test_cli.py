@@ -1043,9 +1043,32 @@ class BranchTests(Repos):
             self.assertEqual(branching.use(ctx, 'production'), 0)
         self.assertEqual((checkouts.current_branch(self.control), checkouts.device()['branch']), ('production', 'production'))
 
+    def promote_on_origin(self, squash=False):
+        """A promotion testing → production merged on GitHub: a merge commit, or with squash one new commit."""
+        git(self.seed, 'switch', '--quiet', 'production')
+        if squash:
+            git(self.seed, 'merge', '--quiet', '--squash', 'testing')
+            git(self.seed, 'commit', '--quiet', '-m', 'Promote testing to production (#49)')
+        else:
+            git(self.seed, 'merge', '--quiet', '--no-ff', '-m', 'Promote testing to production (#49)', 'testing')
+        git(self.seed, 'push', '--quiet', str(self.origin), 'production')
+        return git(self.seed, 'rev-parse', 'HEAD')
+
+    def commit_on_origin(self, branch, files=(), removed=()):
+        git(self.seed, 'switch', '--quiet', branch)
+        for name, text in dict(files).items():
+            (self.seed / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.seed / name).write_text(text)
+            git(self.seed, 'add', name)
+        for name in removed:
+            git(self.seed, 'rm', '--quiet', name)
+        git(self.seed, 'commit', '--quiet', '-m', f'change {branch}')
+        git(self.seed, 'push', '--quiet', str(self.origin), branch)
+        return git(self.seed, 'rev-parse', 'HEAD')
+
     def test_promote_merges_production_into_the_validation_branch_without_pushing(self):
         production = self.advance_origin('docs/production-only.md', 'production')
-        testing = git(self.origin, 'rev-parse', 'testing')
+        testing = self.advance_origin('docs/testing-only.md', 'testing')  # testing has its own commit: no fast-forward
         ctx = self.ctx()
         (self.candidate / 'scratch.txt').write_text('x')
         with self.assertRaisesRegex(Blocked, 'uncommitted or untracked files'):
@@ -1079,6 +1102,7 @@ class BranchTests(Repos):
             branching.promote(self.ctx(), 'testing')
 
     def test_promote_opens_one_promotion_and_never_merges(self):
+        self.advance_origin('docs/testing-only.md', 'testing')  # something to promote
         ctx = self.ctx()
         with self.assertRaisesRegex(Blocked, 'not a listed validation branch'):
             branching.promote(ctx, 'production')
@@ -1107,30 +1131,149 @@ class BranchTests(Repos):
         with self.assertRaisesRegex(Blocked, 'choose one with --to'):
             branching.promote(several, 'testing')
 
-    def test_sync_adds_missing_orders_byte_exact_and_never_overwrites(self):
-        self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009') + 'tail \t\r\n')
-        self.advance_origin('docs/work/FACTORY-003.md', 'production', order('FACTORY-003', status='draft'))
-        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
-        ctx = self.ctx(branches.with_validation(self.config, 'staging', 'none', ['smoke']))
-        before = git(self.origin, 'rev-parse', 'testing')
+    def test_promote_fast_forwards_after_a_merge_commit_promotion(self):
+        self.advance_origin('tools/factory/b.py', 'testing', 'VALUE = 2\n')
+        production = self.promote_on_origin()
+        ctx = self.ctx()
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(branching.sync(ctx), 0)
-        for branch in ('testing', 'staging'):
-            self.assertEqual(git(self.origin, 'rev-parse', f'{branch}:docs/work/FACTORY-009.md'),
-                             git(self.origin, 'rev-parse', 'production:docs/work/FACTORY-009.md'))
-            self.assertEqual(git(self.origin, 'rev-parse', f'{branch}:docs/work/FACTORY-003.md'),
-                             git(self.origin, 'rev-parse', f'{self.tip}:docs/work/FACTORY-003.md'))  # never overwritten
-            self.assertEqual(git(self.origin, 'log', '-1', '--format=%s', branch), 'docs(work): sync FACTORY-009 from production')
-            self.assertIn(f'{branch}: FACTORY-003 differs from production; left unchanged', output.getvalue())
-        self.assertEqual(git(self.origin, 'diff', '--name-status', before, 'testing'), 'A\tdocs/work/FACTORY-009.md')
-        tips = [git(self.origin, 'rev-parse', branch) for branch in ('testing', 'staging')]
+            self.assertEqual(branching.promote(ctx, 'testing'), 0)
+        self.assertEqual((checkouts.current_branch(self.candidate), checkouts.head(self.candidate)), ('testing', production))
+        self.assertIn('Fast-forwarded testing to production', output.getvalue())
+        self.assertIn('no merge commit was needed. Nothing was pushed.', output.getvalue())
+        self.assertNotEqual(git(self.origin, 'rev-parse', 'testing'), production)  # never pushed
+        git(self.candidate, 'push', '--quiet', str(self.origin), 'testing')  # the maintainer pushes it
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(branching.sync(ctx), 0)
-            self.assertEqual(branching.sync(ctx, '9'), 0)
-        self.assertEqual([git(self.origin, 'rev-parse', branch) for branch in ('testing', 'staging')], tips)
-        self.assertIn('testing: up to date', output.getvalue())
-        with self.assertRaisesRegex(Blocked, 'no work order 42'):
-            branching.sync(ctx, '42')
+            self.assertEqual(branching.promote(ctx, 'testing'), 0)
+        self.assertIn('nothing to promote until testing has new commits', output.getvalue())
+        self.assertEqual(ctx.gh.created, [])
+
+    def test_update_fast_forwards_after_a_merge_commit_promotion(self):
+        self.advance_origin('tools/factory/b.py', 'testing', 'VALUE = 2\n')  # the local testing is now behind GitHub
+        production = self.promote_on_origin()
+        testing = git(self.origin, 'rev-parse', 'testing')
+        ctx = self.ctx()
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.update(ctx), 0)  # the branch checked out in the candidate
+        self.assertEqual((checkouts.current_branch(self.candidate), checkouts.head(self.candidate)), ('testing', production))
+        self.assertEqual(git(self.origin, 'rev-parse', 'testing'), testing)  # never pushed
+        self.assertIn(f'Fast-forwarded testing to production ({production[:12]}) in the candidate: no new commit. '
+                      'Nothing was pushed.', output.getvalue())
+        self.assertIn(f'git -C {shlex.quote(str(self.candidate))} push origin testing', output.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(branching.update(ctx, 'testing'), 0)
+        self.assertIn('already contains production', output.getvalue())
+        self.assertIn('up to date, nothing changed', output.getvalue())
+        self.assertEqual(checkouts.head(self.candidate), production)
+
+    def test_update_merges_after_a_squash_promotion_and_brings_only_work_orders(self):
+        testing = self.advance_origin('tools/factory/b.py', 'testing', 'VALUE = 2\n')
+        self.promote_on_origin(squash=True)  # production holds testing's content in a commit testing lacks
+        production = self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009') + 'tail \t\r\n')
+        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/elsewhere')
+        git(self.candidate, 'branch', '--quiet', '-D', 'testing')  # created again from GitHub
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.update(self.ctx(), 'testing'), 0)
+        self.assertEqual(checkouts.current_branch(self.candidate), 'testing')
+        self.assertEqual(git(self.candidate, 'rev-list', '--parents', '-n', '1', 'HEAD').split()[1:], [testing, production])
+        self.assertEqual(git(self.candidate, 'log', '-1', '--format=%s'), 'Merge production into testing (factory update)')
+        self.assertEqual(git(self.candidate, 'diff', '--name-status', testing, 'HEAD'), 'A\tdocs/work/FACTORY-009.md')
+        self.assertEqual(git(self.candidate, 'rev-parse', 'HEAD:docs/work/FACTORY-009.md'),
+                         git(self.origin, 'rev-parse', 'production:docs/work/FACTORY-009.md'))  # byte-exact
+        self.assertIn(f'merge commit {checkouts.head(self.candidate)[:12]}. Nothing was pushed.', output.getvalue())
+        self.assertEqual(git(self.origin, 'rev-parse', 'testing'), testing)
+
+    def test_update_refuses_other_paths_before_touching_the_working_tree(self):
+        self.commit_on_origin('production', {**{f'docs/hotfix-{i:02}.md': f'{i}\n' for i in range(21)},
+                                             'docs/work/FACTORY-009.md': order('FACTORY-009')})
+        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/elsewhere')
+        head = checkouts.head(self.candidate)
+        for target, remedy in (('testing', '`factory promote testing` brings all of production into it'),
+                               (None, 'merge it by hand')):  # None: the feature branch checked out
+            with self.assertRaises(Blocked) as raised:
+                branching.update(self.ctx(), target)
+            message = str(raised.exception)
+            self.assertIn('would also change docs/hotfix-00.md, docs/hotfix-01.md', message)
+            self.assertIn('docs/hotfix-19.md and 1 more. Nothing was changed', message)
+            self.assertNotIn('hotfix-20', message)
+            self.assertNotIn('FACTORY-009', message)  # a work order is in scope
+            self.assertIn(remedy, message)
+            self.assertEqual((checkouts.current_branch(self.candidate), checkouts.head(self.candidate)),
+                             ('ftrutschnig/elsewhere', head))
+            self.assertEqual(git(self.candidate, 'status', '--porcelain', '--ignored'), '')
+            self.assertEqual(branching.local_tip(self.candidate, 'testing'), self.tip)
+
+    def test_update_refuses_a_conflict_outside_the_scope(self):
+        self.advance_origin('docs/guide.md', 'testing', 'testing\n')
+        self.commit_on_origin('production', removed=['docs/guide.md'])  # modify/delete: the merged tree keeps testing's file
+        with self.assertRaisesRegex(Blocked, r'would also change docs/guide\.md\. Nothing was changed'):
+            branching.update(self.ctx())
+        self.assertFalse((self.candidate / '.git/MERGE_HEAD').exists())
+        self.assertEqual(git(self.candidate, 'status', '--porcelain'), '')
+        self.assertEqual(checkouts.head(self.candidate), self.tip)  # not even fast-forwarded to GitHub's testing
+
+    def test_update_leaves_a_config_conflict_to_the_maintainer(self):
+        text = (self.seed / 'factory/config.json').read_text()
+        self.assertIn('"max_rounds": 2', text)
+        self.advance_origin('factory/config.json', 'production', text.replace('"max_rounds": 2', '"max_rounds": 3'))
+        self.advance_origin('factory/config.json', 'testing', text.replace('"max_rounds": 2', '"max_rounds": 1'))
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.update(self.ctx()), 1)
+        self.assertIn('stopped on conflicts', output.getvalue())
+        self.assertIn('  factory/config.json', output.getvalue())
+        self.assertIn('git merge --abort', output.getvalue())
+        self.assertIn('Nothing was pushed.', output.getvalue())
+        self.assertTrue((self.candidate / '.git/MERGE_HEAD').is_file())
+        self.assertIn('<<<<<<<', (self.candidate / 'factory/config.json').read_text())
+        with self.assertRaisesRegex(Blocked, 'uncommitted or untracked'):
+            branching.update(self.ctx())
+
+    def test_update_refuses_production_dirty_and_diverged_and_keeps_unpushed_commits(self):
+        ctx = self.ctx()
+        for target, problem in (('production', 'production branch; factory never changes one'),
+                                ('-x', 'not a valid branch name'), ('a..b', 'not a valid branch name'),
+                                ('nobody/nothing', 'neither a branch of the candidate nor on GitHub')):
+            with self.assertRaisesRegex(Blocked, problem):
+                branching.update(ctx, target)
+        git(self.candidate, 'switch', '--quiet', '--detach')
+        with self.assertRaisesRegex(Blocked, 'no branch checked out'):
+            branching.update(ctx)
+        git(self.candidate, 'switch', '--quiet', 'testing')
+        (self.candidate / 'scratch.txt').write_text('x')
+        with self.assertRaisesRegex(Blocked, 'uncommitted or untracked files'):
+            branching.update(ctx)
+        (self.candidate / 'scratch.txt').unlink()
+        production = self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009'))
+        (self.candidate / 'docs/local.md').write_text('local\n')
+        git(self.candidate, 'add', 'docs/local.md')
+        git(self.candidate, 'commit', '--quiet', '-m', 'local only')
+        local = checkouts.head(self.candidate)
+        with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as warned:
+            self.assertEqual(branching.update(ctx), 0)
+        self.assertIn('your local testing has commits that are not on GitHub yet', warned.getvalue())
+        self.assertEqual(git(self.candidate, 'rev-list', '--parents', '-n', '1', 'HEAD').split()[1:], [local, production])
+        self.assertIn('merge commit', output.getvalue())
+        merged = checkouts.head(self.candidate)
+        self.advance_origin('docs/remote.md', 'testing')
+        self.advance_origin('docs/work/FACTORY-010.md', 'production', order('FACTORY-010'))
+        with self.assertRaisesRegex(Blocked, 'your local testing and testing on GitHub diverged'), \
+                contextlib.redirect_stderr(io.StringIO()):
+            branching.update(ctx)
+        self.assertEqual(checkouts.head(self.candidate), merged)
+
+    def test_update_of_a_feature_branch_goes_up_with_the_next_submit(self):
+        production = self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009'))
+        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/issue-57')
+        (self.candidate / 'docs/feature.md').write_text('feature\n')
+        git(self.candidate, 'add', 'docs/feature.md')
+        git(self.candidate, 'commit', '--quiet', '-m', 'feature')
+        feature = checkouts.head(self.candidate)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.update(self.ctx()), 0)
+        self.assertEqual(checkouts.current_branch(self.candidate), 'ftrutschnig/issue-57')
+        self.assertEqual(git(self.candidate, 'rev-list', '--parents', '-n', '1', 'HEAD').split()[1:], [feature, production])
+        self.assertIn('it goes up with your next `factory submit`', output.getvalue())
+        self.assertNotIn('push origin', output.getvalue())
+        self.assertEqual(git(self.origin, 'branch', '--list', 'ftrutschnig/*'), '')
 
     def test_branches_write_the_mermaid_document_and_a_self_contained_page(self):
         ctx = self.ctx(branches.with_validation(self.config, 'staging', 'none', ['smoke']))
@@ -1236,7 +1379,7 @@ class HelpAndInstallTests(unittest.TestCase):
             (tree / 'factory/config.json').write_text(branch_fixture.text(ROOT))
             env = {'PATH': os.environ['PATH'], 'HOME': temp}
             for argv in (['--help'], ['issue', '--help'], ['fix', '--help'], ['submit', '--help'], ['promote', '--help'],
-                         ['add', '--help'], ['sync', '--help'], ['use', '--help'], ['branches', '--help']):
+                         ['add', '--help'], ['update', '--help'], ['use', '--help'], ['branches', '--help']):
                 result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), *argv],
                                         env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -1244,12 +1387,16 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertIn('When to use it', result.stdout)
             result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), '--version'],
                                     env=env, capture_output=True, text=True, timeout=30)
-            self.assertEqual((result.returncode, result.stdout), (0, 'factory 0.3.0\n'), result.stderr)
+            self.assertEqual((result.returncode, result.stdout), (0, 'factory 0.4.0\n'), result.stderr)
             result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), 'add',
                                      'validation', 'branch', 'staging', '--review', 'no'],
                                     env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 2)
             self.assertIn('needs --gate', result.stderr)
+            result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), 'sync',
+                                     'workorders'], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('`factory update [<target-branch>]`', result.stderr)
             self.assertEqual(list(tree.rglob('*.pyc')), [])
             self.assertFalse((Path(temp) / '.config').exists())
 
@@ -1594,12 +1741,20 @@ class HelpAndInstallTests(unittest.TestCase):
     def test_option_combinations_are_checked_before_any_network(self):
         parser = factory.build_parser()
         for argv, problem in ((['add', 'production', 'branch', 'x', '--review', 'no', '--gate', 'full'], 'needs --review'),
-                              (['add', 'validation', 'branch', 'x', '--gate', 'full', '--kinds', 'factory,bogus'], 'distinct'),
-                              (['sync', 'workorders', '7'], 'takes none'), (['sync', 'workorder'], 'names one')):
+                              (['add', 'validation', 'branch', 'x', '--gate', 'full', '--kinds', 'factory,bogus'], 'distinct')):
             self.assertIn(problem, factory.misuse(parser.parse_args(argv)), argv)
         args = parser.parse_args(['add', 'validation', 'branch', 'x', '--gate', 'tests', '--kinds', 'smoke, factory'])
         self.assertIsNone(factory.misuse(args))
         self.assertEqual(args.kinds, ['smoke', 'factory'])
+        self.assertIsNone(factory.misuse(parser.parse_args(['update', 'testing'])))
+        # The replaced sync names factory update and exits 2, before any configuration, lock or network.
+        for argv in (['sync', 'workorders'], ['sync', 'workorder', '9'], ['sync']):
+            with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()) as stderr, \
+                    mock.patch.object(factory, 'dispatch', side_effect=AssertionError('dispatched')):
+                factory.entry(argv)
+            self.assertEqual(raised.exception.code, 2, argv)
+            self.assertIn('was replaced by `factory update [<target-branch>]`', stderr.getvalue())
+        self.assertNotIn('sync', helptext.overview())
 
     def test_shim_is_marked_quoted_and_never_replaces_foreign_files(self):
         with tempfile.TemporaryDirectory() as temp:

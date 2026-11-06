@@ -27,7 +27,7 @@ The flow is `factory issue` → `factory submit workorders` → two approvals an
    factory submit workorders
    ```
 
-   It checks every changed work order against the gate's block rules, asks whether each draft should become `approved` (the only status the factory accepts), commits only the work orders on `<login>/new-workorders` from the config branch tip, pushes and opens the PR into the config branch (advisory preflight with the scope of `docs/work/FACTORY-001.md`, which allows `docs/work/`). Other changes in your candidate stay untouched; the submitted files move to the work-order branch. The PR needs only approving reviews from two maintainer accounts at its current head and `factory/deterministic`; it never needs `/review` or an AI review, and `/bypass` does not apply. Then a maintainer merges it on GitHub. Then copy it to the validation branches:
+   It checks every changed work order against the gate's block rules, asks whether each draft should become `approved` (the only status the factory accepts), commits only the work orders on `<login>/new-workorders` from the config branch tip, pushes and opens the PR into the config branch (no AI preflight: two maintainer approvals decide). Other changes in your candidate stay untouched; the submitted files move to the work-order branch. The PR needs only approving reviews from two maintainer accounts at its current head and `factory/deterministic`; it never needs `/review` or an AI review, and `/bypass` does not apply. Then a maintainer merges it on GitHub. Then copy it to the validation branches:
 
    ```sh
    factory sync workorders

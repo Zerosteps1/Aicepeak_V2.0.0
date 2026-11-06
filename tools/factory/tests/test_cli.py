@@ -421,7 +421,7 @@ class CommandTests(Repos):
                 mock.patch.object(commands, 'session_submit', side_effect=lambda *a, **k: calls.append((a, k)) or k['on_created'](12) or 12), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(commands.submit_workorders(self.ctx()), 0)
-        self.assertEqual((calls[0][0][2], calls[0][1]['base']), ('docs/work/FACTORY-001.md', 'production'))
+        self.assertEqual((calls[0][0][2], calls[0][1]['base']), (None, 'production'))  # no advisory preflight
         self.assertEqual(git(self.origin, 'rev-parse', 'ftrutschnig/new-workorders^'), git(self.origin, 'rev-parse', 'production'))
         pushed = git(self.origin, 'show', 'refs/heads/ftrutschnig/new-workorders:docs/work/FACTORY-007.md')
         self.assertEqual(workorders.task_block(pushed)['status'], 'approved')
@@ -927,15 +927,24 @@ class BranchTests(Repos):
         self.assertIn(f'`gh pr ready 9 --repo {REPOSITORY}`', output.getvalue())
         self.assertEqual((git(self.origin, 'rev-parse', branch), len(calls)), (replaced, 2))
 
-    def test_only_config_prs_skip_the_advisory_preflight(self):
+    def test_work_order_and_config_prs_skip_the_advisory_preflight(self):
         captured, ctx = [], self.ctx()
         with mock.patch.object(commands, 'run_session_submit', side_effect=lambda ctx, snapshot, args, on_created=None:
                                captured.append(args) or 5):
-            for task in (None, commands.ORDERS_TASK):
+            for task in (None, 'docs/work/FACTORY-SMOKE.md'):
                 self.assertEqual(commands.session_submit(ctx, self.tmp, task, 'title', self.tmp / 'body.md',
-                                                         base='production'), 5)
+                                                         base='production' if task is None else 'testing'), 5)
         self.assertNotIn('--task', captured[0])
-        self.assertEqual(captured[1][:4], ['--task', 'docs/work/FACTORY-001.md', '--base', 'production'])
+        self.assertEqual(captured[1][:4], ['--task', 'docs/work/FACTORY-SMOKE.md', '--base', 'testing'])
+        # An open draft work-order PR becomes ready without any model call.
+        gh = mock.Mock()
+        with mock.patch.object(type(ctx), 'gh', new_callable=mock.PropertyMock, return_value=gh), \
+                mock.patch.object(commands, 'preflight') as preflight, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(commands.finish_open_pr(ctx, {'number': 7, 'draft': True, 'base': {'ref': 'production'}},
+                                                     'a' * 40, 'ftrutschnig/new-workorders', None, []), 0)
+        preflight.assert_not_called()
+        gh.command.assert_called_once_with(['pr', 'ready', '7', '--repo', REPOSITORY])
+        self.assertIn('Pull request #7 is ready for review.', output.getvalue())
 
     def test_use_branch_switches_a_clean_control_to_listed_branches_only(self):
         common.CONFIG_FILE.write_text(json.dumps({'control': str(self.control), 'candidate': str(self.candidate),

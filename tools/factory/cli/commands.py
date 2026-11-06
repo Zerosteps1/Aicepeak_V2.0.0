@@ -18,7 +18,6 @@ import workorders
 
 WATCH_ALL_INTERVAL = 60
 VERBS = {'add': 'add', 'edit': 'update', 'delete': 'remove'}
-ORDERS_TASK = 'docs/work/FACTORY-001.md'  # the preflight task of work-order PRs (config PRs have none)
 APPROVALS = ('Next: two maintainers approve the pull request at its current head; a maintainer merges it on GitHub '
              '(`factory merge` never merges into a production branch).')
 
@@ -181,13 +180,14 @@ def submit_workorders(ctx):
             body.write_text('Work orders submitted with `factory submit workorders`:\n\n' + '\n'.join(
                 f'- {kinds[p]}: `{p}`' + ('' if changes[p] is None else f' – {workorders.title_of(changes[p].decode())}')
                 for p in sorted(changes)) + '\n')
-            created = session_submit(ctx, repo, ORDERS_TASK, message, body, base=name,
+            # No advisory preflight: two maintainer approvals and factory/deterministic decide work-order PRs.
+            created = session_submit(ctx, repo, None, message, body, base=name,
                                      on_created=lambda _: move_out(candidate, head, changes))
             if created:
                 say(APPROVALS + ' Then copy the work orders to the validation branches: `factory sync workorders`.')
     if pull:
         move_out(candidate, head, changes)
-        return finish_open_pr(ctx, pull, sha, branch, ORDERS_TASK, [])
+        return finish_open_pr(ctx, pull, sha, branch, None, [])
     return 0 if created else 1
 
 
@@ -240,7 +240,8 @@ def run_session_submit(ctx, snapshot, args, on_created=None):
 
 def session_submit(ctx, snapshot, task, title, body_file, context=(), draft=False, on_created=None, *, base):
     """session.py submit into base: a validation branch, or a production branch for work-order and config PRs. Without
-    a task (config PRs) there is no advisory preflight: two maintainer approvals and factory/deterministic decide."""
+    a task (work-order and config PRs) there is no advisory preflight: two maintainer approvals and
+    factory/deterministic decide."""
     args = [*(['--task', task] if task else []), '--base', base, '--runner', ctx.config['runners'][0], '--title', title,
             '--body-file', body_file]
     for path in context:
@@ -277,15 +278,17 @@ def open_pull_for(ctx, branch):
 
 
 def finish_open_pr(ctx, pull, sha, branch, task, context):
-    """An existing PR: a draft becomes ready only after a passing preflight; then this device watches it."""
+    """An existing PR: a draft becomes ready after a passing preflight (none without a task: work-order and config
+    PRs); then this device watches a PR into a validation branch."""
     number = pull['number']
-    if pull.get('draft'):
+    if pull.get('draft') and task:
         with checkouts.candidate_snapshot(ctx.candidate, ctx.control, sha, branch, ctx.config) as snapshot:
             review = preflight(ctx, snapshot, task, context, base=pull['base']['ref'])
         describe_review(review)
         if review['outcome'] != 'pass':
             say(f'Pull request #{number} stays a draft; fix the findings and run `factory submit --finished` again.')
             return 1
+    if pull.get('draft'):
         ctx.gh.command(['pr', 'ready', str(number), '--repo', ctx.config['repository']])
         say(f'Pull request #{number} is ready for review.')
     if ctx.model.level(pull['base']['ref']) == 'production':  # type b: no senior review to watch for

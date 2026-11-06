@@ -474,11 +474,10 @@ def doctor(ctx):
                           ('aicepeak-factory-context7-api-key', 'CONTEXT7_API_KEY')):
         check(f'author key {name}', os.environ.get(name) or keychain_present(service),
               'rerun the installer with --author-keys, or export it')
-    docker = common.tool('docker', required=False)
-    host = common.docker_host()
-    image = bool(docker) and subprocess.run([docker, 'image', 'inspect', clients.IMAGE], capture_output=True,
-                                            env={**common.child_env(), **({'DOCKER_HOST': host} if host else {})}).returncode == 0
-    check('author image', image, f'docker build -f {ctx.control}/factory/Dockerfile -t {clients.IMAGE} {ctx.control}/factory')
+    _, problem = common.wait_for_docker(clients.IMAGE)
+    check('Docker running', problem != 'docker', f'start Docker Desktop; it did not answer within {common.DOCKER_WAIT} s')
+    check('author image', problem is None, f'docker build -f {ctx.control}/factory/Dockerfile -t {clients.IMAGE} {ctx.control}/factory'
+          if problem == 'image' else 'needs Docker running (above)')
     codex = common.tool('codex', required=False)
     version = subprocess.run([codex, '--version'], capture_output=True, text=True).stdout.strip() if codex else ''
     check('pinned Codex 0.164.0', version == 'codex-cli 0.164.0', 'docs/dev-setup.md step 2')

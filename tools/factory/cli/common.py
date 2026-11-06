@@ -254,6 +254,43 @@ def feed(stream, data):
     return thread
 
 
+DOCKER_WAIT = 120  # seconds: Docker Desktop starting up, or waking from its resource saver, answers late
+
+
+def wait_for_docker(image, timeout=DOCKER_WAIT, interval=2, clock=time.monotonic, sleep=time.sleep):
+    """Wait until Docker answers and holds `image`, saying once that it waits. Docker Desktop that is starting up or
+    waking from its resource saver answers late and, for a few seconds more, may call a present image missing.
+    Returns (endpoint, problem): problem None when ready, 'docker' when Docker never answered, 'image' when the image
+    is not there (decided soon after Docker answers, never only at the end)."""
+    docker = tool('docker', required=False)
+    if not docker:
+        return '', 'docker'
+    host = docker_host()
+    env = {**child_env(), **({'DOCKER_HOST': host} if host else {})}
+
+    def answer(*args):
+        try:
+            result = subprocess.run([docker, *args], capture_output=True, text=True, env=env, timeout=30)
+        except subprocess.TimeoutExpired:
+            return None
+        return result.stdout if result.returncode == 0 else None
+    deadline, answered, announced = clock() + timeout, None, False
+    while True:
+        if answer('info', '--format', '{{.ServerVersion}}') is not None:
+            answered = answered or clock()
+            if answer('image', 'inspect', '--format', '{{.Id}}', image) is not None:
+                return host, None
+            # A listed image is still loading into the image store; an unlisted one is missing.
+            if not (answer('image', 'ls', '--quiet', image) or '').strip() and clock() - answered >= 10:
+                return host, 'image'
+        if clock() >= deadline:
+            return host, 'image' if answered else 'docker'
+        if not announced:
+            say(f'Waiting for Docker to be ready, up to {timeout} s (start Docker Desktop if it is not running)…')
+            announced = True
+        sleep(interval)
+
+
 def docker_host():
     """The Docker endpoint for factory containers: FACTORY_DOCKER_HOST, else the active Docker context."""
     if os.environ.get('FACTORY_DOCKER_HOST'):

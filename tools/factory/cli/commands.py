@@ -418,6 +418,24 @@ def merge(ctx, pr, dry_run=False):
 
 # --- doctor ------------------------------------------------------------------------------------------
 
+def doctor_report(report, keychain=()):
+    """doctor.py's status, then each of its blocked checks with its fix. Its environment check of an author key is
+    expected to block when that key is in the keychain: factory hands it to each author run, never to doctor.py."""
+    if not report:
+        return ['doctor.py: produced no report']
+    blocked = [item for item in report.get('factory', {}).get('local_prerequisites', []) if item.get('status') == 'blocked']
+    lines = [f'doctor.py: {report.get("status", "unknown")}' + ('' if blocked or report.get('reason') else '; no blocked checks')]
+    if report.get('reason'):
+        lines.append(f'  {report["reason"]}')
+    for item in blocked:
+        name = str(item.get('check') or '?')
+        if name.startswith('environment_') and name[len('environment_'):] in keychain:
+            lines.append(f'  expected {name}: the key is in the keychain; doctor.py sees only exported keys')
+        else:
+            lines.append(f'  blocked  {name}  → {item.get("continuation") or item.get("detail") or "see doctor.py"}')
+    return lines
+
+
 def doctor(ctx):
     import clients
     checks = []
@@ -450,9 +468,10 @@ def doctor(ctx):
         code, stdout, _ = checkouts.run_tool(policy, 'doctor.py', '--root', policy, '--runner', ctx.config['runners'][0],
                                             capture=True)
     report = checkouts.last_json(stdout) or {}
-    blocked = [item for item in report.get('factory', {}).get('local_prerequisites', []) if item.get('status') == 'blocked']
-    say(f'doctor.py: {report.get("status", "unknown")}; blocked checks: ' + (', '.join(i.get('name', '?') for i in blocked) or 'none'))
-    say('(doctor.py sees only exported author keys and always exits 2: it never certifies live acceptance.)')
+    keychain = {name.split()[-1] for name, ok, _ in checks if ok and name.startswith('author key ')}
+    for line in doctor_report(report, keychain):
+        say(line)
+    say('(doctor.py always exits 2: it never certifies live acceptance.)')
     return 0 if all(ok for _, ok, _ in checks) else 1
 
 

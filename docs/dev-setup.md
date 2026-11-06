@@ -68,7 +68,18 @@ If you already have older clones (for example `Aicepeak-factory` and `Aicepeak-c
 factory doctor
 ```
 
-`factory doctor` prints `ok` or `FAIL` with the fix for each of its own checks (shim, checkouts, author keys, image, pinned Codex, `gh` maintainer login) and then summarises `doctor.py` from a disposable checkout of the config branch tip, including the native adapter check and the branch model. **`doctor.py` exit 2 is expected:** it always leaves live acceptance open and, at this stage, keys/image may also be missing. It sees only exported author keys, not keychain items, and its Docker checks use `FACTORY_DOCKER_HOST` only when exported. It also checks Docker, author keys and local verifier tools on reviewer-only devices. Read each named check instead of treating a blocked check as a failed installation. `actionlint` and `gitleaks` are only needed for full local verification; the Linux-only `factory/install_tools.py` is not a macOS installer.
+`factory doctor` prints `ok` or `FAIL` with the fix for each of its own checks (shim, checkouts, author keys, image, pinned Codex, `gh` maintainer login) and then summarises `doctor.py` from a disposable checkout of the config branch tip, including the native adapter check and the branch model: each blocked check of `doctor.py` on its own line with its fix. **`doctor.py` exit 2 is expected:** it always leaves live acceptance open and, at this stage, keys/image may also be missing. It sees only exported author keys, not keychain items, so `factory doctor` marks its two key checks as `expected` when the keychain holds the keys; its Docker checks use `FACTORY_DOCKER_HOST` only when exported. It also checks Docker, author keys and local verifier tools on reviewer-only devices. Read each named check instead of treating a blocked check as a failed installation. `actionlint` and `gitleaks` are only needed for full local verification; the Linux-only `factory/install_tools.py` is not a macOS installer.
+
+### Test changes in the sandbox
+
+Test changes to the factory the way the pipeline does, in the author image (Docker running), with a read-only root filesystem, no network and a throwaway copy of your working tree, uncommitted changes included:
+
+```sh
+tools/factory/sandbox-verify.sh                  # full verify.py --ci: ends with four PASS lines
+tools/factory/sandbox-verify.sh 'test_cli*.py'   # only the unit tests whose file names match the pattern
+```
+
+Run it from the checkout you changed; it never writes into the repository. To try a change with the `factory` command itself, push it to `testing` (maintainers may push there directly), run `factory use branch testing`, and switch back with `factory use branch production`: the command runs only listed branches, while the rules always come from the config branch.
 
 ## 3. Configure and test the reviewer
 

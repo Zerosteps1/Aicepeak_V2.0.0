@@ -1167,6 +1167,38 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertEqual(list(tree.rglob('*.pyc')), [])
             self.assertFalse((Path(temp) / '.config').exists())
 
+    def test_doctor_report_names_each_blocked_check_and_its_fix(self):
+        import doctor
+        report = doctor.inspect(ROOT, 'claude')  # the real producer, so its record keys and these lines stay in step
+        blocked = [item['check'] for item in report['factory']['local_prerequisites'] if item['status'] == 'blocked']
+        lines = commands.doctor_report(report)
+        self.assertEqual(lines[0], f"doctor.py: {report['status']}" + ('' if blocked or report.get('reason') else '; no blocked checks'))
+        for name in blocked:
+            self.assertTrue(any(line.startswith(f'  blocked  {name}  → ') for line in lines), name)
+        self.assertNotIn('?', ''.join(lines))
+        sample = {'status': 'blocked', 'factory': {'local_prerequisites': [
+            {'check': 'python', 'status': 'passed', 'detail': 'Python >= 3.11 required.', 'continuation': ''},
+            {'check': 'docker_daemon', 'status': 'blocked', 'detail': 'Docker endpoint', 'continuation': 'Start Docker'},
+            {'check': 'environment_ANTHROPIC_API_KEY', 'status': 'blocked', 'detail': 'd', 'continuation': 'Provide it'},
+            {'check': 'environment_CONTEXT7_API_KEY', 'status': 'blocked', 'detail': 'd', 'continuation': 'Provide it'}]}}
+        self.assertEqual(commands.doctor_report(sample, {'ANTHROPIC_API_KEY'}), [
+            'doctor.py: blocked', '  blocked  docker_daemon  → Start Docker',
+            '  expected environment_ANTHROPIC_API_KEY: the key is in the keychain; doctor.py sees only exported keys',
+            '  blocked  environment_CONTEXT7_API_KEY  → Provide it'])  # not in the keychain: a real gap
+        self.assertEqual(commands.doctor_report({'status': 'blocked', 'read_only': True, 'reason': 'Repository unreadable.'}),
+                         ['doctor.py: blocked', '  Repository unreadable.'])
+        self.assertEqual(commands.doctor_report({}), ['doctor.py: produced no report'])
+
+    def test_sandbox_script_runs_the_author_image_without_network_or_writes(self):
+        script = ROOT / 'tools/factory/sandbox-verify.sh'
+        text = script.read_text()
+        self.assertTrue(script.stat().st_mode & 0o111)
+        self.assertEqual(subprocess.run(['sh', '-n', str(script)], capture_output=True).returncode, 0)
+        for expected in ('--network none', '--read-only', '--cap-drop ALL', 'no-new-privileges', ',readonly"',
+                         '--exclude .git', 'tools/factory/clients.py', 'verify.py --root /candidate --trusted-root /candidate --ci',
+                         'sh "$1"'):
+            self.assertIn(expected, text)
+
     def test_installer_is_executable_valid_bash(self):
         script = ROOT / 'tools/factory/cli/install-factory-cli.sh'
         self.assertTrue(script.stat().st_mode & 0o111)

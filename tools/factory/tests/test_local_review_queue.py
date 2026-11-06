@@ -380,7 +380,8 @@ class Coordination(unittest.TestCase):
 
     def test_workflow_keeps_claim_and_finalization_in_the_existing_pr_serialization(self):
         workflow = (ROOT / '.github/workflows/factory.yml').read_text()
-        self.assertIn('group: factory-${{ github.repository }}-pr-${{ fromJSON(inputs.pr) }}', workflow)
+        self.assertIn("group: factory-${{ github.repository }}-${{ inputs.issue != '0' && format('issue-{0}', inputs.issue) "
+                      "|| format('pr-{0}', fromJSON(inputs.pr)) }}", workflow)
         self.assertIn('cancel-in-progress: false', workflow)
         self.assertIn('name: Review coordination', workflow)
         self.assertIn('local_review_queue.py', job(workflow, 'review-coordinate'))

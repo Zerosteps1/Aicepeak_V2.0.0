@@ -12,6 +12,7 @@ import tempfile
 import tomllib
 
 import branches  # Trusted: imported from this file's directory, never from the candidate.
+import issues  # Trusted as well (issue work-order configuration).
 
 
 def run(command, **kwargs):
@@ -38,6 +39,8 @@ def structural(root, trusted):
     config=json.loads((root/'factory/config.json').read_text())
     found=branches.problems(config)
     if found:raise ValueError('invalid branch configuration: '+'; '.join(found))
+    found=issues.config_problems(config)
+    if found:raise ValueError('invalid issue work-order configuration: '+'; '.join(found))
     if config['review_model']!='gpt-6-astra' or config['review_effort']!='high':raise ValueError('review model policy drift')
     if config['limits']['max_rounds']>3 or config['limits']['max_rounds']<1:raise ValueError('invalid correction limit')
     if (root/'CLAUDE.md').read_text().splitlines().count('@AGENTS.md')!=1:raise ValueError('Claude must import AGENTS.md')

@@ -55,13 +55,13 @@ def conflicts(trial, ours, theirs):
 def collisions(gh, candidate, task=None, base=None):
     """Read-only sweep of the committed candidate against the current target tip and the other open PRs into it."""
     config, policy, _ = session.control(gh)
-    _, base = session.target(config, policy, base, task, fallback=config['default_branch'])
+    _, base = session.target(config, policy, base, task, fallback=config['default_branch'], gh=gh)
     candidate = Path(candidate).resolve()
     require(candidate != session.ROOT.resolve(), 'use a separate candidate checkout')
     sha = session.identity(candidate, config)
     branch = session.feature_branch(candidate, config)
     if task is not None:
-        session.task_order(config, policy, task)
+        session.task_order(config, policy, task, gh)
     tip = session.tip(gh, base)
     limitations, others = [], []
     with tempfile.TemporaryDirectory(prefix='factory-collisions-') as directory:
@@ -228,6 +228,9 @@ def check_problem(gh, runs, name, snapshot, config):
         reviewed = engine.receipt(latest).get('snapshot') or {}
         if (reviewed.get('handoff'), reviewed.get('feedback_digest')) != (snapshot['handoff'], snapshot['feedback_digest']):
             return name + ': handoff or human feedback changed after the review; wait for the fresh run'
+        if reviewed.get('task_pin') != snapshot['task_pin']:
+            # The PR's work-order issue was edited and approved again after the review.
+            return name + ': the work-order issue changed after the review; re-run the pipeline for a fresh review'
     return None
 
 

@@ -43,7 +43,8 @@
     "contents": "read",
     "pull_requests": "write",
     "checks": "write",
-    "actions": "read"
+    "actions": "read",
+    "issues": "write"
   },
   "writer_permissions": {
     "metadata": "read",

@@ -86,6 +86,35 @@ def command(body):
     return match[1] if match else None
 
 
+def issue_command(config, event):
+    """(issue, word, comment ID) for a maintainer's new /review or /accept on a maintainer's issue, else None.
+
+    Work-order issues (tools/factory/issues.py): the trusted factory.yml jobs re-verify everything again."""
+    if not config.get("issue_review_model"):
+        # The config branch's factory.yml has no issue jobs before issue work orders are enabled there.
+        print("Ignored issue comment: issue work orders are not enabled on the config branch")
+        return None
+    issue_number = number(event["issue"]["number"])
+    comment = api("GET", PREFIX + "/issues/comments/" + str(number(event["comment"]["id"])))
+    if (not authorized(comment.get("user", {}), config) or comment.get("user", {}).get("id") != event["sender"]["id"]
+            or comment.get("issue_url") != "https://api.github.com" + PREFIX + "/issues/" + str(issue_number)):
+        raise RuntimeError("Issue-comment identity or issue association failed")
+    match = re.match(r"/(review|accept)(?=\s|$)", comment.get("body") or "")
+    if not match:
+        print("Ignored ordinary issue comment")
+        return None
+    if event.get("action") != "created":
+        print("Ignored edited command comment; post a new comment")
+        return None
+    if os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+        raise RuntimeError("a re-run never repeats a command; post a new comment")
+    issue = api("GET", PREFIX + "/issues/" + str(issue_number))
+    if issue.get("pull_request") or not authorized(issue.get("user", {}), config):
+        print("Ignored command: only issues opened by configured maintainers are work orders")
+        return None
+    return issue_number, match[1], number(comment["id"])
+
+
 def route(m, base, pr_number, kind, ident="0", head=""):
     """(workflow, inputs) dispatches for one event on a PR into `base`; [] when the factory ignores it.
     kind: update, production_push, review_request, bypass, issue_comment, review, dismissal or review_comment.
@@ -168,8 +197,16 @@ def main():
     if kind == "pull_request_target":
         jobs.append((number(event["pull_request"]["number"]), "update", "0"))
     elif kind == "issue_comment":
-        if not event.get("issue", {}).get("pull_request") or not authorized(event.get("sender", {}), config):
-            print("Ignored non-PR or unconfigured/bot feedback")
+        if not authorized(event.get("sender", {}), config):
+            print("Ignored unconfigured/bot feedback")
+            return
+        if not event.get("issue", {}).get("pull_request"):
+            found = issue_command(config, event)
+            if found:
+                issue_number, word, comment_id = found
+                api("POST", f"{PREFIX}/actions/workflows/{PIPELINE}/dispatches", {"ref": config["config_branch"], "inputs": {
+                    "issue": str(issue_number), "issue_command": word, "comment": str(comment_id)}})
+                print(f"Dispatched {PIPELINE} for issue {issue_number} (/{word})")
             return
         comment = api("GET", PREFIX + "/issues/comments/" + str(number(event["comment"]["id"])))
         pr = number(event["issue"]["number"])

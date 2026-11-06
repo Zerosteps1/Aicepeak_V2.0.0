@@ -18,8 +18,9 @@ import uuid
 from urllib.parse import quote
 import branches
 import bypass
+import issues
 from contracts import (Blocked, allowed_patch, assert_current, authentic_check, binding, digest, gates,
-                       handoff, is_control, require, safe_path, validate_review)
+                       handoff, is_control, require, safe_path, task_spec, validate_review)
 from github_api import GitHub, installation, tip, verify_run
 from review_context import context_sections
 
@@ -33,9 +34,9 @@ def load_config():
     return json.loads((ROOT / 'factory/config.json').read_text())
 
 
-def emit(name, value):
-    data = json.dumps(value, separators=(',', ':'))
-    require(len(data.encode()) < 60000, 'workflow output size limit')
+def emit(name, value, limit=60000, ensure_ascii=True):
+    data = json.dumps(value, separators=(',', ':'), ensure_ascii=ensure_ascii)
+    require(len(data.encode()) < limit, 'workflow output size limit')
     dest = os.environ.get('GITHUB_OUTPUT')
     if dest:
         marker = 'FACTORY_' + uuid.uuid4().hex
@@ -50,18 +51,6 @@ def env_json(name):
         return json.loads(os.environ[name])
     except (KeyError, ValueError):
         raise Blocked('missing or invalid stage data: ' + name) from None
-
-
-def task_spec(text):
-    blocks = re.findall(r'```factory-task\s*\n(.*?)\n```', text, re.S)
-    require(len(blocks) == 1, 'approved task metadata absent')
-    spec = json.loads(blocks[0])
-    require(set(spec) == {'status', 'kind', 'allowed_paths'}, 'invalid task metadata')
-    require(spec['status'] == 'approved' and spec['kind'] in ('factory', 'product', 'smoke'), 'task not approved')
-    require(isinstance(spec['allowed_paths'], list) and spec['allowed_paths'], 'task scope absent')
-    for path in spec['allowed_paths']:
-        safe_path(path.rstrip('/'))
-    return spec
 
 
 def feedback_item(gh, repo, pr, kind, ident, maintainers):
@@ -174,6 +163,9 @@ def unchanged(gh, snapshot, config):
     # A changed handoff or edited/new human feedback invalidates the old processing context too.
     if snapshot['handoff'] is not None:
         require(handoff(pr.get('body'), config) == snapshot['handoff'], 'PR handoff changed')
+    if snapshot.get('task_pin'):
+        # An edited or newly approved work-order issue is a different work order.
+        issues.pinned(gh, config, snapshot['task_pin'])
     if snapshot['feedback_digest'] is not None:
         require(digest(all_feedback(gh, repo, snapshot['pr'], config)) == snapshot['feedback_digest'], 'human feedback changed')
     return pr
@@ -218,11 +210,12 @@ def capture(gh, config, model, number, feedback_kind='', feedback_id=0, review_r
     for file in files:
         safe_path(file['filename'])
         if file.get('previous_filename'):safe_path(file['previous_filename'])
-    transfer = spec = None
+    transfer = spec = pin = None
     if mode == 'validation':
-        # The work order comes from the config tip, never from the target branch or the PR head.
+        # The work order is an approved issue (pinned to its approved text) or a file at the config tip,
+        # never anything from the target branch or the PR head.
         transfer = handoff(pr.get('body'), config)
-        spec = task_spec(gh.text(repo, transfer['task'], policy))
+        _, spec, pin = issues.work_order(gh, config, transfer['task'], policy)
         if spec['kind'] == 'product':
             require(config['northstar_path'] and config['northstar_approved'], 'product development blocked: approved repository northstar missing')
             require(config.get('product_checks_ready') is True,'product checks not implemented/approved for the future selected stack')
@@ -245,6 +238,7 @@ def capture(gh, config, model, number, feedback_kind='', feedback_id=0, review_r
     return {'repository': repo, 'pr': number, 'head_sha': pr['head']['sha'], 'base_sha': pr['base']['sha'], 'base_ref': base,
             'policy_sha': policy, 'run_id': int(os.environ['GITHUB_RUN_ID']), 'run_attempt': 1, 'mode': mode, 'gate': gate,
             'review_request': review_request, 'handoff': transfer, 'files': [f['filename'] for f in files], 'task': spec,
+            'task_pin': pin,
             'feedback_digest': digest(feedback) if reviewed else None, 'draft': pr['draft'], 'manual_retry': retry,
             'control_changed': any(is_control(p,config) for f in files for p in [f['filename'],f.get('previous_filename',f['filename'])]),
             # Production PRs are classified as the production check does: promotion, work-order (config) or other.
@@ -258,8 +252,10 @@ def snapshot_stage(args, config):
     value = capture(gh, config, model, args.pr, args.feedback_kind, args.feedback_id)
     value.update(check_id=None, reservation=None)
     if full_gate(value):
-        key = digest([value['head_sha'], value['policy_sha'], value['base_ref'], value['base_sha'], value['handoff'],
-                      value['feedback_digest'], value['draft'], value['run_id'] if value['manual_retry'] else None])
+        parts = [value['head_sha'], value['policy_sha'], value['base_ref'], value['base_sha'], value['handoff'],
+                 value['feedback_digest'], value['draft'], value['run_id'] if value['manual_retry'] else None]
+        # A re-approved work-order issue needs a fresh review; file work orders keep their earlier keys.
+        key = digest(parts + [value['task_pin']] if value['task_pin'] else parts)
         # The reviewer runs on a subscription seat (ADR-0005): no USD is reserved;
         # limits.max_reviews_per_pr bounds its usage instead.
         check_id, reservation = reserve(gh, value, config, 'factory/senior-review', 0, key)
@@ -289,7 +285,8 @@ def review_material(gh, snapshot, config, tests):
     repo, sha = snapshot['repository'], snapshot['head_sha']
     sections = [json.dumps({'binding': snapshot, 'trusted_test_evidence': tests})]
     if snapshot.get('handoff'):
-        sections.append('APPROVED WORK ORDER\n' + gh.text(repo, snapshot['handoff']['task'], snapshot['policy_sha']))
+        sections.append('APPROVED WORK ORDER\n' + issues.text_for(gh, config, repo, snapshot['handoff']['task'],
+                                                                  snapshot['policy_sha'], snapshot.get('task_pin')))
     else:
         # Production mode: no work order; the whole target..head diff is judged against the trusted policy.
         sections.append(f"PRODUCTION REVIEW of the PR into {snapshot['base_ref']}: no work-order scope. Review the complete diff "
@@ -659,7 +656,8 @@ def author_stage(config,args):
     with tempfile.TemporaryDirectory(prefix='factory-author-') as tmp:
         candidate=git_checkout(snapshot['repository'],snapshot['head_sha'],Path(tmp)/'candidate',gh.token)
         prompt=Path(tmp)/'prompt.txt'
-        prompt.write_text('Use factory-fix-review. Correct only justified findings within the approved work order. If disputing, explain evidence; do not weaken tests, scope or policy.\n'+json.dumps(review)+'\n'+gh.text(snapshot['repository'],snapshot['handoff']['task'],snapshot['policy_sha']))
+        order=issues.text_for(gh,config,snapshot['repository'],snapshot['handoff']['task'],snapshot['policy_sha'],snapshot.get('task_pin'))
+        prompt.write_text('Use factory-fix-review. Correct only justified findings within the approved work order. If disputing, explain evidence; do not weaken tests, scope or policy.\n'+json.dumps(review)+'\n'+order)
         # run receives no GitHub credential; the trusted launcher owns isolated provider proxying.
         # The OIDC request credential reaches only the broker container (Workload Identity Federation).
         env={k:v for k,v in os.environ.items() if k in ('PATH','TMPDIR','CONTEXT7_API_KEY','ACTIONS_ID_TOKEN_REQUEST_URL','ACTIONS_ID_TOKEN_REQUEST_TOKEN')}

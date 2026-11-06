@@ -251,6 +251,48 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual([w for w, _ in self.run_dispatcher('push', {'ref': 'refs/heads/quick', 'after': PUSHED},
                                                             ref='refs/heads/quick', attempt='2')], ['factory.yml'])
 
+    def issue_comment(self, number, body, user=HUMAN, author=HUMAN, ident=66, pull=False):
+        """A comment on issue `number`, opened by `author`, as the event and the API show it."""
+        self.responses[f'{PREFIX}/issues/comments/{ident}'] = {
+            'id': ident, 'user': user, 'body': body, 'issue_url': f'https://api.github.com{PREFIX}/issues/{number}'}
+        self.responses[f'{PREFIX}/issues/{number}'] = {'number': number, 'user': author, **({'pull_request': {}} if pull else {})}
+        return {'action': 'created', 'issue': {'number': number}, 'sender': user, 'comment': {'id': ident}}
+
+    def test_issue_commands_of_maintainers_on_maintainer_issues_dispatch_the_issue_jobs(self):
+        self.remote['issue_review_model'] = 'claude-sonnet-5-5'
+        declared = inputs((ROOT / '.github/workflows/factory.yml').read_text())
+        for body, word in (('/review', 'review'), ('/accept', 'accept'), ('/accept looks right', 'accept'),
+                           ('looks good', None), ('/reviewer', None), ('/bypass now', None), (' /accept', None)):
+            with self.subTest(body=body):
+                posts = self.run_dispatcher('issue_comment', self.issue_comment(57, body))
+                expected = [('factory.yml', {'ref': 'production', 'inputs': {'issue': '57', 'issue_command': word,
+                                                                             'comment': '66'}})] if word else []
+                self.assertEqual(posts, expected)
+                self.assertTrue(all(set(data['inputs']) <= declared for _, data in posts))
+                self.assertNotIn(body.strip(), json.dumps([data for _, data in posts]).replace('"accept"', '').replace('"review"', ''))
+
+    def test_issue_commands_are_ignored_where_they_do_not_apply(self):
+        self.remote['issue_review_model'] = 'claude-sonnet-5-5'
+        self.assertEqual(self.run_dispatcher('issue_comment', self.issue_comment(57, '/review', author=STRANGER)), [])
+        self.assertEqual(self.run_dispatcher('issue_comment', self.issue_comment(57, '/review', author={**HUMAN, 'type': 'Bot'})), [])
+        self.assertEqual(self.run_dispatcher('issue_comment', {**self.issue_comment(57, '/accept'), 'action': 'edited'}), [])
+        posts = self.run_dispatcher('issue_comment', self.issue_comment(57, '/review', user=STRANGER))
+        self.assertEqual(posts, [])
+        self.assertFalse(any('/issues/' in endpoint for _, endpoint, _ in self.calls))
+        with self.assertRaisesRegex(RuntimeError, 'a re-run never repeats a command'):
+            self.run_dispatcher('issue_comment', self.issue_comment(57, '/accept'), attempt='2')
+        self.assertFalse(any(method == 'POST' for method, _, _ in self.calls))
+        event = self.issue_comment(57, '/accept')
+        self.responses[f'{PREFIX}/issues/comments/66']['issue_url'] = f'https://api.github.com{PREFIX}/issues/58'
+        with self.assertRaisesRegex(RuntimeError, 'issue association failed'):
+            self.run_dispatcher('issue_comment', event)
+
+    def test_issue_commands_wait_until_the_config_branch_enables_them(self):
+        # Before the promotion that brings the issue jobs, the config branch's factory.yml would refuse the inputs.
+        self.assertNotIn('issue_review_model', self.remote)
+        self.assertEqual(self.run_dispatcher('issue_comment', self.issue_comment(57, '/review')), [])
+        self.assertFalse(any('/issues/' in endpoint for _, endpoint, _ in self.calls))
+
     def test_non_maintainer_and_bot_comments_are_ignored(self):
         for user in (STRANGER, {'type': 'Bot', 'id': 201, 'login': 'factory[bot]'}, {**HUMAN, 'login': 'impostor'}):
             with self.subTest(user=user['login']):

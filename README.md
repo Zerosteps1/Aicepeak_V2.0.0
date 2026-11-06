@@ -18,7 +18,7 @@ The start-readiness review with measured times, friction and recommendations is 
 
 ## Development
 
-All development runs through the software factory, driven by the global **`factory`** command. It manages your control checkout (a clean clone on a listed branch, by default the config branch `production`, from which trusted code runs) and your candidate checkout (where changes land), so you run it from any directory. Every rule and work order comes from the config branch. This section gives the overview and the most common commands; the full details are in four documents:
+All development runs through the software factory, driven by the global **`factory`** command. It manages your control checkout (a clean clone on a listed branch, by default the config branch `production`, from which trusted code runs) and your candidate checkout (where changes land), so you run it from any directory. Every rule comes from the config branch; work orders are approved GitHub issues. This section gives the overview and the most common commands; the full details are in four documents:
 
 | Document | Content |
 |---|---|
@@ -30,9 +30,9 @@ All development runs through the software factory, driven by the global **`facto
 
 ### The software factory
 
-The software factory is the set of tools, rules and GitHub automation in this repository that turns an approved **work order** (a task description in `docs/work/`) into a reviewed pull request. In short:
+The software factory is the set of tools, rules and GitHub automation in this repository that turns an approved **work order** (a task description in a GitHub issue) into a reviewed pull request. In short:
 
-1. A maintainer writes a work order with goal, acceptance criteria and allowed paths. Its own PR into the config branch `production` needs approvals from as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1); after the merge `factory sync workorders` copies it to the validation branches.
+1. A maintainer writes a work order as a GitHub issue with goal, acceptance criteria and verification. On `/review` the factory proposes the allowed paths and fixes for weak sections; `/accept` from as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) writes the paths into the issue and approves it.
 2. Claude Code implements it as an **isolated author** in a disposable container without personal configuration or credentials; `factory` applies the result, unstaged, to a branch in the candidate checkout.
 3. The maintainer reviews and stages the change and submits it with `factory submit --finished`, which opens the PR into the validation branch `testing` through `session.py submit`.
 4. **Deterministic tests** run in GitHub Actions without secrets or network.
@@ -53,19 +53,21 @@ factory doctor
 
 ### Define a new task
 
-A task is a **work order** in `docs/work/<KIND>-<NNN>.md`. It is created in two steps:
+A task is a **work order**: a GitHub issue opened by a maintainer; the issue number is its ID ([ADR-0009](docs/decisions/0009-issues-as-work-orders.md)). It is created in two steps:
 
-1. **Write:** `factory issue --title "…"` creates it from [docs/work/TEMPLATE.md](docs/work/TEMPLATE.md) with the next free number and status `draft` and opens your editor. You write goal, non-goals, acceptance criteria and the exact `allowed_paths`.
-2. **Activate:** `factory submit workorders` checks it, asks whether to set it to `approved`, and opens a PR of its own into the config branch `production`. Two maintainer accounts approve it at its current head (no `/review` or AI review is needed), and a maintainer merges it on GitHub. Then `factory sync workorders` copies it to the validation branches. Only a merged, approved work order can be implemented, because the factory reads work orders only from the config branch.
+1. **Write:** `factory issue --title "…"` opens the [work-order template](.github/ISSUE_TEMPLATE/factory-task.md) in your editor and creates the issue under your GitHub login with status `draft`. You write goal, non-goals, acceptance criteria and verification.
+2. **Review and accept:** comment `/review` on the issue. The factory proposes the `allowed_paths` and fixes for weak or missing sections as comments; copy what you agree with into the description and `/review` again. `/accept` writes the proposed paths and `status: approved` into the issue. Any later edit withdraws the approval until it is accepted again.
+
+Legacy work orders in `docs/work/` keep working; they change through `factory submit workorders` and `factory sync workorders`.
 
 Details: [way of working, steps 1–2](docs/way-of-working.md#daily-use-step-by-step).
 
 ### Start a new task
 
-Start the [isolated author](docs/software-factory.md#the-isolated-author-session) on the merged work order; it runs in the background (Ctrl-C only detaches) and applies its result unstaged to `<login>/<ID>` in your candidate checkout. Review and stage what you accept, then commit, push and open the PR:
+Start the [isolated author](docs/software-factory.md#the-isolated-author-session) on the approved work order; it runs in the background (Ctrl-C only detaches) and applies its result unstaged to `<login>/issue-<N>` in your candidate checkout. Review and stage what you accept, then commit, push and open the PR:
 
 ```sh
-factory start workorder 8
+factory start workorder 57
 git diff; git add -p                  # in the candidate checkout
 factory submit                        # commit the staged files and push
 factory submit --finished             # collision sweep, preflight, PR, watch
@@ -79,7 +81,7 @@ Details: [way of working, steps 3–6](docs/way-of-working.md#daily-use-step-by-
 - **Watcher or review:** press Ctrl-C. The PR waits until a device watches again.
 - **Pause a PR:** convert it to draft with `gh pr ready <n> --undo`.
 - **Cancel a PR:** close it with a reason: `gh pr close <n> --comment '<reason>'`.
-- **Withdraw a work order:** change its `status` from `approved` and submit that with `factory submit workorders`. Every PR that references it is then blocked.
+- **Withdraw a work order:** close its issue (or edit it, which withdraws the approval). Every PR that references it is then blocked. A legacy file: change its `status` from `approved` and submit that with `factory submit workorders`.
 
 Details and side effects: [way of working, stop or cancel a task](docs/way-of-working.md#stop-or-cancel-a-task).
 
@@ -117,6 +119,6 @@ Details and side effects: [way of working, stop or cancel a task](docs/way-of-wo
 | `.github/` | Trusted pipeline, production check, dispatcher, feedback ingress, CODEOWNERS, templates |
 | `tools/factory/` | Factory tools and their regression tests |
 | `tools/factory/cli/` | The global `factory` command and its installer |
-| [docs/work/](docs/work/TEMPLATE.md) | Approved work orders (created on the config branch, synced to the validation branches) |
+| [docs/work/](docs/work/TEMPLATE.md) | Legacy work-order files (on the config branch, synced to the validation branches); new work orders are issues |
 | [docs/decisions/](docs/decisions/0005-maintainer-local-senior-review.md) | Decision records |
 | [docs/architecture/](docs/architecture/AICEPEAK_SPEC_AND_ARCHITECTURE.md) | Non-binding architecture proposal and its validation |

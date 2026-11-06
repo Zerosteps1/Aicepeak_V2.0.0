@@ -14,25 +14,28 @@ FLOW = 'docs/way-of-working.md#daily-use-step-by-step'
 
 COMMANDS = {
     'issue': {
-        'summary': 'Create a new work order from the template and open it in your editor.',
-        'what': 'Writes docs/work/<KIND>-<NNN>.md into the candidate checkout with the next free number (one counter for '
-                'all kinds; numbers of deleted work orders are never reused), status draft and you as handoff owner, then '
-                'opens it in $VISUAL/$EDITOR (macOS default text editor otherwise).',
+        'summary': 'Create a new work order as a GitHub issue, written in your editor first.',
+        'what': 'Opens the work-order template (.github/ISSUE_TEMPLATE/factory-task.md, status draft, the chosen kind) in '
+                '$VISUAL/$EDITOR (vi otherwise) with the title as first line, asks for confirmation and creates the issue '
+                'under your own GitHub login. The issue number is the work-order ID. No file is written. Then comment '
+                '/review on the issue: the factory proposes allowed_paths and fixes for weak sections; /accept applies '
+                'the paths and approves the work order.',
         'when': 'You want the factory to build something new: one work order per feature, not per commit.',
         'examples': ['factory issue --title "Export energy costs as CSV"',
                      'factory issue --kind smoke --title "Reviewer device smoke" --noedit',
-                     'factory issue          # title later, in the editor'],
-        'docs': ['docs/factory-cli.md#factory-issue', FLOW, 'docs/work/TEMPLATE.md'],
+                     'factory issue          # title in the editor'],
+        'docs': ['docs/factory-cli.md#factory-issue', FLOW, '.github/ISSUE_TEMPLATE/factory-task.md'],
     },
     'submit workorders': {
-        'summary': 'Activate work orders: commit only docs/work changes, push <login>/new-workorders, open the PR.',
+        'summary': 'Legacy work-order files: commit only docs/work changes, push <login>/new-workorders, open the PR.',
         'what': 'Collects your uncommitted changes of docs/work/*.md, checks every block rule, asks whether drafts should '
                 'become approved and confirms edits and deletions, then commits them alone on <login>/new-workorders '
                 '(from the config branch tip), pushes and opens (or updates) the pull request into the config branch. '
                 'Two maintainers approve it and one merges it on GitHub. Other changes in your checkout stay untouched; '
                 'submitted files move to the work-order branch.',
-        'when': 'After `factory issue`, when the work order text is final. A work order authorizes work only once merged '
-                'into the config branch; then `factory sync workorders` copies it to the validation branches.',
+        'when': 'To change or remove a legacy work-order file in docs/work/ (new work orders are issues). A file authorizes '
+                'work only once merged into the config branch; then `factory sync workorders` copies it to the validation '
+                'branches.',
         'examples': ['factory submit workorders'],
         'docs': ['docs/factory-cli.md#factory-submit-workorders', FLOW],
     },
@@ -42,8 +45,9 @@ COMMANDS = {
                 'for P0/P1 findings, then applies the result unstaged to <login>/<ID> in the candidate. The branch starts '
                 "from the validation branch routed for the work order's kind. Ctrl-C only detaches; the run goes on. One "
                 'run per work order; at most max_cost_usd of model spend per run.',
-        'when': 'The work order is merged into the config branch with status approved and you want it implemented.',
-        'examples': ['factory start workorder 7', 'factory start workorder FACTORY-007'],
+        'when': 'The work order is approved (an issue after /accept, or a legacy file merged into the config branch) and '
+                'you want it implemented.',
+        'examples': ['factory start workorder 57', 'factory start workorder "#57"', 'factory start workorder FACTORY-007'],
         'docs': ['docs/factory-cli.md#factory-start-workorder', 'docs/software-factory.md#the-isolated-author-session'],
     },
     'continue': {
@@ -274,9 +278,8 @@ def epilog(name):
 
 
 def overview():
-    lines = ['Daily flow: factory issue → factory submit workorders → (two approvals, merge on GitHub) → factory sync '
-             'workorders → factory start workorder <n> → factory submit → factory submit --finished → factory watch → '
-             'factory merge → factory promote <validation branch>', '']
+    lines = ['Daily flow: factory issue → /review and /accept on the issue → factory start workorder <n> → factory submit '
+             '→ factory submit --finished → factory watch → factory merge → factory promote <validation branch>', '']
     for title, names in OVERVIEW:
         lines.append(title + ':')
         lines += [f'  factory {name:<22} {COMMANDS[name]["summary"]}' for name in names]

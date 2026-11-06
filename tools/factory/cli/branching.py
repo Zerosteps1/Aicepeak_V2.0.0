@@ -420,7 +420,8 @@ def sync(ctx, reference=None):
     require(source in tips, f'the config branch {source} is not on GitHub')
     orders = orders_at(candidate, tips[source])
     if reference:
-        chosen = workorders.path_of(workorders.resolve(reference, [workorders.name_of(path) for path in orders]))
+        # Only files are synced: work-order issues live on GitHub, not on any branch.
+        chosen = workorders.path_of(workorders.resolve(reference, [workorders.name_of(path) for path in orders], allow_issues=False))
         orders = {chosen: orders[chosen]}
     require(orders, f'{source} has no work orders')
     failed = 0

@@ -115,10 +115,11 @@ class MergeSafety(unittest.TestCase):
                             sorted(p.relative_to(root).as_posix() for p in (root / '.git/objects').rglob('*')))
                 for root in (self.control, self.candidate)}
 
-    def gates(self, digest=None, base='testing', **change):
+    def gates(self, digest=None, base='testing', pin=None, **change):
         transfer = handoff(self.gh.pr['body'], self.config)
         feedback = engine.digest(engine.all_feedback(self.gh, REPOSITORY, 1, self.config)) if digest is None else digest
-        receipt = json.dumps({'phase': 'completed', 'snapshot': {'handoff': transfer, 'feedback_digest': feedback}})
+        receipt = json.dumps({'phase': 'completed', 'snapshot': {'handoff': transfer, 'feedback_digest': feedback,
+                                                                 **({'task_pin': pin} if pin else {})}})
         return [{'id': ident, 'name': name, 'status': 'completed', 'conclusion': 'success', 'app': {'id': 77}, 'head_sha': self.head,
                  'external_id': f'{REPOSITORY}:1:{self.head}:{self.base}:{base}:5:1', 'output': {'text': receipt}, **change}
                 for ident, name in enumerate(branches.parse(self.config).required_checks(base), 1)]
@@ -261,6 +262,9 @@ class MergeSafety(unittest.TestCase):
             (stale, lambda: setattr(self.gh, 'head_checks', self.gates(external_id=f'{REPOSITORY}:2:{self.head}:{self.base}:testing:5:1'))),
             ('legacy or malformed binding', lambda: setattr(self.gh, 'head_checks', self.gates(external_id=f'{REPOSITORY}:1:{self.head}:{self.base}:5:1'))),
             ('human feedback changed after the review', lambda: setattr(self.gh, 'head_checks', self.gates(digest='stale'))),
+            # A review bound to another approved text of the work-order issue does not count.
+            ('the work-order issue changed after the review', lambda: setattr(self.gh, 'head_checks', self.gates(
+                pin={'issue': 57, 'sha256': 'a' * 64, 'record': 9}))),
             ('unresolved review thread', lambda: setattr(self.gh, 'threads', [True, False])),
             ('does not contain the current testing tip', lambda: setattr(self.gh, 'compare', {'status': 'diverged', 'behind_by': 2})),
             ('draft', lambda: self.gh.pr.update(draft=True)),

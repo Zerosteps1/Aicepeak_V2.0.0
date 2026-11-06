@@ -14,6 +14,7 @@ import time
 import checkouts
 import common
 from common import Blocked, git, is_ancestor, out, require, say, warn
+import issues
 import workorders
 
 WATCH_ALL_INTERVAL = 60
@@ -42,24 +43,41 @@ def editor_command():
 
 # --- issue -----------------------------------------------------------------------------------------
 
+TITLE_PLACEHOLDER = 'Short outcome-oriented title'
+
+
+def draft_title(text):
+    """Title and body of an edited draft: the first line is `# <title>`."""
+    first, _, body = text.partition('\n')
+    require(first.startswith('# '), 'the first line of the draft must be "# <title>"')
+    return first[2:].strip(), body.lstrip('\n')
+
+
 def issue(ctx, title=None, kind='factory', noedit=False):
-    candidate = ctx.candidate
-    used = workorders.numbers_ever_added(candidate, ctx.config_tip()) | workorders.numbers_in(candidate)
-    try:
-        used |= workorders.numbers_in_pulls(ctx.gh, ctx.config)
-    except (Blocked, OSError, ValueError, subprocess.SubprocessError):
-        warn('open pull requests could not be checked; make sure no other open PR adds the same number')
-    name = workorders.next_name(kind, used)
-    template = (ctx.root / workorders.TEMPLATE).read_text()
-    text = workorders.fill_template(template, name, title, kind, ctx.login, ctx.config['runners'][0])
-    with ctx.candidate_lock():
-        target = common.write_new(candidate, workorders.path_of(name), text.encode())
-    say(f'Created {target}')
-    if kind == 'product' and not ctx.config.get('product_checks_ready'):
+    """A new work-order issue under the maintainer's own gh login; the factory never creates issues itself."""
+    body = workorders.issue_body((ctx.root / workorders.ISSUE_TEMPLATE).read_text(), kind)
+    if noedit:
+        require(title and title.strip(), '--noedit needs --title')
+        title = title.strip()
+    else:
+        draft = common.STATE_DIR / 'tmp' / f'issue-draft-{os.getpid()}.md'
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text(f'# {title or TITLE_PLACEHOLDER}\n\n{body}')
+        say(f'Write the work order in {editor_command()}; save and close the editor to continue.')
+        subprocess.run([*shlex.split(editor_command()), str(draft)], check=False)
+        title, body = draft_title(draft.read_text())
+        require(common.ask(f'Create the work-order issue "{common.printable(title, 200)}" on GitHub?'),
+                f'nothing created; your draft stays in {draft}')
+        draft.unlink()
+    require(title and title != TITLE_PLACEHOLDER and len(title) <= 256, 'the issue needs a title (at most 256 characters)')
+    spec = issues.draft_spec(body)
+    created = ctx.gh.request('POST', f"/repos/{ctx.config['repository']}/issues", {'title': title, 'body': body})
+    say(f"Created work-order issue #{created['number']}: {created['html_url']}")
+    if spec['kind'] == 'product' and not ctx.config.get('product_checks_ready'):
         warn('product work orders stay blocked until product_checks_ready is true in factory/config.json')
-    if not noedit:
-        open_editor(target)
-    say('Next: fill in goal, non-goals, acceptance criteria and allowed_paths, then run `factory submit workorders`.')
+    say('Next: fill in or check goal, non-goals, acceptance criteria and verification on GitHub, then comment `/review` '
+        'on the issue. The factory proposes allowed_paths and section fixes; `/accept` applies the paths and approves it. '
+        f"Then `factory start workorder {created['number']}`.")
     return 0
 
 
@@ -325,7 +343,8 @@ def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=No
                     f'`git -C {candidate} pull --ff-only` (or merge) first')
         staged = git(candidate, 'diff', '--cached', '--quiet', check=False).returncode == 1
         if staged:
-            heading = title or (f'{order}: {workorders.title_of(workorders.text_on(candidate, policy, order))}' if order else None)
+            heading = title or (f'{workorders.label(order)}: '
+                                f'{workorders.title_of(workorders.read(ctx.gh, candidate, config, policy, order)[0])}' if order else None)
             if heading:
                 git(candidate, 'commit', '--quiet', '-m', heading, *(['-m', desc] if desc else []))
             else:
@@ -344,10 +363,11 @@ def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=No
         if order:
             say('When the work order is done: `factory submit --finished`.')
         return 0
-    task, text = workorders.path_of(order), workorders.text_on(candidate, policy, order)
+    task = workorders.task_of(order)
+    text, spec = workorders.read(ctx.gh, candidate, config, policy, order)
     pull = open_pull_for(ctx, branch)
     # An open PR keeps its target; a new one goes to the validation branch routed for the work order's kind.
-    target = pull['base']['ref'] if pull else model.route(workorders.task_block(text)['kind'])
+    target = pull['base']['ref'] if pull else model.route(spec['kind'])
     tip = ctx.tip(target)
     require(is_ancestor(candidate, tip, local), f'{branch} does not contain current {target}. Run '
             f'`git -C {candidate} merge origin/{target}`, resolve conflicts, then `factory submit --finished` again '
@@ -357,11 +377,13 @@ def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=No
         if draft:
             warn(f'--draft is ignored: pull request #{pull["number"]} already exists')
         return finish_open_pr(ctx, pull, local, branch, task, imports)
-    heading = title or f'{order}: {workorders.title_of(text)}'
+    heading = title or f'{workorders.label(order)}: {workorders.title_of(text)}'
     commits = out(candidate, 'log', '--format=- %s', f'{tip}..{local}')
     with checkouts.scratch('submit-') as scratch:
         body = scratch / 'body.md'
-        body.write_text((desc.strip() + '\n\n' if desc else '') + f'Work order: `{task}`\n\nCommits:\n{commits}\n')
+        # An issue reference links the PR into the work-order issue's timeline.
+        reference = task if workorders.is_issue(order) else f'`{task}`'
+        body.write_text((desc.strip() + '\n\n' if desc else '') + f'Work order: {reference}\n\nCommits:\n{commits}\n')
         with checkouts.candidate_snapshot(candidate, ctx.control, local, branch, config) as snapshot:
             created = session_submit(ctx, snapshot, task, heading, body, imports, draft, base=target)
     return 0 if created else 1

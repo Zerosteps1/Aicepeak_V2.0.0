@@ -44,6 +44,7 @@
     "codex": "gpt-6-astra",
     "claude": "claude-sonnet-5-5"
   },
+  "issue_review_model": "claude-sonnet-5-5",
   "author_pricing_usd_per_million": {
     "codex": {
       "input": 10.0,
@@ -73,7 +74,9 @@
     "max_cost_usd": 25.0,
     "max_run_cost_usd": 12.0,
     "max_patch_bytes": 200000,
-    "max_changed_files": 40
+    "max_changed_files": 40,
+    "max_issue_reviews": 5,
+    "issue_review_output_tokens": 8000
   },
   "protected_paths": [
     ".github/",

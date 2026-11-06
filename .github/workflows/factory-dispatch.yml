@@ -24,6 +24,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # Reads /review and /accept comments on work-order issues and their author (dispatch_factory.issue_command).
+      issues: read
       checks: read
       actions: write
     steps:

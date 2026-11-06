@@ -1,14 +1,14 @@
 # The factory command
 
-`factory` is the maintainer's daily command for the [software factory](software-factory.md). It issues, activates and syncs work orders, runs the isolated author, fixes and reviews, submits, watches, merges and promotes, and manages the branch list, from any directory. It manages two checkouts for you: the **control checkout** (trusted CLI code on the listed branch you follow, by default the config branch `production`) and the **candidate checkout** (where your changes land). Every rule (branch list, gates, routing, policy, limits and work orders) comes from the tip of the **config branch** ([branch model](factory-branches.md)). It adds no new authority: the gate, the binding review, the isolated launcher, the credential broker and the human merge work exactly as described in [software-factory.md](software-factory.md). The decision records are [ADR-0007](decisions/0007-factory-cli.md) and [ADR-0008](decisions/0008-branch-model.md); the daily flow is in [way-of-working.md](way-of-working.md).
+`factory` is the maintainer's daily command for the [software factory](software-factory.md). It issues, activates and syncs work orders, runs the isolated author, fixes and reviews, submits, watches, merges and promotes, and manages the branch list, from any directory. It manages two checkouts for you: the **control checkout** (trusted CLI code on the listed branch you follow, by default the config branch `production`) and the **candidate checkout** (where your changes land). Every rule (branch list, gates, routing, policy and limits) comes from the tip of the **config branch** ([branch model](factory-branches.md)); work orders are approved GitHub issues ([ADR-0009](decisions/0009-issues-as-work-orders.md)), legacy work-order files also come from the config branch tip. It adds no new authority: the gate, the binding review, the isolated launcher, the credential broker and the human merge work exactly as described in [software-factory.md](software-factory.md). The decision records are [ADR-0007](decisions/0007-factory-cli.md), [ADR-0008](decisions/0008-branch-model.md) and [ADR-0009](decisions/0009-issues-as-work-orders.md); the daily flow is in [way-of-working.md](way-of-working.md).
 
 ```sh
 factory --help              # commands grouped by flow
 factory <command> --help    # what it does, when to use it, examples, documentation
-factory --version           # the version of the CLI in use: "factory 0.2.0"
+factory --version           # the version of the CLI in use: "factory 0.3.0"
 ```
 
-Help and `--version` work without installation, configuration, lock or network. The version is `VERSION` in `tools/factory/cli/factory.py`, the copy in your control checkout; this documentation describes `factory 0.2.0`. Help texts link to the documentation on the config branch.
+Help and `--version` work without installation, configuration, lock or network. The version is `VERSION` in `tools/factory/cli/factory.py`, the copy in your control checkout; this documentation describes `factory 0.3.0`. Help texts link to the documentation on the config branch.
 
 ## Install
 
@@ -62,16 +62,15 @@ After installing, open a new terminal if the installer added the PATH block, the
 
 `factory` puts the pinned Codex directory `~/.local/share/aicepeak-factory-cli/node_modules/.bin` in front of the `PATH` of its helper processes, so the reviewer finds `codex-cli 0.164.0` without an `export` in your terminal. When you run a command outside the candidate, it prints `(working on the candidate checkout …)`.
 
-**Which code and which rules.** The CLI code is the control checkout's commit. Every rule is read from `factory/config.json` and `docs/work/` at the config branch tip that the command fetched and pinned: the branch list, gates, routing, review modes, limits and work orders. `session.py` and `doctor.py` always run from a disposable checkout of that config branch tip, so the checks and reviews they start bind to it even when your control checkout follows a validation branch. Only the repository and the name of the config branch come from the control checkout's own `factory/config.json`. When the configuration on that branch names another listed production branch whose own configuration names itself (a finished [config branch change](#factory-set-config-branch)), `factory` fetches both and follows that one hop; every message and every later use then names the followed config branch.
+**Which code and which rules.** The CLI code is the control checkout's commit. Every rule is read from `factory/config.json` and `docs/work/` at the config branch tip that the command fetched and pinned: the branch list, gates, routing, review modes, limits and legacy work-order files. Work-order issues are read from GitHub with your own `gh` login and count only while approved ([factory issue](#factory-issue)). `session.py` and `doctor.py` always run from a disposable checkout of that config branch tip, so the checks and reviews they start bind to it even when your control checkout follows a validation branch. Only the repository and the name of the config branch come from the control checkout's own `factory/config.json`. When the configuration on that branch names another listed production branch whose own configuration names itself (a finished [config branch change](#factory-set-config-branch)), `factory` fetches both and follows that one hop; every message and every later use then names the followed config branch.
 
 ## Daily flow
 
 ```sh
-factory issue --title "Export energy costs as CSV"   # write the work order in your editor
-factory submit workorders                            # validate, approve, push and open the work-order PR into the config branch
-                                                     # maintainer approvals (work_order_approvals), then a merge on GitHub
-factory sync workorders                              # copy the merged work order to every validation branch
-factory start workorder 8                            # author → preflight → corrections → applied, unstaged
+factory issue --title "Export energy costs as CSV"   # write the work order in your editor; creates issue #57
+                                                     # on the issue: /review (factory proposes allowed_paths and fixes),
+                                                     # edit by hand, /review again, then /accept (approves it)
+factory start workorder 57                           # author → preflight → corrections → applied, unstaged
 git diff; git add -p                                 # in the candidate: review and stage what you accept
 factory submit                                       # commit the staged files and push (repeat as needed)
 factory submit --finished                            # open the PR into the routed validation branch, preflight, ready on pass, watch
@@ -80,20 +79,20 @@ factory merge 52 --dry-run && factory merge 52
 factory promote testing                              # when testing should go to production
 ```
 
-**Branches.** Feature branches (below) target the validation branch that the work order's kind is routed to (today `testing` for every kind). Work orders and changes of the branch list target the config branch (today `production`); everything else reaches a production branch only by [promotion](#factory-promote). The generated [branch diagram](factory-branches.md) shows the current list, gates, routing and review modes.
+**Branches.** Feature branches (below) target the validation branch that the work order's kind is routed to (today `testing` for every kind). Legacy work-order files and changes of the branch list target the config branch (today `production`); everything else reaches a production branch only by [promotion](#factory-promote). The generated [branch diagram](factory-branches.md) shows the current list, gates, routing and review modes.
 
-**Work-order references.** `7`, `007` and `FACTORY-007` all work; a reference resolves only when exactly one work order at the config branch tip matches (for `continue`, `stop` and `cancel`: one work order with runs on this device). If several match, `factory` lists them; use the full name.
+**Work-order references.** `57`, `#57` and `issue-57` name the work-order issue 57 (quote `"#57"` in the shell). For a legacy file, `7`, `007` and `FACTORY-007` work; a reference resolves only when exactly one file at the config branch tip matches (for `continue`, `stop` and `cancel`: one work order with runs on this device), and a bare number that no file has names the issue with that number. If several files match, `factory` lists them; use the full name.
 
-**Work-order numbers.** New work orders are named `<KIND>-<NNN>.md` with the prefix `FACTORY`, `PRODUCT` or `SMOKE`. One counter serves all kinds: the next number is one higher than every number ever added on the config branch (deleted work orders keep theirs), present in the candidate's `docs/work/`, or added by an open pull request of a configured maintainer in this repository. Names without a number, such as `FACTORY-SMOKE`, do not count. Because work orders are created only on the config branch, numbers stay unique across all branches.
+**Work-order numbers.** A work order's number is its issue number, which GitHub assigns. Legacy files keep their names `<KIND>-<NNN>.md`; [factory submit workorders](#factory-submit-workorders) still checks that a new file's number was never used on the config branch.
 
 **Branch names.** `factory` uses and recognises:
 
 | Branch | Created by | Meaning |
 |---|---|---|
-| `<login>/<ID>` | `factory start` | First implementation branch of a work order |
+| `<login>/issue-<N>` (`<login>/<ID>` for a legacy file) | `factory start` | First implementation branch of a work order |
 | `<login>/<ID>-<k>` | `factory start` | Next implementation branch once the previous one is merged |
 | `<login>/<ID>-fix-<k>` | `factory fix`, `factory hotfix` | Fix branch when the work order has no open PR |
-| `<login>/new-workorders` | `factory submit workorders` | Your work-order PR into the config branch |
+| `<login>/new-workorders` | `factory submit workorders` | Your PR of legacy work-order files into the config branch |
 | `<login>/config-<change>-<branch>` | `factory add … branch`, `factory remove branch` | Your config PR into the config branch; `<change>` is `add`, `change` or `remove` |
 | `<login>/config-set-config-<branch>-into-<target>` | `factory set config branch` | Your two config PRs, one into the new config branch and one into the current one |
 
@@ -101,21 +100,28 @@ factory promote testing                              # when testing should go to
 
 ## factory issue
 
-Creates a new work order from [docs/work/TEMPLATE.md](work/TEMPLATE.md) in the candidate checkout and opens it in `$VISUAL`, `$EDITOR` or, on macOS, the default text editor. Use it whenever the factory should build something new: one work order per feature, not per commit.
+Creates a new work order as a GitHub issue. Use it whenever the factory should build something new: one work order per feature, not per commit.
 
 ```sh
 factory issue --title "Export energy costs as CSV"
 factory issue --kind smoke --title "Reviewer device smoke" --noedit
-factory issue          # title later, in the editor
+factory issue          # title in the editor
 ```
 
-The file gets the [next free number](#daily-flow), your title, status `draft`, `requirements: []` (except for `product`) and a handoff block with runner `claude`, the file's own path and you as owner. `--kind` is `factory` (default), `product` or `smoke`; `--noedit` only creates the file and prints its path. Then fill in goal, non-goals, acceptance criteria and the exact `allowed_paths`, and run [factory submit workorders](#factory-submit-workorders). You can stay on any branch: only the work-order file is created.
+It writes the body of the [work-order template](../.github/ISSUE_TEMPLATE/factory-task.md) (status `draft`, the chosen `--kind`, `allowed_paths` empty) with `# <title>` as first line into a draft file in `~/.local/state/aicepeak-factory/tmp/`, opens it in `$VISUAL`, `$EDITOR` or `vi` and waits until you close the editor. After you confirm, it creates the issue under your own GitHub login (the factory never creates issues itself) and prints its number and URL; the number is the work order's ID. `--kind` is `factory` (default), `product` or `smoke`; `--noedit` creates the issue from the template without the editor and needs `--title`. No file is written and you can stay on any branch. The issue template on GitHub ("Factory work order") gives the same body.
 
-Notable refusals and warnings: an existing file is never overwritten; if open pull requests cannot be checked, `factory` warns that a number might collide; `product` work orders stay blocked while `product_checks_ready` is `false` in [factory/config.json](../factory/config.json).
+Then, on the issue:
+
+- **`/review`** (a configured maintainer's new, unedited comment on an issue a configured maintainer opened): the dispatcher starts the issue reviewer on the config branch. It calls the configured model (`issue_review_model`, today `claude-sonnet-5-5`) once, without tools, and the publisher App posts two comments: the proposed `allowed_paths` with a reason each (new paths and control paths are marked), and the unclear, weak or missing sections, each with a proposed text that you copy into the description by hand. After an edit, comment `/review` again. At most `limits.max_issue_reviews` (5) reviews per issue; nothing reviews automatically.
+- **`/accept`**: once as many maintainer accounts as `work_order_approvals` (today 1) accepted the newest proposal of the unchanged issue, the publisher App writes its paths and `status: approved` into the `factory-task` block (nothing else changes; the description's edit history shows the App) and posts the approval record. With fewer accounts it reports the count. It is refused when there is no proposal yet, the title or description changed after the newest review, or the work order is `product` while product work is blocked.
+
+The work order is approved only while the issue is open and its title and description are exactly the accepted ones: any later edit withdraws the approval until `/review` and `/accept` again, and a hand-written `status: approved` counts for nothing ([ADR-0009](decisions/0009-issues-as-work-orders.md)).
+
+Notable refusals: `--noedit` without `--title`; the template title left unchanged; you decline the confirmation (the draft file stays and its path is printed); an invalid `factory-task` block.
 
 ## factory submit workorders
 
-Activates work orders. Use it after [factory issue](#factory-issue) (or after editing or deleting a work order), when the text is final. A work order authorizes work only once it is approved and merged into the config branch, because the factory reads work orders only from there.
+Changes legacy work-order files in `docs/work/` (new work orders are [issues](#factory-issue)). Use it after editing or deleting such a file, or for a new file written by hand. A work-order file authorizes work only once it is approved and merged into the config branch, because the factory reads work-order files only from there.
 
 ```sh
 factory submit workorders
@@ -135,14 +141,14 @@ Notable refusals: no work-order changes; any validation problem (nothing is push
 
 ## factory start workorder
 
-Starts the isolated author on an approved, merged work order as a background run and attaches to it. Use it when the work order is merged into the config branch with status `approved` (and [synced](#factory-sync-workorders) to the validation branches) and you want the factory to implement it.
+Starts the isolated author on an approved work order as a background run and attaches to it. Use it when the work-order issue is approved (after `/accept`), or a legacy work-order file is merged into the config branch with status `approved`, and you want the factory to implement it.
 
 ```sh
-factory start workorder 7
+factory start workorder 57
 factory start workorder FACTORY-007
 ```
 
-Before the run starts, `factory` checks in the foreground: the work order exists at the current config branch tip and is `approved` (`product` only when the north star and product checks are ready), no run for it is active, Docker runs and the factory image exists, and both author keys are available. The run's **target** is the validation branch routed for the work order's kind (today `testing`). The branch is the newest `<login>/<ID>` or `<login>/<ID>-<k>` not yet merged into the target (continued; it must contain the target's current tip), otherwise a new one from the target's tip.
+Before the run starts, `factory` checks in the foreground: the work order is approved (an issue through your `gh` login, a legacy file at the current config branch tip; `product` only when the north star and product checks are ready), no run for it is active, Docker runs and the factory image exists, and both author keys are available. The run's **target** is the validation branch routed for the work order's kind (today `testing`). The branch is the newest `<login>/issue-<N>` or `<login>/issue-<N>-<k>` (`<login>/<ID>` for a legacy file) not yet merged into the target (continued; it must contain the target's current tip), otherwise a new one from the target's tip.
 
 The run then goes: **author** (`factory-start`, then `factory-change` for this work order, limited to its `allowed_paths`) → **advisory Astra preflight** (`session.py preflight`) → at most `max_rounds` (2) **corrections** with `factory-fix-review` while P0/P1 findings remain → **apply**. The result is applied **unstaged** to the branch in your candidate; nothing is committed or pushed. The log shows each step, one line per author tool call, a heartbeat every minute and the cost estimate ([runs](#runs-steps-budget-and-logs)). Ctrl-C only detaches; the run goes on (`factory continue 7`). Next: review `git diff`, stage what you accept, [factory submit](#factory-submit).
 
@@ -150,7 +156,7 @@ The isolated author cannot write the control paths (`.agents`, `.claude`, `.code
 
 The result is **not applied** (the patch is kept in the run folder and the exact `git switch` and `git apply` commands are printed) when it changes files outside `allowed_paths`, under `.github/` or `docs/work/`, binary files, symlinks or submodules; when the candidate has uncommitted changes in tracked files, is on a branch other than the run's branch or a listed branch, or untracked files would be overwritten; when the run's branch moved since the run started; when the patch does not apply; or when the target had to be merged for the preflight of an existing branch. The remaining steps are skipped, with the reason in the log, when nothing differs from the target, more than `max_changed_files` (40) files changed, files outside the work order changed, the target moved and conflicts, the preflight could not run, or the [run budget](#runs-steps-budget-and-logs) is spent.
 
-Notable refusals: no unique work order at the config branch tip; not approved; a run for it already active; all `allowed_paths` are control paths; Docker or image missing; a key missing; your local branch lacks commits that are on GitHub (`git pull --ff-only` first); an existing branch that does not contain the target's current tip (merge `origin/<target>` first).
+Notable refusals: no unique work order; not approved (an issue that is closed, never accepted or edited after its approval); a run for it already active; all `allowed_paths` are control paths; Docker or image missing; a key missing; your local branch lacks commits that are on GitHub (`git pull --ff-only` first); an existing branch that does not contain the target's current tip (merge `origin/<target>` first).
 
 ## factory continue
 
@@ -222,13 +228,13 @@ Commits what you staged and pushes the branch; with `--finished` opens the pull 
 ```sh
 factory submit --title "feat(export): CSV export" --desc "Adds the endpoint and tests"
 factory submit --finished
-factory submit --finished --workorder 7 --draft
+factory submit --finished --workorder 57 --draft
 ```
 
-- Commits **only staged** files. The title defaults to `<ID>: <work order title>`, `--desc` becomes the body; on a branch without a work order and without `--title`, your commit editor opens. Unstaged changes stay where they are.
+- Commits **only staged** files. The title defaults to `#57: <work order title>` (`<ID>: …` for a legacy file), `--desc` becomes the body; on a branch without a work order and without `--title`, your commit editor opens. Unstaged changes stay where they are.
 - Pushes the current branch to GitHub, never a listed branch and never with force.
-- The work order comes from the [branch name](#daily-flow) or `--workorder` (`7`, `007` or `FACTORY-007`), read at the config branch tip. On any other branch `factory` warns and waits 5 seconds (Ctrl-C aborts); `--finished` then requires `--workorder`.
-- `--finished` targets the validation branch routed for the work order's kind (today `testing`); an open PR keeps its own target. It requires that the branch contains the target's current tip. Without an open PR it runs `session.py submit --base <target>` on a disposable checkout of the pushed commit: collision sweep, advisory preflight, PR with the handoff block (runner `claude`, the work order, you as owner), ready only on `pass`, then watch while the target's gate is `full`. The PR body contains `--desc`, the work order and the commit list. Unchanged repository modules that changed Python files import directly are added as preflight context automatically; add more with `--context <path>` (repeatable). With an open PR it promotes a draft only after a passing preflight and then watches; a ready PR is only watched.
+- The work order comes from the [branch name](#daily-flow) or `--workorder` (`57`, `#57`, or `FACTORY-007` for a legacy file) and must be approved: an issue read through your `gh` login, a legacy file at the config branch tip. On any other branch `factory` warns and waits 5 seconds (Ctrl-C aborts); `--finished` then requires `--workorder`.
+- `--finished` targets the validation branch routed for the work order's kind (today `testing`); an open PR keeps its own target. It requires that the branch contains the target's current tip. Without an open PR it runs `session.py submit --base <target>` on a disposable checkout of the pushed commit: collision sweep, advisory preflight, PR with the handoff block (runner `claude`, the work order as `#57` or the legacy file's path, you as owner), ready only on `pass`, then watch while the target's gate is `full`. The PR body contains `--desc`, the work order (an issue reference, so the PR appears in the issue's timeline) and the commit list. Unchanged repository modules that changed Python files import directly are added as preflight context automatically; add more with `--context <path>` (repeatable). With an open PR it promotes a draft only after a passing preflight and then watches; a ready PR is only watched.
 - If the preflight does not pass, no PR is opened: fix the findings and run `--finished` again, or open it as a draft with `--draft`. Ctrl-C stops watching; the PR keeps waiting for a watcher ([factory watch](#factory-watch)).
 
 Notable refusals: detached `HEAD`; a listed branch (create a feature branch first); a branch behind or diverged from GitHub (`git pull --ff-only` or merge first); `--finished` on a branch without the target's current tip (`git merge origin/<target>`, or `gh pr update-branch <n>` for an open PR).
@@ -297,7 +303,7 @@ Notable refusals and warnings: the source is not a listed validation branch; sev
 
 ## factory sync workorders
 
-`factory sync workorders` copies every work order of the config branch to the validation branches that lack it; `factory sync workorder <n>` copies one. Use it after a work-order PR was merged into the config branch, before `factory start workorder`, so that every validation branch carries the work orders.
+`factory sync workorders` copies every legacy work-order file of the config branch to the validation branches that lack it; `factory sync workorder <n>` copies one. Work-order issues need no sync. Use it after a PR of work-order files was merged into the config branch, before `factory start workorder`, so that every validation branch carries the work orders.
 
 ```sh
 factory sync workorders

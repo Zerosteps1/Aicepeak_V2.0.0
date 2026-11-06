@@ -262,14 +262,25 @@ class PromotionTests(unittest.TestCase):
     def test_work_order_pr_needs_two_maintainer_accounts_at_the_head(self):
         self.work_order_pr('docs/work/FACTORY-009.md', 'factory/config.json')
         self.review(ALICE)
-        check = self.judge()
-        self.assertRefused(check, 'Needs approving reviews by two maintainer accounts', 'approved by: alice')
+        check = self.judge()  # no work_order_approvals in config.json: two, as before the setting existed
+        self.assertRefused(check, 'Needs approving reviews by 2 maintainer accounts', 'approved by: alice')
         self.assertEqual(check['output']['title'], 'Work-order/config PR')
         self.gh.posted.clear()
         self.review(BOB)
         check = self.judge()
         self.assertEqual(check['conclusion'], 'success')
         self.assertEqual(json.loads(check['output']['text']), {'production': {'kind': 'work-order', 'approvals': ['alice', 'bob']}})
+
+    def test_work_order_approvals_sets_how_many_maintainer_accounts_approve(self):
+        self.work_order_pr('docs/work/FACTORY-009.md')
+        one = {**config(), 'work_order_approvals': 1}
+        check = self.judge(value=one)
+        self.assertRefused(check, 'Needs approving reviews by 1 maintainer account at', 'approved by: nobody')
+        self.gh.posted.clear()
+        self.review(BOB)
+        check = self.judge(value=one)
+        self.assertEqual((check['conclusion'], json.loads(check['output']['text'])),
+                         ('success', {'production': {'kind': 'work-order', 'approvals': ['bob']}}))
 
     def test_approvals_that_do_not_count(self):
         cases = {'same account twice': [(ALICE,), (ALICE,)],

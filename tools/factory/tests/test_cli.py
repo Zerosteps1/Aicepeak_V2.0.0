@@ -772,7 +772,7 @@ class BranchTests(Repos):
             self.assertEqual(branching.add_production(self.ctx(), 'release', 'initiated'), 0)
             self.assertEqual(branching.remove(self.ctx(), 'staging'), 0)
             self.assertEqual(branching.add_validation(self.ctx(), 'testing', 'full', ['factory', 'product']), 0)
-        self.assertIn('Next: two maintainers approve', output.getvalue())
+        self.assertIn(commands.approvals(self.ctx().model), output.getvalue())  # the number comes from work_order_approvals
         self.assertIn('already says this; nothing to propose', output.getvalue())  # testing is unchanged
         expected = {'ftrutschnig/config-add-qa': lambda c: branches.with_validation(c, 'qa', 'none', []),
                     'ftrutschnig/config-change-release': lambda c: branches.with_production(c, 'release', 'initiated'),

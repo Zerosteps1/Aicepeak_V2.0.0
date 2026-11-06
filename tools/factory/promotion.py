@@ -3,8 +3,8 @@
 Runs only from factory-promotion.yml on the config branch tip, with the publisher App. bypass.production_kind
 classifies the PR, as the pipeline does:
 (a) promotion: the head is a validation branch of this repository;
-(b) work-order/config PR: only docs/work/*.md and factory/config.json, approved by two maintainer
-    accounts at the current head;
+(b) work-order/config PR: only docs/work/*.md and factory/config.json, approved at the current head by as many
+    maintainer accounts as config.json's work_order_approvals names (default 2);
 (c) anything else fails.
 A promotion into a branch with review maintainer-manual also needs a passed AI review (`/review`) of this PR's head.
 Only (a) accepts a maintainer's `/bypass <reason>`, and only for the head it was given for.
@@ -114,9 +114,11 @@ def judge(gh, config, m, snap, pr, bypass_id, head=''):
     note = ' `/bypass` does not apply.' if bypass_id else ''
     if kind == 'work-order':
         approved = approvals(gh, config, snap)
-        ok = len(approved) >= 2
+        needed = m.work_order_approvals
+        ok = len(approved) >= needed
+        accounts = f"{needed} maintainer account{'' if needed == 1 else 's'}"
         summary = (f"Approved at {snap['head_sha'][:12]} by {', '.join(approved)}." if ok else
-                   f"Needs approving reviews by two maintainer accounts at {snap['head_sha'][:12]}; approved by: {', '.join(approved) or 'nobody'}.")
+                   f"Needs approving reviews by {accounts} at {snap['head_sha'][:12]}; approved by: {', '.join(approved) or 'nobody'}.")
         return 'success' if ok else 'failure', {'title': 'Work-order/config PR', 'summary': summary + note,
                                                 'text': json.dumps({'production': {'kind': 'work-order', 'approvals': approved}})}
     return 'failure', {'title': 'Refused', 'summary': REFUSED + '.' + note, 'text': json.dumps({'production': {'kind': 'other'}})}

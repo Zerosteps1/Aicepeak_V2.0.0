@@ -18,8 +18,12 @@ import workorders
 
 WATCH_ALL_INTERVAL = 60
 VERBS = {'add': 'add', 'edit': 'update', 'delete': 'remove'}
-APPROVALS = ('Next: two maintainers approve the pull request at its current head; a maintainer merges it on GitHub '
-             '(`factory merge` never merges into a production branch).')
+def approvals(model):
+    """What a work-order or config PR needs next: work_order_approvals maintainers, then a merge on GitHub."""
+    needed = model.work_order_approvals
+    return (f'Next: {needed} maintainer{"" if needed == 1 else "s"} other than its author approve{"s" if needed == 1 else ""} '
+            'the pull request at its current head; a maintainer merges it on GitHub (`factory merge` never merges into a '
+            'production branch).')
 
 
 def open_editor(path):
@@ -180,11 +184,11 @@ def submit_workorders(ctx):
             body.write_text('Work orders submitted with `factory submit workorders`:\n\n' + '\n'.join(
                 f'- {kinds[p]}: `{p}`' + ('' if changes[p] is None else f' – {workorders.title_of(changes[p].decode())}')
                 for p in sorted(changes)) + '\n')
-            # No advisory preflight: two maintainer approvals and factory/deterministic decide work-order PRs.
+            # No advisory preflight: maintainer approvals and factory/deterministic decide work-order PRs.
             created = session_submit(ctx, repo, None, message, body, base=name,
                                      on_created=lambda _: move_out(candidate, head, changes))
             if created:
-                say(APPROVALS + ' Then copy the work orders to the validation branches: `factory sync workorders`.')
+                say(approvals(ctx.model) + ' Then copy the work orders to the validation branches: `factory sync workorders`.')
     if pull:
         move_out(candidate, head, changes)
         return finish_open_pr(ctx, pull, sha, branch, None, [])
@@ -240,7 +244,7 @@ def run_session_submit(ctx, snapshot, args, on_created=None):
 
 def session_submit(ctx, snapshot, task, title, body_file, context=(), draft=False, on_created=None, *, base):
     """session.py submit into base: a validation branch, or a production branch for work-order and config PRs. Without
-    a task (work-order and config PRs) there is no advisory preflight: two maintainer approvals and
+    a task (work-order and config PRs) there is no advisory preflight: maintainer approvals and
     factory/deterministic decide."""
     args = [*(['--task', task] if task else []), '--base', base, '--runner', ctx.config['runners'][0], '--title', title,
             '--body-file', body_file]
@@ -292,7 +296,7 @@ def finish_open_pr(ctx, pull, sha, branch, task, context):
         ctx.gh.command(['pr', 'ready', str(number), '--repo', ctx.config['repository']])
         say(f'Pull request #{number} is ready for review.')
     if ctx.model.level(pull['base']['ref']) == 'production':  # type b: no senior review to watch for
-        say(APPROVALS)
+        say(approvals(ctx.model))
         return 0
     say(f'Watching pull request #{number}; Ctrl-C stops watching (the PR keeps waiting for a watcher).')
     return watch(ctx, number)

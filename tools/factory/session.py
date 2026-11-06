@@ -580,7 +580,7 @@ def submit(gh, candidate, task, context, title, body_file, runner, base=None, dr
             f'candidate or {base} changed after the collision sweep; submit again')
     remote = gh.request('GET', f'/repos/{REPOSITORY}/git/ref/heads/{quote(binding["branch"], safe="")}')
     require(remote['object']['sha'] == binding['head_sha'], 'push the reviewed candidate branch yourself before submit')
-    # A production branch takes no handoff: its own check classifies the PR (two maintainer approvals for type b).
+    # A production branch takes no handoff: its own check classifies the PR (maintainer approvals for type b).
     transfer = None if production else {'runner': runner, 'task': task, 'owner': user['login']}
     body = prose.rstrip() + '\n\n'
     if transfer:

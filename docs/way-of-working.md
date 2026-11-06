@@ -210,7 +210,7 @@ Maintainers and their agents can work on several PRs at once. Parallel PRs break
 
 In the sandbox, like the pipeline: `tools/factory/sandbox-verify.sh` from the checkout you changed ([dev-setup](dev-setup.md#test-changes-in-the-sandbox)). On the host:
 
-Full local verification of the control checkout (needs `actionlint` and `gitleaks`), run from the control checkout without leaving files behind:
+Full local verification of the control checkout (needs `actionlint` and `gitleaks`; `factory doctor` prints the command that installs them), run from the control checkout without leaving files behind:
 
 ```sh
 python3 tools/factory/verify.py --root .

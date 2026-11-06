@@ -418,21 +418,42 @@ def merge(ctx, pr, dry_run=False):
 
 # --- doctor ------------------------------------------------------------------------------------------
 
-def doctor_report(report, keychain=()):
+def tools_command(control, destination, names):
+    """(command, tools) installing those of `names` that factory/tools.lock.json pins into `destination`, with the
+    control checkout's reviewed installer (release binaries, SHA-256 checked); None when it pins none of them."""
+    lock = Path(control) / 'factory/tools.lock.json'
+    try:
+        locked = [name for name in names if name in json.loads(lock.read_text())]
+    except (OSError, ValueError):
+        return None
+    if not locked:
+        return None
+    return shlex.join(['python3', '-I', '-B', str(Path(control) / 'factory/install_tools.py'), '--lock', str(lock),
+                       '--destination', str(destination), *[part for name in locked for part in ('--only', name)]]), locked
+
+
+def doctor_report(report, keychain=(), install=None):
     """doctor.py's status, then each of its blocked checks with its fix. Its environment check of an author key is
-    expected to block when that key is in the keychain: factory hands it to each author run, never to doctor.py."""
+    expected to block when that key is in the keychain: factory hands it to each author run, never to doctor.py.
+    install(names) returns (one command, the tools it installs) for the missing tools, or None."""
     if not report:
         return ['doctor.py: produced no report']
     blocked = [item for item in report.get('factory', {}).get('local_prerequisites', []) if item.get('status') == 'blocked']
     lines = [f'doctor.py: {report.get("status", "unknown")}' + ('' if blocked or report.get('reason') else '; no blocked checks')]
     if report.get('reason'):
         lines.append(f'  {report["reason"]}')
+    tools = [str(item.get('check'))[len('tool_'):] for item in blocked if str(item.get('check')).startswith('tool_')]
+    command, covered = (install(tools) if install and tools else None) or (None, ())
     for item in blocked:
         name = str(item.get('check') or '?')
         if name.startswith('environment_') and name[len('environment_'):] in keychain:
             lines.append(f'  expected {name}: the key is in the keychain; doctor.py sees only exported keys')
+        elif name.startswith('tool_') and name[len('tool_'):] in covered:
+            lines.append(f'  blocked  {name}  → installed by the command below')
         else:
             lines.append(f'  blocked  {name}  → {item.get("continuation") or item.get("detail") or "see doctor.py"}')
+    if command:
+        lines.append(f'  install the missing check tools: {command}')
     return lines
 
 
@@ -469,7 +490,7 @@ def doctor(ctx):
                                             capture=True)
     report = checkouts.last_json(stdout) or {}
     keychain = {name.split()[-1] for name, ok, _ in checks if ok and name.startswith('author key ')}
-    for line in doctor_report(report, keychain):
+    for line in doctor_report(report, keychain, lambda names: tools_command(ctx.control, ctx.device['bin'], names)):
         say(line)
     say('(doctor.py always exits 2: it never certifies live acceptance.)')
     return 0 if all(ok for _, ok, _ in checks) else 1

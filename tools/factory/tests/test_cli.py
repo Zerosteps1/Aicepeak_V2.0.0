@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1188,6 +1189,25 @@ class HelpAndInstallTests(unittest.TestCase):
         self.assertEqual(commands.doctor_report({'status': 'blocked', 'read_only': True, 'reason': 'Repository unreadable.'}),
                          ['doctor.py: blocked', '  Repository unreadable.'])
         self.assertEqual(commands.doctor_report({}), ['doctor.py: produced no report'])
+        # Missing pinned check tools get one command; other tools keep doctor.py's own hint.
+        tools = {'status': 'blocked', 'factory': {'local_prerequisites': [
+            {'check': f'tool_{name}', 'status': 'blocked', 'detail': f'Required tool: {name}', 'continuation': f'Install {name}'}
+            for name in ('actionlint', 'gh', 'gitleaks')]}}
+        with tempfile.TemporaryDirectory() as temp:
+            control = Path(temp) / 'a control'  # a space: every part of the command is quoted
+            (control / 'factory').mkdir(parents=True)
+            shutil.copy(ROOT / 'factory/tools.lock.json', control / 'factory/tools.lock.json')
+            bin_dir = Path(temp) / 'bin'
+            lines = commands.doctor_report(tools, (), lambda names: commands.tools_command(control, bin_dir, names))
+            command = shlex.join(['python3', '-I', '-B', str(control / 'factory/install_tools.py'), '--lock',
+                                  str(control / 'factory/tools.lock.json'), '--destination', str(bin_dir),
+                                  '--only', 'actionlint', '--only', 'gitleaks'])
+            self.assertEqual(lines, ['doctor.py: blocked', '  blocked  tool_actionlint  → installed by the command below',
+                                     '  blocked  tool_gh  → Install gh', '  blocked  tool_gitleaks  → installed by the command below',
+                                     f'  install the missing check tools: {command}'])
+            self.assertEqual(shlex.split(command)[3], str(control / 'factory/install_tools.py'))
+            self.assertIsNone(commands.tools_command(control, bin_dir, ['gh', 'docker']))
+            self.assertIsNone(commands.tools_command(Path(temp) / 'missing', bin_dir, ['actionlint']))
 
     def test_sandbox_script_runs_the_author_image_without_network_or_writes(self):
         script = ROOT / 'tools/factory/sandbox-verify.sh'

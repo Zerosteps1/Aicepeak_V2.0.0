@@ -243,10 +243,13 @@ class CheckoutTests(Repos):
         self.assertEqual(checkouts.update_control(self.control, self.config), (newer, True))
         self.assertEqual(git(self.control, 'rev-parse', 'HEAD'), newer)
         self.assertEqual(checkouts.read_policy(self.control, self.config).tip, newer)
-        (self.control / '.DS_Store').write_text('x')
-        with self.assertRaisesRegex(Blocked, r'untracked file \.DS_Store.*factory never deletes'):
+        (self.control / '.DS_Store').write_text('x')  # Finder's folder settings are tolerated
+        self.assertEqual(checkouts.update_control(self.control, self.config), (newer, False))
+        (self.control / 'notes.txt').write_text('x')
+        with self.assertRaisesRegex(Blocked, r'untracked file notes\.txt.*factory never deletes'):
             checkouts.update_control(self.control, self.config)
-        (self.control / '.DS_Store').unlink()
+        for stray in ('.DS_Store', 'notes.txt'):
+            (self.control / stray).unlink()
         git(self.control, 'switch', '--quiet', '-c', 'other')
         with self.assertRaisesRegex(Blocked, 'stay on production'):
             checkouts.update_control(self.control, self.config)

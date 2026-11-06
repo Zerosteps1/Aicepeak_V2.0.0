@@ -8,8 +8,13 @@ set -eu
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 image="$(sed -n 's/^IMAGE = "\(.*\)"$/\1/p' "$root/tools/factory/clients.py")"
 [ -n "$image" ] || { echo "cannot read IMAGE from tools/factory/clients.py" >&2; exit 1; }
-docker image inspect "$image" >/dev/null 2>&1 \
-  || { echo "the author image $image is missing or Docker is not running; see \`factory doctor\`" >&2; exit 1; }
+# Docker Desktop starting up or waking from its resource saver answers late: wait up to 120 s, as `factory` does.
+waited=0
+until docker info >/dev/null 2>&1 && docker image inspect "$image" >/dev/null 2>&1; do
+  [ "$waited" -eq 0 ] && echo "Waiting for Docker to be ready, up to 120 s (start Docker Desktop if it is not running)..." >&2
+  [ "$waited" -ge 120 ] && { echo "the author image $image is missing or Docker is not running; see \`factory doctor\`" >&2; exit 1; }
+  sleep 2; waited=$((waited + 2))
+done
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT TERM

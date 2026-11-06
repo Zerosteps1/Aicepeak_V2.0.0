@@ -187,6 +187,14 @@ class SettingsTests(unittest.TestCase):
                        {"ruleset_names": {**SPEC["ruleset_names"], "production": "{branch}"}}):
             with self.subTest(change=change), self.assertRaises(settings.Blocked):
                 settings.desired_state(config(), {**SPEC, **change})
+        self.assertEqual(SPEC["production_merge_methods"], ["merge"])
+        missing = {key: value for key, value in SPEC.items() if key != "production_merge_methods"}
+        for spec in [{**SPEC, "production_merge_methods": methods}
+                     for methods in (["squash"], ["rebase"], ["squash", "rebase"], ["merge", "squash"], ["merge", "rebase"],
+                                     ["merge", "merge"], [], "merge")] + [missing]:
+            with self.subTest(methods=spec.get("production_merge_methods")), \
+                    self.assertRaisesRegex(settings.Blocked, "production branches allow only merge commits"):
+                settings.desired_state(config(), spec)
 
     def test_default_model_rulesets(self):
         desired = settings.desired_state(config(), SPEC)
@@ -208,7 +216,8 @@ class SettingsTests(unittest.TestCase):
         production = by_name(desired, "Factory production: production")
         self.assertEqual(production["bypass_actors"], [])
         self.assertEqual(rules(production, "update"), [])
-        self.assertEqual(rules(production, "pull_request")[0]["parameters"]["allowed_merge_methods"], ["squash", "rebase"])
+        # Merge commits only: production keeps the validation branch's commits, so bringing it back is a fast-forward.
+        self.assertEqual(rules(production, "pull_request")[0]["parameters"]["allowed_merge_methods"], ["merge"])
         # GitHub matches required checks per commit: the production check itself demands the AI review of this PR.
         self.assertEqual([c["context"] for c in rules(production, "required_status_checks")[0]["parameters"]["required_status_checks"]],
                          ["factory/deterministic", "factory/production/production"])

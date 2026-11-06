@@ -206,7 +206,7 @@ def submit_workorders(ctx):
             created = session_submit(ctx, repo, None, message, body, base=name,
                                      on_created=lambda _: move_out(candidate, head, changes))
             if created:
-                say(approvals(ctx.model) + ' Then copy the work orders to the validation branches: `factory sync workorders`.')
+                say(approvals(ctx.model) + ' After the merge, bring them into your branch: `factory update`.')
     if pull:
         move_out(candidate, head, changes)
         return finish_open_pr(ctx, pull, sha, branch, None, [])

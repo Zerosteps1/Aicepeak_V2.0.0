@@ -161,8 +161,9 @@ def spec_blockers(config, spec):
         errors.append("promotion_environment must be a simple name distinct from the control environment")
     if spec.get("promotion_environment_secrets") != ["FACTORY_PUBLISHER_APP_PRIVATE_KEY"]:
         errors.append("the promotion environment holds exactly the publisher key")
-    if not set(spec.get("production_merge_methods") or ["merge"]) <= {"squash", "rebase"}:
-        errors.append("production branches allow only squash or rebase merges")
+    # A merge commit keeps the validation branch's own commits, so bringing production back is a fast-forward.
+    if spec.get("production_merge_methods") != ["merge"]:
+        errors.append("production branches allow only merge commits")
     return errors
 
 
@@ -216,7 +217,7 @@ def desired_state(config, spec):
     rulesets = [ruleset(ruleset_name(spec, "validation", name), [name], copy.deepcopy(maintainers),
                         [{"type": "update", "parameters": {"update_allows_fetch_and_merge": False}}, pull_request(), *checks(name)])
                 for name in model.validation]
-    # Production: PR only, squash or rebase, no bypass actors, so nobody pushes directly.
+    # Production: PR only, merge commits only, no bypass actors, so nobody pushes directly.
     rulesets += [ruleset(ruleset_name(spec, "production", name), [name], [],
                          [pull_request(allowed_merge_methods=list(spec["production_merge_methods"])), *checks(name)])
                  for name in model.production]

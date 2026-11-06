@@ -1,10 +1,10 @@
-"""Branch commands of the factory CLI: config PRs for the branch list, the control branch, promotions, work-order
-sync and the branch diagram.
+"""Branch commands of the factory CLI: config PRs for the branch list, the control branch, promotions, `factory update`
+and the branch diagram.
 
 Branch names, gates, routing and review modes come only from factory/config.json at the pinned config branch tip
 (ctx.model). Config PRs change only that file (branches.edited) and replace a branch of their own only after
-confirmation, with --force-with-lease; promotions and syncs never force-push, never delete and never merge a pull
-request.
+confirmation, with --force-with-lease; promotions and updates never push a listed branch, never force-push, never
+delete and never merge a pull request.
 """
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ def add_validation(ctx, name, gate, kinds):
     steps = [] if verb == 'change' else [create_step(ctx, name, model.default_branch)]
     steps.append(settings_step(model.config_branch))
     if verb == 'add':
-        steps.append('Copy the work orders onto it: `factory sync workorders`.')
+        steps.append(f'Bring the config branch into it: `factory update {name}` in the candidate, then push it.')
     if kinds:
         steps.append(f'New work of kind {", ".join(kinds)} goes to `{name}`; open pull requests keep their target.')
     summary = f'{verb.capitalize()} validation branch `{name}` (gate `{gate}`, kinds: {", ".join(kinds) or "none"})'
@@ -291,45 +291,78 @@ def promote(ctx, source, target=None):
     tips = ctx.tips(source, target)
     require(source in tips and target in tips, f'{source} and {target} must both exist on GitHub')
     head, base = tips[source], tips[target]
+    if head == base:  # e.g. right after a pushed fast-forward: GitHub opens no pull request without commits
+        say(f'{source} on GitHub is at {target} ({base[:12]}): nothing to promote until {source} has new commits.')
+        return 0
     again = f'factory promote {source}' + ('' if len(model.production) == 1 else f' --to {target}')
     if not is_ancestor(ctx.candidate, base, head):
         return merge_production(ctx, source, target, head, base, again)
     return open_promotion(ctx, source, target, head, base)
 
 
+def bring_in(ctx, branch, remote, theirs, message, why, guard=None):
+    """Bring the commit `theirs` into the candidate's local `branch`, never pushing: the core of promote's merge-back
+    and of `factory update`. `remote` is the tip of `branch` on GitHub, None when it is not there.
+
+    Refuses, changing nothing, while the candidate has uncommitted or untracked files (`why` says what needs it clean)
+    or the local branch and GitHub's diverged; a local branch behind GitHub counts at GitHub's tip, unpushed local
+    commits are kept with a warning. `guard(tip, fast)` sees the tip and whether it is a fast-forward before anything
+    changes and may refuse. A tip contained in `theirs` is fast-forwarded to it, otherwise `theirs` is merged with
+    --no-ff and `message`. Returns ('contained', tip), ('fast-forward', sha), ('merged', sha) or ('conflicts', names);
+    a merge stopped on conflicts is left in the candidate."""
+    candidate = ctx.candidate
+    with ctx.candidate_lock():
+        require(not out(candidate, 'status', '--porcelain'), f'{why} in the candidate, which has uncommitted or '
+                f'untracked files: commit, stash or remove them (`git -C {shlex.quote(str(candidate))} status`), then retry')
+        local = local_tip(candidate, branch)
+        require(local or remote, f'{branch} is neither a branch of the candidate nor on GitHub')
+        tip = remote or local
+        if local and remote and not is_ancestor(candidate, local, remote):
+            require(is_ancestor(candidate, remote, local), f'your local {branch} and {branch} on GitHub diverged; '
+                    'reconcile them first')
+            warn(f'your local {branch} has commits that are not on GitHub yet; they are pushed with it')
+            tip = local
+        if is_ancestor(candidate, theirs, tip):
+            return 'contained', tip
+        fast = is_ancestor(candidate, tip, theirs)
+        if guard:
+            guard(tip, fast)
+        if checkouts.current_branch(candidate) != branch:
+            git(candidate, 'switch', '--quiet', *([branch] if local else ['--no-track', '-c', branch, remote]))
+        if checkouts.head(candidate) != tip:  # a local branch behind GitHub
+            git(candidate, 'merge', '--ff-only', '--quiet', tip)
+        if fast:
+            git(candidate, 'merge', '--ff-only', '--quiet', theirs)
+            return 'fast-forward', checkouts.head(candidate)
+        merged = git(candidate, *ctx.identity(), 'merge', '--no-ff', '--no-edit', '-m', message, theirs, check=False)
+        if merged.returncode:
+            return 'conflicts', out(candidate, 'diff', '--name-only', '--diff-filter=U').splitlines()
+        return 'merged', checkouts.head(candidate)
+
+
 def merge_production(ctx, source, target, head, base, again):
-    """The production tip is not contained in the validation branch: merge it in the candidate, never push."""
+    """The production tip is not contained in the validation branch: bring it in in the candidate, never push."""
     candidate = ctx.candidate
     push = f'git -C {shlex.quote(str(candidate))} push origin {source}'
-    with ctx.candidate_lock():
-        require(not out(candidate, 'status', '--porcelain'), f'{target} must first be merged into {source} in the '
-                f'candidate, which has uncommitted or untracked files: commit, stash or remove them (`git -C '
-                f'{shlex.quote(str(candidate))} status`), then retry')
-        local = local_tip(candidate, source)
-        if local and not is_ancestor(candidate, local, head):
-            require(is_ancestor(candidate, head, local), f'your local {source} and {source} on GitHub diverged; '
-                    'reconcile them first')
-            warn(f'your local {source} has commits that are not on GitHub yet; they are pushed with it')
-        if checkouts.current_branch(candidate) != source:
-            git(candidate, 'switch', '--quiet', *([source] if local else ['--no-track', '-c', source, head]))
-        if checkouts.head(candidate) != head and is_ancestor(candidate, checkouts.head(candidate), head):
-            git(candidate, 'merge', '--ff-only', '--quiet', head)
-        if is_ancestor(candidate, base, checkouts.head(candidate)):
-            say(f'Your local {source} already contains {target}, {source} on GitHub does not. Push it: {push}; then '
-                f'run `{again}` again to open or update the promotion PR.')
-            return 0
-        merged = git(candidate, *ctx.identity(), 'merge', '--no-ff', '--no-edit', '-m',
-                     f'Merge {target} into {source} for promotion', base, check=False)
-        if merged.returncode:
-            conflicts = out(candidate, 'diff', '--name-only', '--diff-filter=U')
-            say(f'Merging {target} ({base[:12]}) into {source} stopped on conflicts; the merge is left in {candidate}:')
-            for name in conflicts.splitlines():
-                say('  ' + common.printable(name, 300))
-            say('Resolve them, `git add` the files and `git commit` (or give up with `git merge --abort`). Then push '
-                f'{source} yourself: {push}, and run `{again}` again to open or update the promotion PR.')
-            return 1
-        sha = checkouts.head(candidate)
-    say(f'Merged {target} ({base[:12]}) into {source} in the candidate: {sha[:12]}. Nothing was pushed.')
+    outcome, value = bring_in(ctx, source, head, base, f'Merge {target} into {source} for promotion',
+                              f'{target} must first be merged into {source}')
+    if outcome == 'contained':
+        say(f'Your local {source} already contains {target}, {source} on GitHub does not. Push it: {push}; then '
+            f'run `{again}` again to open or update the promotion PR.')
+        return 0
+    if outcome == 'conflicts':
+        say(f'Merging {target} ({base[:12]}) into {source} stopped on conflicts; the merge is left in {candidate}:')
+        for name in value:
+            say('  ' + common.printable(name, 300))
+        say('Resolve them, `git add` the files and `git commit` (or give up with `git merge --abort`). Then push '
+            f'{source} yourself: {push}, and run `{again}` again to open or update the promotion PR.')
+        return 1
+    if outcome == 'fast-forward':
+        say(f'Fast-forwarded {source} to {target} ({value[:12]}) in the candidate: {source} had nothing that {target} '
+            'lacks, so no merge commit was needed. Nothing was pushed.')
+        say(f'Push it yourself: {push}. {source} then equals {target}: there is nothing to promote until it has new commits.')
+        return 0
+    say(f'Merged {target} ({base[:12]}) into {source} in the candidate: {value[:12]}. Nothing was pushed.')
     say(f'Check it, push it yourself: {push}; then run `{again}` again to open or update the promotion PR.')
     return 0
 
@@ -372,7 +405,74 @@ def open_promotion(ctx, source, target, head, base):
     return 0
 
 
-# --- work-order sync ------------------------------------------------------------------------------------
+# --- factory update ------------------------------------------------------------------------------------------
+
+def merge_result(repo, ours, theirs):
+    """The tree a merge of theirs into ours would write, and its conflicted paths, computed in the object store alone:
+    no index, no working tree (git merge-tree --write-tree, git 2.38 or later)."""
+    result = git(repo, 'merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', ours, theirs, check=False)
+    require(result.returncode in (0, 1), 'git merge-tree failed (factory update needs git 2.38 or later): '
+            + common.printable(result.stderr.decode(errors='replace').strip()[-600:], 600))
+    fields = result.stdout.decode().split('\0')
+    return fields[0], [name for name in fields[1:] if name]
+
+
+def outside_scope(repo, tip, theirs, fast):
+    """Paths that bringing theirs into tip would change beyond work orders and factory/config.json."""
+    tree, conflicted = (theirs, []) if fast else merge_result(repo, tip, theirs)
+    changed = [path for path in out(repo, 'diff', '--name-only', '--no-renames', '-z', tip, tree).split('\0') if path]
+    return sorted(path for path in {*changed, *conflicted} if not branches.config_change([path]))
+
+
+def update(ctx, target=None):
+    """Bring the config branch tip into a branch of the candidate: a fast-forward when the branch has nothing the
+    config branch lacks, otherwise a local merge commit. Only work orders and factory/config.json may change; never
+    pushes, never touches a production branch."""
+    model, candidate = ctx.model, ctx.candidate
+    source = model.config_branch
+    target = target or checkouts.current_branch(candidate)
+    require(target, 'the candidate has no branch checked out; name the target: `factory update <target-branch>`')
+    valid = git(candidate, 'check-ref-format', f'refs/heads/{target}', check=False).returncode == 0
+    require(valid and not target.startswith('-'), f'{common.printable(target, 100)!r} is not a valid branch name')
+    require(model.level(target) != 'production', f'{target} is a production branch; factory never changes one. Name a '
+            f'validation branch ({", ".join(model.validation)}) or a feature branch')
+    tips = ctx.tips(source, target)
+    require(source in tips, f'the config branch {source} is not on GitHub')
+    theirs, quoted = tips[source], shlex.quote(str(candidate))
+    validation = model.level(target) == 'validation'
+
+    def guard(tip, fast):
+        found = outside_scope(candidate, tip, theirs, fast)
+        shown = ', '.join(common.printable(path, 300) for path in found[:20])
+        more = f' and {len(found) - 20} more' if len(found) > 20 else ''
+        instead = (f'`factory promote {target}` brings all of {source} into it' if validation
+                   else f'merge it by hand: `git -C {quoted} merge origin/{source}`')
+        require(not found, f'factory update brings only work orders (docs/work/*.md) and {CONFIG}, but bringing {source} '
+                f'into {target} would also change {shown}{more}. Nothing was changed; {instead}')
+
+    outcome, value = bring_in(ctx, target, tips.get(target), theirs, f'Merge {source} into {target} (factory update)',
+                              f'{source} is brought into {target}', guard)
+    if outcome == 'contained':
+        say(f'{target} ({value[:12]}) already contains {source} ({theirs[:12]}): up to date, nothing changed.')
+        return 0
+    step = (f'Check it, push it yourself: git -C {quoted} push origin {target}' if validation
+            else f'{target} is not a listed branch: it goes up with your next `factory submit`.')
+    if outcome == 'conflicts':
+        say(f'Merging {source} ({theirs[:12]}) into {target} stopped on conflicts; the merge is left in {candidate}:')
+        for name in value:
+            say('  ' + common.printable(name, 300))
+        say('Resolve them, `git add` the files and `git commit` (or give up with `git merge --abort`). Nothing was '
+            f'pushed. {step}')
+        return 1
+    if outcome == 'fast-forward':
+        say(f'Fast-forwarded {target} to {source} ({value[:12]}) in the candidate: no new commit. Nothing was pushed.')
+    else:
+        say(f'Merged {source} ({theirs[:12]}) into {target} in the candidate: merge commit {value[:12]}. Nothing was pushed.')
+    say(step)
+    return 0
+
+
+# --- what a new config branch lacks (set config branch) ----------------------------------------------------
 
 def orders_at(repo, sha, accept=workorders.is_order):
     """Regular work-order files of a commit: path -> (mode, blob id)."""
@@ -409,62 +509,6 @@ def drift(repo, old_tip, new_tip, old, name):
     found += [f'{name} lacks the work orders ' + ', '.join(missing)] if missing else []
     found += [f'work orders on {name} differ from {old}: ' + ', '.join(differing)] if differing else []
     return found
-
-
-def sync(ctx, reference=None):
-    """Copy work orders of the config branch byte-exact to every validation branch lacking them; never change or
-    delete a file there. One commit per branch, pushed directly (maintainers may push to validation branches)."""
-    model, candidate = ctx.model, ctx.candidate
-    source = model.config_branch
-    tips = ctx.tips(source, *model.validation)
-    require(source in tips, f'the config branch {source} is not on GitHub')
-    orders = orders_at(candidate, tips[source])
-    if reference:
-        # Only files are synced: work-order issues live on GitHub, not on any branch.
-        chosen = workorders.path_of(workorders.resolve(reference, [workorders.name_of(path) for path in orders], allow_issues=False))
-        orders = {chosen: orders[chosen]}
-    require(orders, f'{source} has no work orders')
-    failed = 0
-    for target in model.validation:
-        if target not in tips:
-            say(f'{target}: not on GitHub; skipped')
-            failed += 1
-            continue
-        present = orders_at(candidate, tips[target])
-        for path in sorted(p for p in orders if p in present and present[p] != orders[p]):
-            say(f'{target}: {workorders.name_of(path)} differs from {source}; left unchanged')
-        missing = sorted(path for path in orders if path not in present)
-        if not missing:
-            say(f'{target}: up to date')
-            continue
-        try:
-            sha = push_orders(ctx, target, tips[target], missing, orders, source)
-        except Blocked as exc:
-            say(f'{target}: not synced: {exc}')
-            failed += 1
-            continue
-        say(f'{target}: added {", ".join(workorders.name_of(path) for path in missing)} ({sha[:12]}, pushed)')
-    return 1 if failed else 0
-
-
-def push_orders(ctx, target, tip, paths, orders, source):
-    names = [workorders.name_of(path) for path in paths]
-    message = (f'docs(work): sync {names[0]} from {source}' if len(names) == 1
-               else f'docs(work): sync {len(names)} work orders from {source}')
-    url = checkouts.github_url(ctx.config)
-    with checkouts.scratch('sync-') as scratch:
-        repo = checkouts.materialize(scratch / 'repo', tip, origin=url, branch=target,
-                                     objects=[checkouts.objects_dir(ctx.candidate), checkouts.objects_dir(ctx.control)])
-        for path in paths:  # the blobs of the config branch themselves: byte-exact by construction
-            git(repo, 'update-index', '--add', '--cacheinfo', '{},{},{}'.format(*orders[path], path))
-        git(repo, *ctx.identity(), 'commit', '--quiet', '-m', message, '-m',
-            f'Copied byte-exact from {source} by `factory sync`: {", ".join(names)}.')
-        fields = [field for field in out(repo, 'diff', '--name-status', '--no-renames', '-z', tip, 'HEAD').split('\0') if field]
-        require(fields[0::2] == ['A'] * len(paths) and sorted(fields[1::2]) == sorted(paths), 'a sync may only add files')
-        sha = checkouts.head(repo)
-        git(repo, 'push', '--quiet', url, f'HEAD:refs/heads/{target}', network=True)
-    ctx.tips(target)
-    return sha
 
 
 # --- the branch diagram --------------------------------------------------------------------------------

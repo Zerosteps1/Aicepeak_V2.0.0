@@ -1212,37 +1212,66 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertIsNone(commands.tools_command(control, bin_dir, ['gh', 'docker']))
             self.assertIsNone(commands.tools_command(Path(temp) / 'missing', bin_dir, ['actionlint']))
 
-    def wait(self, daemon_from=None, inspect_from=None, listed=True, hang=False, timeout=120):
+    def wait(self, daemon_from=None, inspect_from=None, listed=True, hang=False, timeout=120, asleep=False,
+             desktop=False, environ=None):
         """common.wait_for_docker against a fake docker on a simulated clock: the daemon answers from `daemon_from` s
-        (None: never), the image inspects from `inspect_from` s (None: never) and is `listed` meanwhile."""
-        now, said = [0.0], []
+        (None: never; `desktop`: once `docker desktop start` ran), the image inspects from `inspect_from` s (None: never;
+        `asleep`: once a container ran, as Docker Desktop's resource saver wakes only then) and is `listed` meanwhile."""
+        now, said, calls, state = [0.0], [], [], {'started': False, 'woken': False}
 
         def run(command, **kwargs):
+            calls.append(command[1:])
             verb = command[1:3]
             if verb == ['info', '--format']:
                 if hang:
                     raise subprocess.TimeoutExpired(command, 30)
-                ok = daemon_from is not None and now[0] >= daemon_from
+                ok = (daemon_from is not None and now[0] >= daemon_from) or state['started']
             elif verb == ['image', 'inspect']:
-                ok = inspect_from is not None and now[0] >= inspect_from
+                ok = (inspect_from is not None and now[0] >= inspect_from) or state['woken']
+            elif verb == ['run', '--rm']:
+                state['woken'] = ok = asleep  # a present image wakes the VM; --pull never fails for a missing one
+            elif verb == ['desktop', 'start']:
+                state['started'] = ok = desktop
             else:  # image ls --quiet
                 return subprocess.CompletedProcess(command, 0, '3bf1ef2fc96c\n' if listed else '', '')
             return subprocess.CompletedProcess(command, 0 if ok else 1, 'answer\n' if ok else '', '')
         with mock.patch.object(common, 'tool', return_value='/usr/local/bin/docker'), \
                 mock.patch.object(common, 'docker_host', return_value='unix:///docker.sock'), \
+                mock.patch.dict(common.os.environ, environ or {}), \
                 mock.patch.object(common.subprocess, 'run', side_effect=run), mock.patch.object(common, 'say', side_effect=said.append):
+            if not environ:
+                common.os.environ.pop('FACTORY_DOCKER_HOST', None)
             result = common.wait_for_docker('image:tag', timeout=timeout, interval=2, clock=lambda: now[0],
                                             sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
-        return result, now[0], said
+        return result, now[0], said, calls
 
-    def test_docker_is_waited_for_until_it_answers_and_holds_the_image(self):
-        self.assertEqual(self.wait(daemon_from=0, inspect_from=0), (('unix:///docker.sock', None), 0, []))
-        # Docker Desktop starting (or waking from its resource saver), then its image store calling the listed image missing.
-        result, waited, said = self.wait(daemon_from=6, inspect_from=12)
-        self.assertEqual((result, waited), (('unix:///docker.sock', None), 12))
-        self.assertEqual(said, ['Waiting for Docker to be ready, up to 120 s (start Docker Desktop if it is not running)…'])
-        # A missing image is reported soon after Docker answers, not after the whole wait.
-        self.assertEqual(self.wait(daemon_from=4, listed=False)[:2], (('unix:///docker.sock', 'image'), 14))
+    def test_docker_is_nudged_awake_and_waited_for_until_it_holds_the_image(self):
+        ready = ('unix:///docker.sock', None)
+        result, waited, said, calls = self.wait(daemon_from=0, inspect_from=0)
+        self.assertEqual((result, waited, said), (ready, 0, []))
+        self.assertFalse(any(call[0] in ('run', 'desktop') for call in calls))  # an awake Docker is never nudged
+        # Resource saver: queries answered without the VM, the image called missing until a container run wakes it.
+        result, waited, said, calls = self.wait(daemon_from=0, asleep=True)
+        self.assertEqual((result, waited, said), (ready, 0, []))
+        self.assertEqual([call for call in calls if call[0] == 'run'],
+                         [['run', '--rm', '--pull', 'never', '--network', 'none', '--cap-drop', 'ALL', '--read-only',
+                           '--entrypoint', 'true', 'image:tag']])
+        # Docker Desktop not running: started once, then used at once.
+        result, waited, said, calls = self.wait(desktop=True, inspect_from=0)
+        self.assertEqual((result, waited, said), (ready, 0, ['Starting Docker Desktop…']))
+        self.assertEqual([call[:2] for call in calls if call[0] == 'desktop'], [['desktop', 'start']])
+        # Another engine named by FACTORY_DOCKER_HOST is never replaced by starting Docker Desktop.
+        result, waited, said, calls = self.wait(desktop=True, inspect_from=0, environ={'FACTORY_DOCKER_HOST': 'tcp://other:2375'})
+        self.assertEqual((result, waited), (('unix:///docker.sock', 'docker'), 120))
+        self.assertFalse(any(call[0] == 'desktop' for call in calls))
+        # Docker Desktop starting slowly, then its image store calling the listed image missing: waited for.
+        result, waited, said, _ = self.wait(daemon_from=6, inspect_from=12)
+        self.assertEqual((result, waited), (ready, 12))
+        self.assertEqual(said, ['Starting Docker Desktop…', 'Waiting for Docker to be ready, up to 120 s…'])
+        # A missing image is never pulled and is reported soon after Docker answers, not after the whole wait.
+        result, waited, _, calls = self.wait(daemon_from=4, listed=False)
+        self.assertEqual((result, waited), (('unix:///docker.sock', 'image'), 14))
+        self.assertEqual(sum(call[0] == 'run' for call in calls), 1)
         # Docker that never answers, or hangs, ends the wait at its limit.
         self.assertEqual(self.wait()[:2], (('unix:///docker.sock', 'docker'), 120))
         self.assertEqual(self.wait(hang=True)[:2], (('unix:///docker.sock', 'docker'), 120))
@@ -1252,7 +1281,7 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertEqual(common.wait_for_docker('image:tag'), ('', 'docker'))
 
     def test_author_runs_wait_for_docker_and_name_what_is_missing(self):
-        for problem, message in (('docker', 'Docker did not answer within 120 s: start Docker Desktop'),
+        for problem, message in (('docker', 'Docker did not answer within 120 s, not even after starting Docker Desktop'),
                                  ('image', 'is missing: `factory doctor` prints the build command')):
             with self.subTest(problem=problem), mock.patch.object(common, 'wait_for_docker', return_value=('unix:///d', problem)), \
                     self.assertRaisesRegex(Blocked, re.escape(message)):

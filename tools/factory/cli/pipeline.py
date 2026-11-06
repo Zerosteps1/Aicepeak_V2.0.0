@@ -81,8 +81,8 @@ def author_keys():
 
 def docker_ready():
     host, problem = common.wait_for_docker(clients.IMAGE)
-    require(problem != 'docker', f'Docker did not answer within {common.DOCKER_WAIT} s: start Docker Desktop (installed: '
-            'docs/dev-setup.md) and retry')
+    require(problem != 'docker', f'Docker did not answer within {common.DOCKER_WAIT} s, not even after starting Docker '
+            'Desktop: check that it is installed (docs/dev-setup.md)')
     require(problem != 'image', f'author image {clients.IMAGE} is missing: `factory doctor` prints the build command')
     return host
 

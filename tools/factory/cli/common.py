@@ -258,8 +258,10 @@ DOCKER_WAIT = 120  # seconds: Docker Desktop starting up, or waking from its res
 
 
 def wait_for_docker(image, timeout=DOCKER_WAIT, interval=2, clock=time.monotonic, sleep=time.sleep):
-    """Wait until Docker answers and holds `image`, saying once that it waits. Docker Desktop that is starting up or
-    waking from its resource saver answers late and, for a few seconds more, may call a present image missing.
+    """Wait until Docker answers and holds `image`, nudging it awake: a Docker Desktop engine that does not answer is
+    started (`docker desktop start`, unless FACTORY_DOCKER_HOST names another engine), and when the image seems missing
+    one throwaway container is run from it, because Docker Desktop's resource saver answers queries without its VM
+    (and may then call a present image missing) while only a container run wakes the VM. Says once that it waits.
     Returns (endpoint, problem): problem None when ready, 'docker' when Docker never answered, 'image' when the image
     is not there (decided soon after Docker answers, never only at the end)."""
     docker = tool('docker', required=False)
@@ -268,25 +270,36 @@ def wait_for_docker(image, timeout=DOCKER_WAIT, interval=2, clock=time.monotonic
     host = docker_host()
     env = {**child_env(), **({'DOCKER_HOST': host} if host else {})}
 
-    def answer(*args):
+    def answer(*args, wait=30):
         try:
-            result = subprocess.run([docker, *args], capture_output=True, text=True, env=env, timeout=30)
+            result = subprocess.run([docker, *args], capture_output=True, text=True, env=env, timeout=wait)
         except subprocess.TimeoutExpired:
             return None
         return result.stdout if result.returncode == 0 else None
-    deadline, answered, announced = clock() + timeout, None, False
+    deadline, answered, announced, started, woken = clock() + timeout, None, False, False, False
     while True:
         if answer('info', '--format', '{{.ServerVersion}}') is not None:
             answered = answered or clock()
             if answer('image', 'inspect', '--format', '{{.Id}}', image) is not None:
                 return host, None
+            if not woken:
+                # Wake the VM: a no-op container without network, capabilities or writes; never pull a missing image.
+                woken = True
+                answer('run', '--rm', '--pull', 'never', '--network', 'none', '--cap-drop', 'ALL', '--read-only',
+                       '--entrypoint', 'true', image, wait=60)
+                continue
             # A listed image is still loading into the image store; an unlisted one is missing.
             if not (answer('image', 'ls', '--quiet', image) or '').strip() and clock() - answered >= 10:
                 return host, 'image'
+        elif not started and not os.environ.get('FACTORY_DOCKER_HOST'):
+            started = True  # Docker Desktop stopped or still starting: start it and wait for its engine (no-op if running)
+            say('Starting Docker Desktop…')
+            answer('desktop', 'start', '--timeout', str(max(1, int(deadline - clock()))), wait=max(1, deadline - clock()))
+            continue
         if clock() >= deadline:
             return host, 'image' if answered else 'docker'
         if not announced:
-            say(f'Waiting for Docker to be ready, up to {timeout} s (start Docker Desktop if it is not running)…')
+            say(f'Waiting for Docker to be ready, up to {timeout} s…')
             announced = True
         sleep(interval)
 

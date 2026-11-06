@@ -475,7 +475,8 @@ def doctor(ctx):
         check(f'author key {name}', os.environ.get(name) or keychain_present(service),
               'rerun the installer with --author-keys, or export it')
     _, problem = common.wait_for_docker(clients.IMAGE)
-    check('Docker running', problem != 'docker', f'start Docker Desktop; it did not answer within {common.DOCKER_WAIT} s')
+    check('Docker running', problem != 'docker', f'no answer within {common.DOCKER_WAIT} s, not even after starting Docker '
+          'Desktop: check that it is installed (docs/dev-setup.md)')
     check('author image', problem is None, f'docker build -f {ctx.control}/factory/Dockerfile -t {clients.IMAGE} {ctx.control}/factory'
           if problem == 'image' else 'needs Docker running (above)')
     codex = common.tool('codex', required=False)

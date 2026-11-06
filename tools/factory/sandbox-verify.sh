@@ -8,10 +8,19 @@ set -eu
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 image="$(sed -n 's/^IMAGE = "\(.*\)"$/\1/p' "$root/tools/factory/clients.py")"
 [ -n "$image" ] || { echo "cannot read IMAGE from tools/factory/clients.py" >&2; exit 1; }
-# Docker Desktop starting up or waking from its resource saver answers late: wait up to 120 s, as `factory` does.
-waited=0
+# As `factory` does: start a stopped Docker Desktop, wake its VM from the resource saver with one no-op container
+# (queries are answered without the VM, which may call a present image missing), and wait up to 120 s.
+waited=0 started= woken=
 until docker info >/dev/null 2>&1 && docker image inspect "$image" >/dev/null 2>&1; do
-  [ "$waited" -eq 0 ] && echo "Waiting for Docker to be ready, up to 120 s (start Docker Desktop if it is not running)..." >&2
+  if ! docker info >/dev/null 2>&1; then
+    [ -n "$started" ] || [ -n "${FACTORY_DOCKER_HOST:-}" ] \
+      || { started=1; echo "Starting Docker Desktop..." >&2; docker desktop start --timeout 120 >/dev/null 2>&1 || true; continue; }
+  elif [ -z "$woken" ]; then
+    woken=1
+    docker run --rm --pull never --network none --cap-drop ALL --read-only --entrypoint true "$image" >/dev/null 2>&1 || true
+    continue
+  fi
+  [ "$waited" -eq 0 ] && echo "Waiting for Docker to be ready, up to 120 s..." >&2
   [ "$waited" -ge 120 ] && { echo "the author image $image is missing or Docker is not running; see \`factory doctor\`" >&2; exit 1; }
   sleep 2; waited=$((waited + 2))
 done

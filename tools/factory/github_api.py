@@ -75,7 +75,15 @@ def tip(client, repo, branch):
     return sha
 
 
-def installation(config, role):
+PERMISSIONS = {
+    # Issues read: work-order issues and their approval records (tools/factory/issues.py).
+    "publisher": {"contents": "read", "checks": "write", "pull_requests": "write", "actions": "read", "issues": "read"},
+    "writer": {"contents": "write", "pull_requests": "write"},
+}
+
+
+def installation(config, role, permissions=None):
+    """A token limited to this repository and `permissions` (default: the role's usual set)."""
     app_id = config[role + "_app_id"]
     key = os.environ.get("FACTORY_" + role.upper() + "_APP_PRIVATE_KEY")
     require(isinstance(app_id, int) and app_id > 0 and key, role + " App credentials missing")
@@ -95,7 +103,7 @@ def installation(config, role):
     repo = config["repository"]
     inst = client.request("GET", f"/repos/{repo}/installation")
     require(inst["app_id"] == app_id, "wrong installation")
-    permissions = {"contents": "read", "checks": "write", "pull_requests": "write", "actions": "read"} if role == "publisher" else {"contents": "write", "pull_requests": "write"}
+    permissions = permissions or PERMISSIONS[role]
     token = client.request("POST", f"/app/installations/{inst['id']}/access_tokens",
                            {"repositories": [repo.split('/')[1]], "permissions": permissions})
     return GitHub(token["token"])

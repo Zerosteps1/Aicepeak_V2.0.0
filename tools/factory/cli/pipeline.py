@@ -136,7 +136,7 @@ def order_pulls(ctx, order):
             transfer = contracts.handoff(pull.get('body'), ctx.config)
         except Blocked:
             continue
-        if transfer['task'] == workorders.path_of(order):
+        if transfer['task'] == workorders.task_of(order):
             found.append((pull, transfer))
     return found
 
@@ -221,8 +221,7 @@ def launch(ctx, kind, reference, prompt=None, pr=None):
 def prepare_and_spawn(ctx, kind, order, policy, prompt, pr):
     config, candidate = ctx.config, ctx.candidate
     require(not runs.active(order), f'a run for {order} is already active: `factory continue {order}`')
-    text = workorders.text_on(candidate, policy, order)
-    spec = workorders.approved_spec(text, config)
+    text, spec = workorders.read(ctx.gh, candidate, config, policy, order)
     author_scope(spec)
     host, keys = docker_ready(), author_keys()
     target = ctx.model.route(spec['kind'])
@@ -383,7 +382,7 @@ class Runner(Worker):
         self.data = data
         self.config = data.get('policy_config') or self.config  # limits and protected paths of the config branch tip
         self.control, self.candidate = Path(data['control']), Path(data['candidate'])
-        self.order, self.kind, self.task = data['order'], data['kind'], workorders.path_of(data['order'])
+        self.order, self.kind, self.task = data['order'], data['kind'], workorders.task_of(data['order'])
         self.work, self.url = self.path / 'work', checkouts.github_url(self.config)
         self.target = data['target']
         self.merged_base, self.last_review = None, None
@@ -740,7 +739,8 @@ def review_now(ctx, prompt, workorder=None):
     if workorder:
         policy = ctx.config_tip()
         order = workorders.resolve(workorder, workorders.names_on(ctx.candidate, policy))
-        task, text = workorders.path_of(order), workorders.text_on(ctx.candidate, policy, order)
+        task = workorders.task_of(order)
+        text = workorders.read(ctx.gh, ctx.candidate, ctx.config, policy, order)[0]
     label = f'review-{time.strftime("%Y%m%d-%H%M%S")}-{os.urandom(2).hex()}'
     with checkouts.scratch('review-') as scratch:
         source = scratch / 'input'

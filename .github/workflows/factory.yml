@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       pr:
+        description: PR number; 0 for a work-order issue run
         type: string
-        required: true
+        default: '0'
       feedback_kind:
         type: choice
         options: [none, issue_comment, review, review_comment]
@@ -49,20 +50,34 @@ on:
         description: PR head SHA the dispatcher read for a /review or /bypass; the stage refuses any other head
         type: string
         default: ''
+      issue:
+        description: Work-order issue number of a maintainer's /review or /accept on it; 0 for PR runs
+        type: string
+        default: '0'
+      issue_command:
+        description: The command on the work-order issue
+        type: choice
+        options: [none, review, accept]
+        default: none
+      comment:
+        description: Comment ID of the maintainer's /review or /accept on the work-order issue
+        type: string
+        default: '0'
 
 # Every job is dispatched on the config branch. The expressions cannot read factory/config.json:
 # each stage verifies GITHUB_REF against config_branch before acting, and the factory-control
 # environment admits only the config branch.
 permissions: {}
 cache-mode: none
+# One group per PR or work-order issue. GitHub keeps one pending run per group and cancels an older pending one.
 concurrency:
-  group: factory-${{ github.repository }}-pr-${{ fromJSON(inputs.pr) }}
+  group: factory-${{ github.repository }}-${{ inputs.issue != '0' && format('issue-{0}', inputs.issue) || format('pr-{0}', fromJSON(inputs.pr)) }}
   cancel-in-progress: false
 
 jobs:
   wif-smoke:
     name: Anthropic federation smoke
-    if: inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0'
+    if: inputs.wif_smoke && inputs.issue == '0' && github.repository == 'Zerosteps1/Aicepeak_V2.0.0'
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 5
@@ -79,7 +94,7 @@ jobs:
 
   snapshot:
     name: Snapshot
-    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' && inputs.review_request == '' && inputs.bypass == '' }}
+    if: ${{ !inputs.wif_smoke && inputs.issue == '0' && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' && inputs.review_request == '' && inputs.bypass == '' }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -109,6 +124,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # A work-order issue is re-checked against the snapshot's pin (tools/factory/issues.py).
+      issues: read
     outputs:
       tests: ${{ steps.test.outputs.tests }}
     steps:
@@ -148,7 +165,7 @@ jobs:
   # Only this trusted config-branch job may claim or complete the senior-review gate.
   review-coordinate:
     name: Review coordination
-    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction == '' && inputs.review_request == '' && inputs.bypass == '' && (inputs.review_check != '' || inputs.review_claim != '' || inputs.review_result != '') }}
+    if: ${{ !inputs.wif_smoke && inputs.issue == '0' && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction == '' && inputs.review_request == '' && inputs.bypass == '' && (inputs.review_check != '' || inputs.review_claim != '' || inputs.review_result != '') }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -171,7 +188,7 @@ jobs:
   # It dispatches this workflow with `correction` when a review requests changes.
   correction:
     name: Correction gate
-    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction != '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' && inputs.review_request == '' && inputs.bypass == '' }}
+    if: ${{ !inputs.wif_smoke && inputs.issue == '0' && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.correction != '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' && inputs.review_request == '' && inputs.bypass == '' }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -204,6 +221,7 @@ jobs:
       pull-requests: read
       checks: read
       actions: read
+      issues: read
       # GitHub OIDC identity for Workload Identity Federation; only the broker exchanges it.
       id-token: write
     outputs:
@@ -240,6 +258,7 @@ jobs:
       pull-requests: read
       checks: read
       actions: read
+      issues: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -279,7 +298,7 @@ jobs:
   # posted for; a maintainer device then reviews it as usual. New commits never re-reserve it.
   review-request:
     name: Review request
-    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.review_request != '' && inputs.bypass == '' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
+    if: ${{ !inputs.wif_smoke && inputs.issue == '0' && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.review_request != '' && inputs.bypass == '' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -301,7 +320,7 @@ jobs:
   # it was posted for as passed by bypass, recording login and reason. Never for work-order/config PRs.
   bypass:
     name: Bypass
-    if: ${{ !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.bypass != '' && inputs.review_request == '' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
+    if: ${{ !inputs.wif_smoke && inputs.issue == '0' && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.bypass != '' && inputs.review_request == '' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
     runs-on: ubuntu-24.04
     environment: factory-control
     timeout-minutes: 10
@@ -318,3 +337,71 @@ jobs:
           COMMENT_ID: ${{ inputs.bypass }}
           HEAD_SHA: ${{ inputs.head }}
         run: python3 tools/factory/engine.py bypass --pr "$PR_NUMBER" --comment-id "$COMMENT_ID" --head "$HEAD_SHA"
+
+  # Work-order issues (FACTORY-009, tools/factory/issue_review.py). A maintainer's /review on a maintainer's issue:
+  # the review job calls the model without any App key, the publish job posts with the publisher App and no
+  # model credential. A maintainer's /accept: the accept job edits only the factory-task block and records the approval.
+  issue-review:
+    name: Issue review
+    if: ${{ inputs.issue != '0' && inputs.issue_command == 'review' && inputs.pr == '0' && !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' }}
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+      # GitHub OIDC identity for Workload Identity Federation (the same federation rule as the author job).
+      id-token: write
+    outputs:
+      review: ${{ steps.review.outputs.review }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          COMMENT_ID: ${{ inputs.comment }}
+        run: python3 tools/factory/issue_review.py review --issue "$ISSUE_NUMBER" --comment-id "$COMMENT_ID"
+
+  issue-publish:
+    name: Issue review comments
+    needs: issue-review
+    if: always() && needs.issue-review.result != 'skipped'
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          COMMENT_ID: ${{ inputs.comment }}
+          REVIEW_JSON: ${{ needs.issue-review.outputs.review }}
+        run: python3 tools/factory/issue_review.py publish --issue "$ISSUE_NUMBER" --comment-id "$COMMENT_ID"
+
+  issue-accept:
+    name: Issue accept
+    if: ${{ inputs.issue != '0' && inputs.issue_command == 'accept' && inputs.pr == '0' && !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' }}
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          COMMENT_ID: ${{ inputs.comment }}
+        run: python3 tools/factory/issue_review.py accept --issue "$ISSUE_NUMBER" --comment-id "$COMMENT_ID"

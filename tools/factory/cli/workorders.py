@@ -1,7 +1,9 @@
 """Work orders for the factory CLI: IDs, references, template filling and validation.
 
-The gate's own block rules (engine.task_spec) decide validity; only the status may differ for drafts.
-Work orders are created on the config branch and read from its tip.
+New work orders are GitHub issues (`factory issue`): the issue number is the ID, its name here is `issue-<N>` and
+its handoff task `#<N>`; tools/factory/issues.py decides whether one is approved. Legacy work orders are files in
+docs/work/ on the config branch, read from its tip. The gate's own block rules (engine.task_spec) decide validity;
+only the status may differ for drafts.
 """
 from __future__ import annotations
 
@@ -14,8 +16,12 @@ sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CL
 import common
 from common import Blocked, out, require
 import engine
+import issues
 
 ID = re.compile(r'([A-Z]+)-(\d{3,})')
+ISSUE_NAME = re.compile(r'issue-([1-9][0-9]{0,8})')
+ISSUE_REFERENCE = re.compile(r'(?:#|issue-)0*([1-9][0-9]{0,8})', re.I)
+ISSUE_TEMPLATE = '.github/ISSUE_TEMPLATE/factory-task.md'
 KINDS = ('factory', 'product', 'smoke')
 WORK = 'docs/work/'
 TEMPLATE = 'docs/work/TEMPLATE.md'
@@ -92,16 +98,61 @@ def next_name(kind, used):
     return f'{kind.upper()}-{max(used, default=0) + 1:03d}'
 
 
-def resolve(reference, names):
-    """7, 007 and FACTORY-007 resolve only when exactly one work order matches."""
+def resolve(reference, names, allow_issues=True):
+    """#57 and issue-57 name the work-order issue 57; 7, 007 and FACTORY-007 name a legacy file when exactly one
+    matches; a bare number that no file has names the issue with that number. allow_issues=False: files only."""
     reference = str(reference).strip()
+    issue = ISSUE_REFERENCE.fullmatch(reference) if allow_issues else None
+    if issue:
+        return f'issue-{int(issue[1])}'
     if re.fullmatch(r'\d+', reference):
         matches = [name for name in names if number(name) == int(reference)]
+        if not matches and allow_issues and 0 < int(reference) < 10 ** 9:
+            return f'issue-{int(reference)}'
     else:
         matches = [name for name in names if name.upper() == reference.upper()]
     require(matches, f'no work order {reference} on the config branch (docs/work/)')
     require(len(matches) == 1, f'work order {reference} is ambiguous: {", ".join(matches)}; use the full name')
     return matches[0]
+
+
+def is_issue(name):
+    return isinstance(name, str) and ISSUE_NAME.fullmatch(name) is not None
+
+
+def task_of(name):
+    """The handoff task: `#57` for a work-order issue, the file path for a legacy work order."""
+    return issues.task_of(int(ISSUE_NAME.fullmatch(name)[1])) if is_issue(name) else path_of(name)
+
+
+def label(name):
+    """How texts and commit titles name the work order: #57 or FACTORY-007."""
+    return task_of(name) if is_issue(name) else name
+
+
+def read(gh, candidate, config, policy, name):
+    """(text, spec) of an approved work order: an issue through the maintainer's gh, a legacy file at the config tip."""
+    if is_issue(name):
+        order = issues.approved(gh, config, int(ISSUE_NAME.fullmatch(name)[1]))
+        text, spec = order['text'], order['spec']
+    else:
+        text = text_on(candidate, policy, name)
+        spec = engine.task_spec(text)
+    if spec['kind'] == 'product':
+        require(config['northstar_path'] and config['northstar_approved'] and config.get('product_checks_ready'),
+                'product work orders stay blocked until the north star and product checks are ready (factory/config.json)')
+    return text, spec
+
+
+def issue_body(template, kind):
+    """The work-order issue body from the issue template: front matter removed, status draft, the chosen kind."""
+    if template.startswith('---\n'):
+        end = template.find('\n---\n', 4)
+        require(end > 0, f'{ISSUE_TEMPLATE} has unterminated front matter')
+        template = template[end + 5:]
+    spec = issues.draft_spec(template)
+    spec.update(status='draft', kind=kind)
+    return issues.with_block(template.lstrip('\n'), spec)
 
 
 def task_block(text):
@@ -195,11 +246,11 @@ def title_of(text):
 
 
 def branch_order(branch, names):
-    """<login>/<ID>, <login>/<ID>-<k> and <login>/<ID>-fix-<k> belong to work order <ID>."""
+    """<login>/<ID>, <login>/<ID>-<k> and <login>/<ID>-fix-<k> belong to work order <ID> (issue-57 or a file name)."""
     if not branch or '/' not in branch:
         return None
     rest = branch.split('/', 1)[1]
     for candidate in (rest, re.sub(r'-fix-\d+$', '', rest), re.sub(r'-\d+$', '', rest)):
-        if candidate in names:
+        if candidate in names or is_issue(candidate):
             return candidate
     return None

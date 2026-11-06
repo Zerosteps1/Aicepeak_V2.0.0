@@ -1,0 +1,40 @@
+# ADR-0009: Work orders as GitHub issues
+
+- Status: Accepted by the maintainer on 2026-11-06 ([FACTORY-009](../work/FACTORY-009.md)); delivered locally outside the factory pipeline (decision 10)
+- Date: 2026-11-06
+- Deciders: Felix (`ftrutschnig`)
+- Supersedes: decision 8 of [ADR-0007](0007-factory-cli.md) (work orders remain files)
+- Related: [way of working](../way-of-working.md), [command reference](../factory-cli.md), [GitHub operation](../../factory/github.md), [policy](../../factory/policy.md)
+
+## Context
+
+A work order was a file in `docs/work/` that became binding only after its own PR into the config branch was approved and merged and then synced to the validation branches. Writing one meant numbering, a work-order PR, approvals, a merge and a sync before any work started, and the scope (`allowed_paths`) had to be guessed by hand. GitHub issues already give every work order a unique number, a discussion and an edit history. The maintainers want the factory to help write good work orders without giving up what made a file binding: an exact, human-approved text that cannot change underneath a running PR.
+
+## Decision
+
+1. **The issue is the work order.** An issue opened by a configured maintainer with exactly one `factory-task` block is a work-order issue; its number is the ID (`#57`). Issues of anyone else are never work orders and never reviewed (the repository is public). `factory issue` creates the issue under the maintainer's own GitHub login; the factory itself never creates issues. The template is [.github/ISSUE_TEMPLATE/factory-task.md](../../.github/ISSUE_TEMPLATE/factory-task.md).
+2. **`/review` starts the issue reviewer.** A maintainer's new, unedited `/review` comment on a work-order issue makes the dispatcher start `factory.yml` on the config branch (inputs `issue`, `issue_command`, `comment`). The job `Issue review` calls the configured Claude model (`issue_review_model`, today Sonnet 5.5) once, without tools, through the existing Workload Identity Federation of `factory.yml` (same rule, environment `factory-control`); it holds no App key. The job `Issue review comments` holds the publisher key and no model credential: it posts one proposal comment with `allowed_paths` and reasons, bound to the SHA-256 of the reviewed title and description, and one findings comment with unclear, weak or missing sections, each with a proposed text that a human copies into the issue by hand. Nothing reviews automatically on open or edit; `limits.max_issue_reviews` bounds the reviews per issue.
+3. **`/accept` applies the proposal and approves.** GitHub sends no event for reactions, so a maintainer's `/accept` comment replaces the 👍. Once as many maintainer accounts as `work_order_approvals` have accepted the newest proposal of an unchanged issue, the job `Issue accept` sets `allowed_paths` to the proposal and `status` to `approved` in the `factory-task` block (nothing else in the description changes) and posts an authenticated approval record with the SHA-256 of the resulting title and description and the accepting comments.
+4. **The approval is pinned.** An issue is an approved work order only while it is open, opened by a current maintainer, the SHA-256 of its current title and description equals the newest authentic approval record, and the `/accept` comments named there still exist unedited from current maintainers. Any later edit, even of the title, withdraws the approval until it is accepted again. A `status: approved` written by hand counts for nothing.
+5. **Authentic means publisher App and unedited.** Records are comments of the publisher App (`performed_via_github_app`, bot author) on that issue whose body starts with the marker line and one JSON line, and whose `created_at` equals `updated_at`: maintainers can edit any comment, so an edited record never counts. Model text in the App's comments is escaped (no HTML, mentions, issue references, images, table or code-fence break-outs), so it cannot imitate a record.
+6. **One reader for every consumer.** `tools/factory/issues.py` reads both sources. The handoff names `"task":"#57"` (or a legacy file); the engine snapshot stores the pin (`task_pin`: issue, hash, record), every later stage re-checks it, the senior review and the correction read exactly the pinned text, `session.py` preflight/submit/watch/merge and `factory merge` compare it, and the CLI resolves `57`, `#57` and `issue-57`. Work branches are `<login>/issue-57[-k|-fix-k]`.
+7. **Legacy files keep working.** Existing work orders in `docs/work/` are read from the config branch tip as before; `factory submit workorders` and `factory sync workorders` remain for them and for config PRs. They are not migrated here; the maintainer handles them separately.
+8. **Permissions.** The publisher App gets Issues read and write. Only the issue jobs request Issues write; every other publisher token and the workflow jobs that re-check a pin (`Deterministic tests`, `Author correction`, `Push correction`) read issues at most. The dispatcher workflow reads issues.
+9. **Rollout guard.** The dispatcher routes issue commands only when the config branch's `factory/config.json` has `issue_review_model`, which arrives with the same promotion as the issue jobs in `factory.yml`.
+10. **Delivered locally outside the factory pipeline.** As for ADR-0007 and ADR-0008, the change touches control paths that the isolated author cannot write. The maintainer reviews the diff and decides how it reaches `testing`.
+
+## Consequences
+
+- Writing a work order no longer needs a work-order PR, a merge or a sync; approval is a comment on the issue, and the factory proposes the scope.
+- The binding text is on GitHub, not on the config branch. The pin keeps a running PR bound to exactly the approved text; GitHub's edit history shows who changed what, and the App's edits appear there as the factory's.
+- GitHub has no conditional update for issues: an edit that lands between the factory's read and its write is overwritten, stays visible in the edit history, and leaves the issue unapproved because the read-back no longer matches.
+- GitHub keeps one pending run per concurrency group (`issue-<N>`); a pending `/review` replaced by a later command needs a new comment. `/accept` recounts all accept comments, so a dropped one costs nothing.
+- An edit after approval does not re-run open PRs (issues trigger no pipeline run); their gates stay as they were, and `factory merge` refuses them because the pin no longer matches. Accept the issue again and re-run the PR.
+- Each review costs one model call (input about the template, the repository file list and the issue; at most `limits.issue_review_output_tokens` output), capped per issue.
+
+## Owner runbook after the merge
+
+1. Publisher App (ID 5510081): add the repository permission **Issues: Read and write** and accept the new permission on the installation in this repository. Do this before the promotion: from then on every publisher token requests Issues read.
+2. `python3 tools/factory/settings.py diff`, then `apply`, from a clean checkout of the config branch; `verify_apps` now expects Issues write for the publisher.
+3. Promote `testing` to `production` (`factory promote testing`, `/review`, merge on GitHub). The dispatcher change acts from `testing` once merged, the issue jobs and `issue_review_model` from `production`.
+4. Live acceptance, recorded in [factory/evidence.md](../../factory/evidence.md): `factory issue` → `/review` → two App comments → `/accept` → the edit history shows the App → `factory start workorder <N>` finds the work order. Negative probes: `/accept` from a non-maintainer account is ignored; an edit after approval blocks the work order and a PR referencing it.

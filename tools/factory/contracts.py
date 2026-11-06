@@ -103,11 +103,30 @@ def handoff(body, config):
         obj = json.loads(matches[0])
     except (TypeError, ValueError) as exc:
         raise Blocked("invalid handoff JSON") from exc
-    require(set(obj) == {"runner", "task", "owner"}, "handoff fields")
+    require(isinstance(obj, dict) and set(obj) == {"runner", "task", "owner"}, "handoff fields")
     require(obj["runner"] in config["runners"], "runner not allowlisted")
-    require(re.fullmatch(r"docs/work/[A-Za-z0-9_-]+\.md", obj["task"]) is not None, "invalid task reference")
+    # A work-order issue (#N, tools/factory/issues.py) or a work-order file on the config branch.
+    require(isinstance(obj["task"], str) and TASK_REFERENCE.fullmatch(obj["task"]) is not None, "invalid task reference")
     require(obj["owner"] in [m["login"] for m in config["maintainers"]], "unverified responsible maintainer")
     return obj
+
+
+TASK_REFERENCE = re.compile(r"docs/work/[A-Za-z0-9_-]+\.md|#[1-9][0-9]{0,8}")
+TASK_BLOCK = re.compile(r"```factory-task\s*\n(.*?)\n```", re.S)
+
+
+def task_spec(text):
+    """The approved factory-task block of a work order, from a file or an issue description."""
+    blocks = TASK_BLOCK.findall(text)
+    require(len(blocks) == 1, 'approved task metadata absent')
+    spec = json.loads(blocks[0])
+    require(isinstance(spec, dict) and set(spec) == {'status', 'kind', 'allowed_paths'}, 'invalid task metadata')
+    require(spec['status'] == 'approved' and spec['kind'] in ('factory', 'product', 'smoke'), 'task not approved')
+    require(isinstance(spec['allowed_paths'], list) and spec['allowed_paths'], 'task scope absent')
+    for path in spec['allowed_paths']:
+        require(isinstance(path, str), 'invalid task scope')
+        safe_path(path.rstrip('/'))
+    return spec
 
 
 def is_control(path, config):

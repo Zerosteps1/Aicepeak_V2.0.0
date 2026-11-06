@@ -21,7 +21,7 @@ sys.path[:0] = [str(HERE), str(HERE.parent)]
 import branches  # noqa: E402  standard library only
 import helptext  # noqa: E402  standard library only
 
-VERSION = '0.2.0'
+VERSION = '0.3.0'
 LOCAL = ('status', 'continue', 'stop', 'cancel')  # no network, no policy
 REEXEC = 'FACTORY_CLI_REEXEC'
 REEXECS = int(os.environ.pop(REEXEC, '0') or 0)  # never inherited by editors or other children
@@ -40,9 +40,9 @@ def build_parser():
                                    epilog=helptext.epilog(key), formatter_class=argparse.RawDescriptionHelpFormatter)
 
     item = command('issue')
-    item.add_argument('--title', help='work order title (you can also write it in the editor)')
+    item.add_argument('--title', help='issue title (you can also write it in the editor)')
     item.add_argument('--kind', choices=('factory', 'product', 'smoke'), default='factory', help='work order kind (default: factory)')
-    item.add_argument('--noedit', action='store_true', help='only create the file and print its path')
+    item.add_argument('--noedit', action='store_true', help='create the issue from the template without the editor (needs --title)')
     item = command('submit')
     item.add_argument('target', nargs='?', choices=('workorders',), help='`workorders`: submit work orders instead')
     item.description = helptext.description('submit') + '\n\n`factory submit workorders`: ' + helptext.COMMANDS['submit workorders']['what']

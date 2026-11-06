@@ -4,14 +4,14 @@
 
 `factory` manages two checkouts of this repository for you:
 
-- **Control checkout** (default `aicepeak-control-checkout`): trusted CLI code on the branch you follow, by default the config branch `production` ([factory use branch](factory-cli.md#factory-use-branch)). `factory` verifies and fast-forwards it before every command and runs trusted code only from it. Never change anything in it; `factory` refuses to run while it differs from that branch ([why](software-factory.md#the-control-checkout)). Every rule and every work order comes from the config branch tip.
-- **Candidate checkout** (default `aicepeak-candidate`): your working clone. Work orders, author results and fixes land here; you review, stage and commit here.
+- **Control checkout** (default `aicepeak-control-checkout`): trusted CLI code on the branch you follow, by default the config branch `production` ([factory use branch](factory-cli.md#factory-use-branch)). `factory` verifies and fast-forwards it before every command and runs trusted code only from it. Never change anything in it; `factory` refuses to run while it differs from that branch ([why](software-factory.md#the-control-checkout)). Every rule comes from the config branch tip; work orders are GitHub issues (legacy work-order files also come from the config branch tip).
+- **Candidate checkout** (default `aicepeak-candidate`): your working clone. Author results and fixes land here; you review, stage and commit here.
 
 You no longer `cd` between them: run `factory` from anywhere, usually from the candidate. Both are created once by the [installer](factory-cli.md#install).
 
 ## Daily use, step by step
 
-The flow is `factory issue` → `factory submit workorders` → approval and merge on GitHub → `factory sync workorders` → `factory start workorder` → `factory submit` → `factory submit --finished` → `factory watch` → `factory merge` → later `factory promote`. Which branch each step targets is explained under [branches and promotion](#branches-and-promotion).
+The flow is `factory issue` → `/review` and `/accept` on the issue → `factory start workorder` → `factory submit` → `factory submit --finished` → `factory watch` → `factory merge` → later `factory promote`. Which branch each step targets is explained under [branches and promotion](#branches-and-promotion). Work orders are GitHub issues ([ADR-0009](decisions/0009-issues-as-work-orders.md)); the issue number is the work order's ID.
 
 1. **Write a work order.** One work order per feature, not per commit.
 
@@ -19,29 +19,31 @@ The flow is `factory issue` → `factory submit workorders` → approval and mer
    factory issue --title "Export energy costs as CSV"
    ```
 
-   `factory issue` creates `docs/work/<KIND>-<NNN>.md` in the candidate with the next free number, status `draft` and you as handoff owner, and opens it in your editor. Write goal, non-goals, acceptance criteria and the exact `allowed_paths` until you agree with them ([field rules](work/TEMPLATE.md)). A draft authorizes nothing.
+   `factory issue` opens the [work-order template](../.github/ISSUE_TEMPLATE/factory-task.md) in your editor (`$VISUAL`/`$EDITOR`, `vi` otherwise), with the title as first line, status `draft` and the chosen `--kind`. After you save and close the editor and confirm, it creates the issue under your own GitHub login and prints its number. You can also open it on GitHub with the "Factory work order" issue template. Only issues opened by a configured maintainer count; a draft authorizes nothing.
 
-2. **Activate the work order.** A work order becomes active only once it is approved and merged into the config branch (`production`), because the factory reads work orders only from there.
+2. **Let the factory review it, then accept it.** Comment on the issue:
 
-   ```sh
-   factory submit workorders
+   ```text
+   /review
    ```
 
-   It checks every changed work order against the gate's block rules, asks whether each draft should become `approved` (the only status the factory accepts), commits only the work orders on `<login>/new-workorders` from the config branch tip, pushes and opens the PR into the config branch (no AI preflight: maintainer approvals decide). Other changes in your candidate stay untouched; the submitted files move to the work-order branch. The PR needs only approving reviews at its current head from as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) and `factory/deterministic`; it never needs `/review` or an AI review, and `/bypass` does not apply. Then a maintainer merges it on GitHub. Then copy it to the validation branches:
+   The factory's issue reviewer (Claude Sonnet, without tools) posts two comments as the publisher App: a proposal of `allowed_paths` with a reason for each (new paths and control paths are marked), and a list of unclear, weak or missing sections, each with a proposed text. Copy what you agree with into the description by hand and comment `/review` again; each review costs one model call, at most `limits.max_issue_reviews` per issue. When the proposal is right, comment:
 
-   ```sh
-   factory sync workorders
+   ```text
+   /accept
    ```
 
-   To deactivate a work order later, see [stop or cancel a task](#stop-or-cancel-a-task).
+   Once as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) have accepted the newest proposal of the unchanged issue, the factory writes the proposed paths and `status: approved` into the `factory-task` block (shown as the App in the description's edit history) and posts the approval. Any later edit of the title or the description withdraws the approval until you `/review` and `/accept` again. A `status` set to `approved` by hand counts for nothing.
 
-3. **Implement.** Start the [isolated author](software-factory.md#the-isolated-author-session) on the merged work order:
+   Legacy work-order files in `docs/work/` keep working: they are changed with `factory submit workorders` (a PR into the config branch that needs `work_order_approvals` maintainer approvals) and copied to the validation branches with `factory sync workorders`. To withdraw a work order later, see [stop or cancel a task](#stop-or-cancel-a-task).
+
+3. **Implement.** Start the [isolated author](software-factory.md#the-isolated-author-session) on the approved work order, here issue #57:
 
    ```sh
-   factory start workorder 8
+   factory start workorder 57
    ```
 
-   The run goes author → advisory Astra preflight → at most two corrections while P0/P1 findings remain → apply, in the background. You see each step, one line per author action and the cost estimate. Ctrl-C only detaches; `factory continue 8` reattaches. The result lands **unstaged** on `<login>/<ID>`, branched from the validation branch routed for the work order's kind (today `testing`), in your candidate; nothing is committed or pushed. If it cannot be applied safely (files outside `allowed_paths`, uncommitted changes, another branch checked out, …), the run keeps the patch and prints the exact commands. Candidate scripts never run on your credential-bearing host: the trusted pipeline runs the tests in an isolated job without secrets or network.
+   The run goes author → advisory Astra preflight → at most two corrections while P0/P1 findings remain → apply, in the background. You see each step, one line per author action and the cost estimate. Ctrl-C only detaches; `factory continue 57` reattaches. The result lands **unstaged** on `<login>/issue-57` (`<login>/<ID>` for a legacy file), branched from the validation branch routed for the work order's kind (today `testing`), in your candidate; nothing is committed or pushed. If it cannot be applied safely (files outside `allowed_paths`, uncommitted changes, another branch checked out, …), the run keeps the patch and prints the exact commands. Candidate scripts never run on your credential-bearing host: the trusted pipeline runs the tests in an isolated job without secrets or network.
 
    The container keeps control files (`.agents/`, native adapters, `AGENTS.md`, `CLAUDE.md`, `factory/`, `tools/factory/`) read-only; for those the author only proposes a change, and a maintainer applies it by hand, regenerates adapters and submits a manually managed PR ([protected factory changes](../factory/clients.md#protected-factory-changes)). `factory start` refuses work orders whose `allowed_paths` all lie there.
 
@@ -50,10 +52,10 @@ The flow is `factory issue` → `factory submit workorders` → approval and mer
    ```sh
    git diff
    git add -p
-   factory review "Check the acceptance criteria" --workorder 8
+   factory review "Check the acceptance criteria" --workorder 57
    ```
 
-5. **Commit and push.** `factory submit` commits only the staged files (title `<ID>: <work order title>` unless you give `--title`) and pushes the branch, never a listed branch and never with force. Repeat steps 4 and 5 as often as needed.
+5. **Commit and push.** `factory submit` commits only the staged files (title `#57: <work order title>` unless you give `--title`) and pushes the branch, never a listed branch and never with force. Repeat steps 4 and 5 as often as needed.
 
    ```sh
    factory submit --desc "Adds the endpoint and tests"
@@ -129,7 +131,7 @@ The author uses `factory-fix-review`, which answers every point as done, dispute
 | A watcher, `submit` or review loop | Ctrl-C. | `session.py` stops the local reviewer and its children and prints `STOPPED: local session cancelled` (exit code 130). The PR stays `awaiting-senior-review` until a device watches again (`factory watch <n>`). A review that was already claimed counts against the per-PR review limit; if it is stuck, start a deliberate [retry](#restart-a-stuck-run). |
 | A PR, temporarily | Convert it back to draft: `gh pr ready <n> --undo`. | Drafts get a blocking mark and are never approved. Mark it ready again with `gh pr ready <n>`, or with `factory submit --finished` on its branch after a passing preflight. |
 | A PR, for good | Close it with a reason: `gh pr close <n> --comment '<reason>'`. | The dispatcher ignores closed PRs and the watcher ends with status `closed`. A workflow run that already started is not cancelled by the close; cancel it in the repository's Actions tab if you want to stop its costs. |
-| A work order | In the candidate, change its `status` from `approved` to another value such as `draft` (or delete the file), then `factory submit workorders` and decline the approval; the PR into the config branch needs the usual approvals. Close the PRs that reference it. | The engine reads work orders only from the config branch and accepts only `approved`, so every PR that references the order is blocked once that PR is merged. `factory sync workorders` never changes or deletes copies on validation branches; they keep the old text, which the factory does not read. Numbers of deleted work orders are never reused. |
+| A work order | Close its issue, or edit it (any edit withdraws the approval until `/review` and `/accept` again). Close the PRs that reference it. For a legacy file: change its `status` from `approved` to another value such as `draft` (or delete the file), then `factory submit workorders` and decline the approval; the PR into the config branch needs the usual approvals. | Every stage re-checks the pinned issue, so a PR that references a closed or edited work-order issue is blocked at its next stage and `factory merge` refuses it. A legacy file is read only from the config branch and only as `approved`, so its PRs are blocked once that PR is merged; `factory sync workorders` never changes or deletes copies on validation branches. Numbers of deleted legacy work orders are never reused. |
 
 ## Restart a stuck run
 
@@ -147,11 +149,11 @@ A local factory run that hangs is ended with `factory cancel workorder <n>` and 
 
 Changes travel in three levels ([diagram](factory-branches.md), [decision](decisions/0008-branch-model.md)):
 
-1. **Feature branch** (`<login>/<ID>`): where you and the author work. Its PR targets the validation branch that the work order's kind is routed to.
+1. **Feature branch** (`<login>/issue-<N>`, or `<login>/<ID>` for a legacy work-order file): where you and the author work. Its PR targets the validation branch that the work order's kind is routed to.
 2. **Validation branch** (today `testing`, the GitHub default branch): protected and gated automatically. Gate `full` runs the deterministic tests, the binding Astra review and corrections; gate `tests` runs only the deterministic tests; gate `none` runs nothing. Maintainers may also push to it directly.
 3. **Production branch** (today `production`): protected; nobody pushes to it. It receives only promotions from a validation branch and work-order or config PRs.
 
-All rules come from the **config branch** (today `production`): the gate code, `factory/config.json`, the policy and the work orders. So a new work order or a changed branch list counts only once it is merged there. Its PR changes only `docs/work/*.md` and/or `factory/config.json` and needs approving reviews at its current head from as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) (its production check runs again after every review, dismissals included) and `factory/deterministic`; it never needs `/review` or an AI review (a `/review` on it is refused, and its pipeline comment says that maintainer approvals decide), and `/bypass` does not work on it. The trusted tests of `factory/deterministic` run against its changed `factory/config.json` but never depend on its branch list or config branch, so a config PR passes them. Then `factory sync workorders` pushes new work orders to every validation branch.
+All rules come from the **config branch** (today `production`): the gate code, `factory/config.json`, the policy and the legacy work-order files (work orders themselves are approved issues). So a changed branch list or legacy work-order file counts only once it is merged there. Its PR changes only `docs/work/*.md` and/or `factory/config.json` and needs approving reviews at its current head from as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) (its production check runs again after every review, dismissals included) and `factory/deterministic`; it never needs `/review` or an AI review (a `/review` on it is refused, and its pipeline comment says that maintainer approvals decide), and `/bypass` does not work on it. The trusted tests of `factory/deterministic` run against its changed `factory/config.json` but never depend on its branch list or config branch, so a config PR passes them. Then `factory sync workorders` pushes new work orders to every validation branch.
 
 Every factory check is bound to the config tip. A push to the config branch therefore re-runs every open PR into a gated validation branch or another production branch (for a `full` gate this means a new AI review); PRs never get `needs-author-action` for a moved config tip. A `/bypass` given under the earlier config tip no longer counts on the re-run: its comment asks a maintainer for a new `/bypass`, and the author is not asked to act.
 

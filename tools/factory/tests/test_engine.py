@@ -4,6 +4,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,8 @@ import branches
 import bypass
 import contracts
 import engine
+import issue_fixture
+import issues
 import verify
 from contracts import Blocked
 
@@ -113,6 +116,23 @@ class Transport:
         return '```factory-task\n'+json.dumps(self.task)+'\n```'
 
 
+class IssueTransport(Transport):
+    """The PR transport plus a work-order issue #57 on the same faked repository."""
+    def __init__(self, config):
+        super().__init__(config)
+        self.hub = issue_fixture.IssueHub(config)
+
+    def request(self,method,path,data=None):
+        if self.hub.owns(path):
+            return self.hub.request(method,path,data)
+        return super().request(method,path,data)
+
+    def pages(self,path,field=None):
+        if self.hub.owns(path):
+            return self.hub.pages(path,field)
+        return super().pages(path,field)
+
+
 class EngineBoundaries(unittest.TestCase):
     def setUp(self):
         # Config PRs change the candidate's branch model; every other value comes from the candidate.
@@ -174,6 +194,37 @@ class EngineBoundaries(unittest.TestCase):
         self.assertEqual(draft['reservation']['reserved_usd'],0)
         self.assertEqual(ready['reservation']['reserved_usd'],0)
 
+    def test_an_issue_work_order_is_pinned_and_any_later_edit_makes_the_run_stale(self):
+        self.transport=IssueTransport(self.config)
+        self.transport.hub.issue()
+        self.transport.hub.approve(paths=('example.txt',))
+        self.transport.pr['body']='```factory-handoff\n'+json.dumps({'runner':'claude','task':'#57','owner':'test-human'})+'\n```'
+        snapshot=self.capture_snapshot()
+        order=issues.approved(self.transport.hub,self.config,57)
+        self.assertEqual(snapshot['task'],{'status':'approved','kind':'factory','allowed_paths':['example.txt']})
+        self.assertEqual(snapshot['task_pin'],issues.pin_of(order))
+        self.assertEqual(self.transport.texts,[])  # no work-order file was read
+        engine.unchanged(self.transport,snapshot,self.config)
+        self.assertEqual(issues.text_for(self.transport,self.config,'fixture/repo','#57',POLICY,snapshot['task_pin']),order['text'])
+        issue=self.transport.hub.issues[57]
+        issue['body']+='\nAC-3: more scope.'
+        with self.assertRaisesRegex(Blocked,'edited after its approval'):
+            engine.unchanged(self.transport,snapshot,self.config)
+        self.transport.hub.approve(paths=('example.txt',))  # accepted again: another work order for this run
+        with self.assertRaisesRegex(Blocked,'changed since this run'):
+            engine.unchanged(self.transport,snapshot,self.config)
+
+    def test_an_unapproved_or_out_of_scope_issue_blocks_the_snapshot(self):
+        self.transport=IssueTransport(self.config)
+        self.transport.hub.issue()
+        self.transport.pr['body']='```factory-handoff\n'+json.dumps({'runner':'claude','task':'#57','owner':'test-human'})+'\n```'
+        with self.assertRaisesRegex(Blocked,'not an approved work order'):
+            self.capture_snapshot()
+        self.transport.hub.approve(paths=('docs/',))
+        with self.assertRaisesRegex(Blocked,'PR outside approved task'):
+            self.capture_snapshot()
+        self.assertEqual(self.senior_checks(),[])
+
     def test_rename_cannot_escape_task_source_or_control_classification(self):
         self.transport.files=[{'filename':'example.txt','previous_filename':'.github/control.yml','status':'renamed'}]
         with self.assertRaisesRegex(Blocked,'rename source'):
@@ -203,11 +254,30 @@ class EngineBoundaries(unittest.TestCase):
         settings=json.loads((ROOT/'factory/github-settings.json').read_text())
         self.assertNotIn('OPENAI_API_KEY',settings['environment_secrets']+settings['optional_environment_secrets'])
 
+    def test_issue_runs_never_start_a_pr_job_and_pr_runs_never_start_an_issue_job(self):
+        workflow=(ROOT/'.github/workflows/factory.yml').read_text()
+        condition=lambda name:re.search(r'\n    if: (.*)\n',job(workflow,name))[1]
+        for name in ('wif-smoke','snapshot','review-coordinate','correction','review-request','bypass'):
+            self.assertIn("inputs.issue == '0'",condition(name),name)
+        for name in ('issue-review','issue-accept'):
+            self.assertIn("inputs.pr == '0'",condition(name),name)
+            self.assertIn("inputs.issue != '0'",condition(name),name)
+        self.assertEqual(condition('issue-publish'),"always() && needs.issue-review.result != 'skipped'")
+        # Jobs that re-check a pinned issue with the workflow token may read issues; none may write them.
+        for name in ('tests','author','push','issue-review'):
+            self.assertIn('issues: read',job(workflow,name),name)
+        self.assertNotIn('issues: write',workflow)
+
     def test_author_job_federates_instead_of_holding_an_anthropic_key(self):
         workflow=(ROOT/'.github/workflows/factory.yml').read_text()
         self.assertIn('id-token: write',job(workflow,'author'))
         self.assertIn('id-token: write',job(workflow,'wif-smoke'))
-        self.assertEqual(workflow.count('id-token: write'),2)
+        # The issue reviewer federates too, without any App key; the jobs holding the publisher key never federate.
+        self.assertIn('id-token: write',job(workflow,'issue-review'))
+        self.assertNotIn('APP_PRIVATE_KEY',job(workflow,'issue-review'))
+        for name in ('issue-publish','issue-accept'):
+            self.assertNotIn('id-token',job(workflow,name))
+        self.assertEqual(workflow.count('id-token: write'),3)
         self.assertNotIn('ANTHROPIC_API_KEY',workflow)
         settings=json.loads((ROOT/'factory/github-settings.json').read_text())
         self.assertNotIn('ANTHROPIC_API_KEY',settings['environment_secrets']+settings['optional_environment_secrets'])

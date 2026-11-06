@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path[:0] = [str(ROOT / 'tools/factory/cli'), str(ROOT / 'tools/factory')]
+sys.path[:0] = [str(ROOT / 'tools/factory/cli'), str(ROOT / 'tools/factory'), str(Path(__file__).resolve().parent)]
 import branch_fixture  # noqa: E402  fixtures never take the candidate's branch model (config PRs change it)
 import branches  # noqa: E402
 import branching  # noqa: E402
@@ -29,6 +29,8 @@ import pipeline  # noqa: E402
 import runs  # noqa: E402
 import workorders  # noqa: E402
 import engine  # noqa: E402
+import issue_fixture  # noqa: E402
+import issues  # noqa: E402
 import session  # noqa: E402
 from contracts import Blocked  # noqa: E402
 
@@ -51,7 +53,7 @@ def order(name, kind='factory', status='approved', paths=('docs/',)):
 
 class GitHub:
     def __init__(self):
-        self.pulls, self.created = [], []
+        self.pulls, self.created, self.issues = [], [], []
 
     def pages(self, path, field=None):
         return self.pulls if '/pulls?state=open' in path else []
@@ -60,6 +62,9 @@ class GitHub:
         if method == 'POST' and path == f'/repos/{REPOSITORY}/pulls':
             self.created.append(data)
             return {'number': 77, 'html_url': f'https://github.com/{REPOSITORY}/pull/77'}
+        if method == 'POST' and path == f'/repos/{REPOSITORY}/issues':
+            self.issues.append(data)
+            return {'number': 58, 'html_url': f'https://github.com/{REPOSITORY}/issues/58'}
         raise AssertionError((method, path))
 
 
@@ -178,8 +183,14 @@ class WorkOrderTests(Repos):
         self.assertEqual(workorders.resolve('factory-003', names), 'FACTORY-003')
         with self.assertRaisesRegex(Blocked, 'ARCH-001, FACTORY-001'):
             workorders.resolve('1', names)
+        # A number no file has names the work-order issue with that number; files only (sync) refuses it.
+        self.assertEqual(workorders.resolve('9', names), 'issue-9')
+        for reference in ('#57', 'issue-57', '#057', 'ISSUE-57'):
+            self.assertEqual(workorders.resolve(reference, names), 'issue-57')
         with self.assertRaisesRegex(Blocked, 'no work order 9'):
-            workorders.resolve('9', names)
+            workorders.resolve('9', names, allow_issues=False)
+        with self.assertRaisesRegex(Blocked, 'no work order #3'):
+            workorders.resolve('#3', names, allow_issues=False)
 
     def test_template_fill_names_every_placeholder_until_completed(self):
         template = (ROOT / workorders.TEMPLATE).read_text()
@@ -218,6 +229,36 @@ class WorkOrderTests(Repos):
         self.assertEqual(workorders.branch_order('ftrutschnig/FACTORY-SMOKE', names), 'FACTORY-SMOKE')
         self.assertIsNone(workorders.branch_order('feature/csv', names))
         self.assertIsNone(workorders.branch_order('testing', names))
+        for branch in ('ftrutschnig/issue-57', 'ftrutschnig/issue-57-2', 'zerosteps1/issue-57-fix-3'):
+            self.assertEqual(workorders.branch_order(branch, names), 'issue-57')
+        self.assertIsNone(workorders.branch_order('ftrutschnig/issue-x', names))
+
+    def test_issue_work_orders_have_their_own_task_and_label(self):
+        self.assertEqual((workorders.task_of('issue-57'), workorders.label('issue-57')), ('#57', '#57'))
+        self.assertEqual((workorders.task_of('FACTORY-003'), workorders.label('FACTORY-003')),
+                         ('docs/work/FACTORY-003.md', 'FACTORY-003'))
+        self.assertEqual(workorders.title_of(f'# #57 – CSV export\n\nbody'), 'CSV export')
+
+    def test_issue_work_orders_are_read_through_github_and_legacy_files_at_the_config_tip(self):
+        config = branch_fixture.load(ROOT)
+        hub = issue_fixture.IssueHub(config)
+        hub.issue()
+        with self.assertRaisesRegex(Blocked, 'not an approved work order'):
+            workorders.read(hub, self.control, config, self.tip, 'issue-57')
+        hub.approve(paths=('docs/',))
+        text, spec = workorders.read(hub, self.control, config, self.tip, 'issue-57')
+        self.assertEqual((spec['allowed_paths'], text.split('\n', 1)[0]), (['docs/'], '# #57 – CSV export'))
+        text, spec = workorders.read(None, self.control, config, self.tip, 'FACTORY-003')
+        self.assertEqual(spec['allowed_paths'], ['docs/', 'tools/factory/'])
+
+    def test_the_issue_template_is_a_draft_work_order_body(self):
+        template = (ROOT / workorders.ISSUE_TEMPLATE).read_text()
+        for kind in ('factory', 'product', 'smoke'):
+            body = workorders.issue_body(template, kind)
+            self.assertFalse(body.startswith('---'))
+            self.assertEqual(issues.draft_spec(body), {'status': 'draft', 'kind': kind, 'allowed_paths': []})
+            for section in ('## Goal', '## Non-goals', '## Acceptance criteria', '## Verification', '## Open questions'):
+                self.assertIn(section, body)
 
 
 class CheckoutTests(Repos):
@@ -437,12 +478,44 @@ class CommandTests(Repos):
             commands.submit_workorders(self.ctx())
         self.assertNotIn('new-workorders', git(self.origin, 'branch', '--list'))
 
-    def test_issue_numbers_come_from_the_config_branch(self):
-        self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009'))
-        self.advance_origin('docs/work/FACTORY-012.md', 'testing', order('FACTORY-012'))  # numbers live on production
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(commands.issue(self.ctx(), 'CSV export', noedit=True), 0)
-        self.assertTrue((self.candidate / 'docs/work/FACTORY-010.md').is_file())
+    def test_issue_creates_a_github_issue_under_the_maintainer_login_and_no_file(self):
+        ctx = self.ctx()
+        with contextlib.redirect_stdout(io.StringIO()) as shown:
+            self.assertEqual(commands.issue(ctx, 'CSV export', kind='smoke', noedit=True), 0)
+        [created] = ctx.gh.issues
+        self.assertEqual(created['title'], 'CSV export')
+        self.assertEqual(issues.draft_spec(created['body']), {'status': 'draft', 'kind': 'smoke', 'allowed_paths': []})
+        self.assertIn(f'Created work-order issue #58: https://github.com/{REPOSITORY}/issues/58', shown.getvalue())
+        self.assertIn('`factory start workorder 58`', shown.getvalue())
+        self.assertEqual(git(self.candidate, 'status', '--porcelain'), '')
+        with self.assertRaisesRegex(Blocked, '--noedit needs --title'):
+            commands.issue(ctx, None, noedit=True)
+        self.assertEqual(len(ctx.gh.issues), 1)
+
+    def test_issue_draft_is_written_in_the_editor_and_created_only_after_confirmation(self):
+        ctx = self.ctx()
+        def editor(command, check=False):
+            draft = Path(command[-1])
+            draft.write_text(draft.read_text().replace('# Short outcome-oriented title', '# Edited title', 1))
+        with mock.patch.dict(os.environ, {'VISUAL': 'fake-editor --wait'}), \
+                mock.patch.object(commands.subprocess, 'run', side_effect=editor) as run, \
+                mock.patch.object(common, 'ask', return_value=False), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(Blocked, 'nothing created; your draft stays in'):
+                commands.issue(ctx)
+        self.assertEqual(run.call_args[0][0][:2], ['fake-editor', '--wait'])
+        self.assertEqual(ctx.gh.issues, [])
+        with mock.patch.dict(os.environ, {'VISUAL': 'fake-editor'}), \
+                mock.patch.object(commands.subprocess, 'run', side_effect=editor), \
+                mock.patch.object(common, 'ask', return_value=True), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(commands.issue(ctx), 0)
+        self.assertEqual(ctx.gh.issues[0]['title'], 'Edited title')
+        self.assertFalse(ctx.gh.issues[0]['body'].startswith('# '))
+        with mock.patch.dict(os.environ, {'VISUAL': 'fake-editor'}), \
+                mock.patch.object(commands.subprocess, 'run'), mock.patch.object(common, 'ask', return_value=True), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(Blocked, 'the issue needs a title'):
+                commands.issue(ctx)  # the placeholder title was left unchanged
+        self.assertEqual(len(ctx.gh.issues), 1)
 
     def test_submit_commits_only_staged_files_and_refuses_listed_branches(self):
         with self.assertRaisesRegex(Blocked, 'never on testing, a listed validation branch'):
@@ -1171,7 +1244,7 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertIn('When to use it', result.stdout)
             result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), '--version'],
                                     env=env, capture_output=True, text=True, timeout=30)
-            self.assertEqual((result.returncode, result.stdout), (0, 'factory 0.2.0\n'), result.stderr)
+            self.assertEqual((result.returncode, result.stdout), (0, 'factory 0.3.0\n'), result.stderr)
             result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), 'add',
                                      'validation', 'branch', 'staging', '--review', 'no'],
                                     env=env, capture_output=True, text=True, timeout=30)

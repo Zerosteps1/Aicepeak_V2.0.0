@@ -53,6 +53,8 @@ def build_parser():
     item.add_argument('--desc', help='commit description; with --finished also the PR description')
     item.add_argument('--finished', action='store_true', help='open the pull request for the work order (or watch the open one)')
     item.add_argument('--draft', action='store_true', help='with --finished: open the PR as a draft')
+    item.add_argument('--keep-open', action='store_true',
+                      help='with --finished: the PR leaves the work-order issue open (one PR of several)')
     item.add_argument('--workorder', help='work order when the branch name does not name one (7, 007 or FACTORY-007)')
     item.add_argument('--context', action='append', default=[], help='extra repository file for the preflight (repeatable)')
     for name in ('start', 'stop', 'cancel'):
@@ -132,6 +134,8 @@ def misuse(args):
         if not set(kinds) <= set(branches.KINDS) or len(set(kinds)) != len(kinds):
             return '--kinds takes distinct values of ' + ', '.join(branches.KINDS)
         args.kinds = kinds
+    if args.command == 'submit' and args.target != 'workorders' and args.keep_open and not args.finished:
+        return '--keep-open needs --finished'
     if args.command == 'sync':
         return SYNC_REPLACED
     return None
@@ -292,10 +296,11 @@ def dispatch(args):
         return commands.issue(ctx, args.title, args.kind, args.noedit)
     if args.command == 'submit':
         if args.target == 'workorders':
-            ctx.common.require(not (args.title or args.desc or args.finished or args.draft or args.workorder or args.context),
-                               '`factory submit workorders` takes no further options')
+            ctx.common.require(not (args.title or args.desc or args.finished or args.draft or args.keep_open or args.workorder
+                                    or args.context), '`factory submit workorders` takes no further options')
             return commands.submit_workorders(ctx)
-        return commands.submit(ctx, args.title, args.desc, args.finished, args.draft, args.workorder, args.context)
+        return commands.submit(ctx, args.title, args.desc, args.finished, args.draft, args.workorder, args.context,
+                               keep_open=args.keep_open)
     if args.command == 'start':
         return pipeline.launch(ctx, 'start', args.workorder)
     if args.command in ('fix', 'hotfix'):

@@ -81,6 +81,7 @@ Details: [way of working, steps 3–6](docs/way-of-working.md#daily-use-step-by-
 - **Watcher or review:** press Ctrl-C. The PR waits until a device watches again.
 - **Pause a PR:** convert it to draft with `gh pr ready <n> --undo`.
 - **Cancel a PR:** close it with a reason: `gh pr close <n> --comment '<reason>'`.
+- **Finish a work order:** its PR says `Closes #57`, so merging it into `testing` closes the issue. Submit earlier parts of a work order split into several PRs with `factory submit --finished --keep-open`; reopen a closed issue to continue it.
 - **Withdraw a work order:** close its issue (or edit it, which withdraws the approval). Every PR that references it is then blocked. A legacy file: change its `status` from `approved` and submit that with `factory submit workorders`.
 
 Details and side effects: [way of working, stop or cancel a task](docs/way-of-working.md#stop-or-cancel-a-task).

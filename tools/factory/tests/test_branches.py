@@ -107,6 +107,14 @@ class Problems(unittest.TestCase):
                        lambda c: c.pop('default_branch')):
             self.assertIn('default_branch must be a validation branch', self.problems(change))
 
+    def test_work_order_approvals_is_a_count_of_maintainers(self):
+        self.assertEqual(branches.parse(self.config).work_order_approvals, 2)  # default: the original rule
+        self.assertEqual(branches.parse({**self.config, 'work_order_approvals': 1}).work_order_approvals, 1)
+        for value in (0, 2, -1, True, '1', 1.0, None):  # model_config has one maintainer
+            with self.subTest(value=value):
+                self.assertIn('work_order_approvals must be a whole number from 1 to the number of maintainers',
+                              branches.problems({**self.config, 'work_order_approvals': value}))
+
     def test_every_violation_is_named_in_one_pass(self):
         def change(config):
             config['branches']['validation'][0].update(name=RETIRED)

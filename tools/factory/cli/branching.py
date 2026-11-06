@@ -58,7 +58,7 @@ def proposed(repo, sha, tip, after):
 
 def propose(ctx, change, title, slug, summary, steps, target=None):
     """Push a branch from the tip of a production branch (default: the config branch) whose only change is
-    factory/config.json, then open the PR into it through session.py (a work-order/config PR: two maintainer
+    factory/config.json, then open the PR into it through session.py (a work-order/config PR: maintainer
     approvals, merged on GitHub). A branch left by an earlier attempt is reused when it holds exactly this proposal and
     replaced only after confirmation; an open PR of it is reported and left alone."""
     name, candidate = ctx.model.config_branch, ctx.candidate
@@ -116,14 +116,15 @@ def propose(ctx, change, title, slug, summary, steps, target=None):
         body = scratch / 'body.md'
         body.write_text(f'{summary}, proposed with `factory`.\n\nOnly `{CONFIG}` changes (its `branches` and '
                         '`config_branch` values, checked by `tools/factory/branches.py`). This is a work-order/config PR '
-                        f'into {into}: it needs approving reviews from two maintainers at its current head, `/bypass` '
+                        f'into {into}: it needs approving reviews from {ctx.model.work_order_approvals} maintainer '
+                        f'account{"" if ctx.model.work_order_approvals == 1 else "s"} at its current head, `/bypass` '
                         'does not apply, and a maintainer merges it on GitHub. It cannot carry `docs/factory-branches.md`: '
                         'regenerate the diagram with `factory branches` in a later change.\n\nOwner steps after the merge:\n\n'
                         + ''.join(f'{n}. {step}\n' for n, step in enumerate(steps, 1)))
-        # No --task: a config PR has no advisory preflight; two maintainer approvals and factory/deterministic decide.
+        # No --task: a config PR has no advisory preflight; maintainer approvals and factory/deterministic decide.
         created = commands.session_submit(ctx, repo, None, title, body, base=target)
     if created:
-        say(commands.APPROVALS + ' The owner steps are in the pull request.')
+        say(commands.approvals(ctx.model) + ' The owner steps are in the pull request.')
     return 0 if created else 1
 
 

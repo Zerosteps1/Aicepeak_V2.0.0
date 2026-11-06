@@ -225,7 +225,8 @@ else
   tip="$(git -C "$control" rev-parse "refs/remotes/origin/$branch")"
   current="$(git -C "$control" symbolic-ref --quiet --short HEAD || true)"
   local_tip="$(git -C "$control" rev-parse --verify --quiet "refs/heads/$branch" || true)"
-  if [ -n "$(safe_git -C "$control" status --porcelain --ignored)" ] \
+  # Finder's .DS_Store files are the only extra files tolerated (as session.py clean_tree does); stage 2 checks them.
+  if [ -n "$(safe_git -C "$control" status --porcelain --ignored | grep -Ev '^!! (.*/)?\.DS_Store$' || true)" ] \
       || { [ -n "$local_tip" ] && ! git -C "$control" merge-base --is-ancestor "$local_tip" "$tip"; }; then
     echo "control checkout $control is not a clean clone of $branch; fix it or choose another --control-dir" >&2
     exit 1

@@ -80,12 +80,10 @@ def author_keys():
 
 
 def docker_ready():
-    docker, host = common.tool('docker'), common.docker_host()
-    env = {**common.child_env(), **({'DOCKER_HOST': host} if host else {})}
-    require(subprocess.run([docker, 'info', '--format', '{{.ServerVersion}}'], capture_output=True, env=env,
-                           timeout=30).returncode == 0, 'Docker is not running: start Docker Desktop and retry')
-    require(subprocess.run([docker, 'image', 'inspect', clients.IMAGE], capture_output=True, env=env, timeout=30).returncode == 0,
-            f'author image {clients.IMAGE} is missing: `factory doctor` prints the build command')
+    host, problem = common.wait_for_docker(clients.IMAGE)
+    require(problem != 'docker', f'Docker did not answer within {common.DOCKER_WAIT} s, not even after starting Docker '
+            'Desktop: check that it is installed (docs/dev-setup.md)')
+    require(problem != 'image', f'author image {clients.IMAGE} is missing: `factory doctor` prints the build command')
     return host
 
 

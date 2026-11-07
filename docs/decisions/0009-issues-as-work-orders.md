@@ -22,6 +22,7 @@ A work order was a file in `docs/work/` that became binding only after its own P
 8. **Permissions.** The publisher App gets Issues read and write. Only the issue jobs request Issues write; every other publisher token and the workflow jobs that re-check a pin (`Deterministic tests`, `Author correction`, `Push correction`) read issues at most. The dispatcher workflow reads issues.
 9. **Rollout guard.** The dispatcher routes issue commands only when the config branch's `factory/config.json` has `issue_review_model`, which arrives with the same promotion as the issue jobs in `factory.yml`.
 10. **Delivered locally outside the factory pipeline.** As for ADR-0007 and ADR-0008, the change touches control paths that the isolated author cannot write. The maintainer reviews the diff and decides how it reaches `testing`.
+11. **A merged PR closes its work order** (added by the maintainer on 2026-11-06). One work order is one PR. `factory submit --finished` writes `Closes #57` into the PR body: the keyword links the PR to the issue, and GitHub decides when to close it, on the merge into its default branch (today `testing`); for a PR into another branch GitHub ignores the keyword. A closed issue is no longer a work order (decision 4), so the work order is done. Work too big for one PR becomes several work orders. Reopening an unchanged issue restores its approval, for example for a later fix.
 
 ## Consequences
 

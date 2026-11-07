@@ -320,6 +320,14 @@ def finish_open_pr(ctx, pull, sha, branch, task, context):
     return watch(ctx, number)
 
 
+def work_order_line(order, task):
+    """The PR body's work-order lines. One work order is one PR: `Closes #57` links the PR to its issue and GitHub
+    decides when to close it (on the merge into its default branch; it ignores the keyword for other targets)."""
+    if not workorders.is_issue(order):
+        return f'Work order: `{task}`'
+    return f'Work order: {task}\n\nCloses {task}'
+
+
 def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=None, context=()):
     candidate, config, model = ctx.candidate, ctx.config, ctx.model
     branch = checkouts.current_branch(candidate)
@@ -377,15 +385,17 @@ def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=No
         if draft:
             warn(f'--draft is ignored: pull request #{pull["number"]} already exists')
         return finish_open_pr(ctx, pull, local, branch, task, imports)
+    # Said only once the PR exists: a preflight that does not pass opens none.
+    closes = (lambda number: say(f'PR #{number} says `Closes {task}`: GitHub closes the issue when it merges into its '
+                                 'default branch.')) if workorders.is_issue(order) else None
     heading = title or f'{workorders.label(order)}: {workorders.title_of(text)}'
     commits = out(candidate, 'log', '--format=- %s', f'{tip}..{local}')
     with checkouts.scratch('submit-') as scratch:
         body = scratch / 'body.md'
-        # An issue reference links the PR into the work-order issue's timeline.
-        reference = task if workorders.is_issue(order) else f'`{task}`'
-        body.write_text((desc.strip() + '\n\n' if desc else '') + f'Work order: {reference}\n\nCommits:\n{commits}\n')
+        reference = work_order_line(order, task)
+        body.write_text((desc.strip() + '\n\n' if desc else '') + f'{reference}\n\nCommits:\n{commits}\n')
         with checkouts.candidate_snapshot(candidate, ctx.control, local, branch, config) as snapshot:
-            created = session_submit(ctx, snapshot, task, heading, body, imports, draft, base=target)
+            created = session_submit(ctx, snapshot, task, heading, body, imports, draft, on_created=closes, base=target)
     return 0 if created else 1
 
 

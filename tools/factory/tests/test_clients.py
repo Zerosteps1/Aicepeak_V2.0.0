@@ -359,6 +359,50 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(clients.ClientError, "no final report"):
             self.run_claude(lambda args, kwargs: b"", events=Path(self.temp.name) / "none.log")
 
+    def test_failed_worker_reports_why_the_cli_stopped(self):
+        # Result fields follow the Agent SDK reference (SDKResultMessage); doc-derived, not a capture.
+        def out_of_turns(args, kwargs):
+            kwargs["on_line"](json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 61,
+                                          "errors": ["Reached maximum number of turns (60)"]}).encode())
+            raise clients.CommandFailed("docker", 1, "")
+        with self.assertRaises(clients.ClientError) as caught:
+            self.run_claude(out_of_turns, events=Path(self.temp.name) / "turns.log", read_only=True)
+        # engine.author_failure publishes only the fixed "<tool> failed (<code>):" prefix, so it stays first.
+        self.assertEqual(str(caught.exception), "docker failed (1): Claude stopped (error_max_turns: turn limit "
+                         "limits.author_max_turns reached, 61 turns): Reached maximum number of turns (60)")
+        self.assertNotIsInstance(caught.exception, clients.CommandFailed)
+
+        api_error = json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 529, "num_turns": 2,
+                                "result": "API Error: 529 overloaded\n(key anthropic-test-value)"}).encode()
+        def overloaded(args, kwargs):
+            self.assertNotIn("--events", args)
+            raise clients.CommandFailed("docker", 1, "tini: child exited", api_error)
+        with self.assertRaises(clients.ClientError) as caught:
+            self.run_claude(overloaded)
+        self.assertEqual(str(caught.exception), "docker failed (1): Claude stopped (API status 529, 2 turns): "
+                         "API Error: 529 overloaded (key [credential redacted]); tini: child exited")
+
+        def silent(args, kwargs):
+            raise clients.CommandFailed("docker", 1, "")
+        with self.assertRaises(clients.CommandFailed) as caught:
+            self.run_claude(silent, events=Path(self.temp.name) / "silent.log")
+        self.assertEqual(str(caught.exception), "docker failed (1): ")
+
+    def test_native_failure_reads_only_the_final_error_fields(self):
+        codex = b"\n".join([b'{"type":"thread.started"}', b"not json", b'{"type":"error","message":"reconnecting"}',
+                            json.dumps({"type": "turn.failed", "error": {"message": "stream error: 401\x1b[0m"}}).encode()])
+        self.assertEqual(clients.native_failure("codex", codex), "Codex stopped: stream error: 401\\u001b[0m")
+        self.assertIsNone(clients.native_failure("codex", b'{"type":"turn.completed"}'))
+        for output in (None, b"", b"not json", b"[1]", b'{"type":"assistant"}', b'{"type":"result","subtype":"success"}'):
+            self.assertIsNone(clients.native_failure("claude", output), output)
+        long = json.dumps({"type": "result", "subtype": "error_during_execution", "errors": ["x" * 1000, 7, " "]}).encode()
+        self.assertEqual(clients.native_failure("claude", long), "Claude stopped (error_during_execution): " + "x" * 300 + "...")
+        odd = json.dumps({"type": "result", "subtype": "Bad Subtype!", "num_turns": "9", "is_error": True, "result": "boom"}).encode()
+        self.assertEqual(clients.native_failure("claude", odd), "Claude stopped: boom")
+        budget = json.dumps({"type": "result", "subtype": "error_max_budget_usd", "num_turns": 12}).encode()
+        self.assertEqual(clients.native_failure("claude", budget),
+                         "Claude stopped (error_max_budget_usd: USD budget limits.max_run_cost_usd reached, 12 turns)")
+
     def test_event_sink_escapes_terminal_controls_and_redacts_credentials(self):
         path = Path(self.temp.name) / "sink.log"
         sink = clients.EventSink(path, ("broker-token-value",))
@@ -406,6 +450,22 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):
             clients.command([sys.executable, "-c", "import time; time.sleep(30)"], env=dict(os.environ), on_line=seen.append, timeout=1)
         self.assertLess(time.monotonic() - started, 10)
+
+    def test_failed_command_keeps_stdout_and_drops_dockers_dns_warning(self):
+        # Both wordings: Docker's current one and the older "--dns=" one.
+        script = ("import sys; print('out'); sys.stdout.flush(); "
+                  "sys.stderr.write('WARNING: Localhost DNS (127.0.0.1) may fail in containers.\\n"
+                  "WARNING: Localhost DNS setting (--dns=127.0.0.1) may fail in containers.\\nreal problem\\n'); sys.exit(1)")
+        for options in ({}, {"on_line": lambda line: None}):
+            with self.subTest(streamed=bool(options)), self.assertRaises(clients.CommandFailed) as caught:
+                clients.command([sys.executable, "-c", script], env=dict(os.environ), timeout=30, **options)
+            failure = caught.exception
+            self.assertEqual((failure.returncode, failure.detail), (1, "real problem"))
+            self.assertTrue(str(failure).endswith(" failed (1): real problem"), str(failure))
+            self.assertEqual(failure.stdout, b"" if options else b"out\n")
+        other = "import sys; sys.stderr.write('WARNING: something else\\n'); sys.exit(2)"
+        with self.assertRaisesRegex(clients.CommandFailed, r" failed \(2\): WARNING: something else$"):
+            clients.command([sys.executable, "-c", other], env=dict(os.environ), timeout=30)
 
     def test_cancellation_returns_130_after_cleanup(self):
         with self.assertRaises(KeyboardInterrupt):

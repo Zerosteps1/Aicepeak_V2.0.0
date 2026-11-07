@@ -68,6 +68,20 @@ class GitHub:
         raise AssertionError((method, path))
 
 
+class IssuesAndPulls(issue_fixture.IssueHub):
+    """Work-order issues plus the open pull requests of the repository."""
+    def __init__(self, config, pulls=()):
+        super().__init__(config)
+        self.pulls = list(pulls)
+
+    def pages(self, path, field=None):
+        return self.pulls if '/pulls?state=open' in path else super().pages(path, field)
+
+
+# A GitHub closing keyword before issue 57: merging a PR whose body has one closes the issue.
+CLOSES_57 = re.compile(r'(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#57\b')
+
+
 class Repos(unittest.TestCase):
     """origin (bare, stands in for GitHub) with testing (validation, default) and production (config branch),
     a control clone on production and a candidate clone on testing."""
@@ -561,6 +575,50 @@ class CommandTests(Repos):
         with self.assertRaisesRegex(Blocked, 'does not contain current testing.*merge origin/testing'), \
                 contextlib.redirect_stdout(io.StringIO()):
             commands.submit(ctx, finished=True)
+
+    def submit_finished(self, ctx, branch, hub, created=3, **options):
+        """`factory submit --finished` on a new `branch` with one staged file: (exit code, [(task, base, body)], output).
+        session.py opens PR `created` (None: no PR, as after a preflight that does not pass)."""
+        git(self.candidate, 'switch', '--quiet', '-c', branch, self.tip)
+        (self.candidate / 'docs/guide.md').write_text(branch + '\n')
+        git(self.candidate, 'add', 'docs/guide.md')
+        ctx._gh, opened = hub, []
+
+        def fake(context, snapshot, task, title, body, *args, **kwargs):
+            opened.append((task, kwargs['base'], Path(body).read_text()))
+            if created and kwargs.get('on_created'):
+                kwargs['on_created'](created)
+            return created
+        with mock.patch.object(commands, 'session_submit', side_effect=fake), \
+                mock.patch.object(commands, 'watch', return_value=0), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+            code = commands.submit(ctx, finished=True, **options)
+        return code, opened, out.getvalue() + err.getvalue()
+
+    def test_submit_finished_links_the_work_order_issue_with_a_closing_keyword(self):
+        hub = IssuesAndPulls(self.config)
+        hub.issue()
+        hub.approve()
+        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/issue-57', hub)
+        self.assertEqual((code, [entry[:2] for entry in opened]), (0, [('#57', 'testing')]))
+        self.assertIn('Work order: #57\n\nCloses #57\n\nCommits:', opened[0][2])
+        self.assertRegex(opened[0][2], CLOSES_57)
+        self.assertIn('PR #3 says `Closes #57`: GitHub closes the issue when it merges into its default branch.', output)
+        # Said only once the PR exists: after a preflight that does not pass there is none.
+        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/issue-57-3', hub, created=None)
+        self.assertEqual((code, len(opened)), (1, 1))
+        self.assertNotIn('says `Closes', output)
+        # GitHub decides when to close: the keyword is written for any target (GitHub ignores it outside its default branch).
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
+        ctx = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['factory']))
+        code, opened, _ = self.submit_finished(ctx, 'ftrutschnig/issue-57-2', hub)
+        self.assertEqual((code, [entry[:2] for entry in opened]), (0, [('#57', 'staging')]))
+        self.assertRegex(opened[0][2], CLOSES_57)
+        # A legacy file is named by its path; there is no issue to close.
+        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/FACTORY-003', hub)
+        self.assertEqual(code, 0)
+        self.assertIn('Work order: `docs/work/FACTORY-003.md`\n\nCommits:', opened[0][2])
+        self.assertNotIn('Closes', opened[0][2] + output)
 
     def test_submit_refuses_a_branch_behind_github(self):
         git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/FACTORY-003')

@@ -38,6 +38,12 @@ python3 tools/factory/clients.py run \
 
 `run` returns JSON with `patch`, its SHA256, `report`, `report_truncated`, `reported_cost_usd` and the author cost reservation ceiling (`reserved_cost_ceiling_usd`). The report is `changes.patch.report.txt`, valid UTF-8 below 8 KiB. It contains only final user-facing text, including disagreements or reasons for an empty patch. Raw transcripts and reasoning events are discarded. The orchestrator independently validates the patch and report before publishing either. `launch` is interactive and returns a patch artifact without changing the original checkout.
 
+When the worker's CLI exits non-zero, the blocked reason keeps its fixed prefix (`docker failed (1):`) and adds why the CLI stopped, read from its own final events:
+- For Claude, the `result` message: its error `subtype` (with the limit it hit for `error_max_turns` and `error_max_budget_usd`), `api_error_status`, `num_turns`, and its `errors` (or, for an API error, its `result` text).
+- For Codex, the message of the last `turn.failed` or `error` event.
+
+The error text is cut to 300 characters, with whitespace collapsed, control characters escaped and the broker token and provider keys redacted. After a `;` comes whatever Docker printed to stderr. Docker's warning `Localhost DNS … may fail in containers` is dropped from that stderr: every worker runs with `--dns 127.0.0.1` on purpose. In GitHub Actions, `engine.author_failure` still publishes only the fixed prefix.
+
 `run` has three optional flags, used by the maintainer's [factory command](../docs/factory-cli.md#runs-steps-budget-and-logs); without them its arguments and result parsing are unchanged:
 
 - `--label key=value` (repeatable, at most 8; key `[a-z0-9][a-z0-9.-]{0,62}`, value `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`) is set on every container of the run (keeper, seed, broker, worker, extract), its internal network and its work volume. An invalid label blocks the run before Docker is called. `factory cancel` removes everything with its run label.

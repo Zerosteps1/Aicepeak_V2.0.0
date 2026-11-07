@@ -51,6 +51,24 @@ class ClientError(ValueError):
     pass
 
 
+class CommandFailed(ClientError):
+    """A captured command exited non-zero. Its stdout stays with the error for the caller's own
+    diagnosis (the worker's final events); it is never shown raw."""
+    def __init__(self, tool: str, returncode: int, detail: str, stdout: bytes = b""):
+        super().__init__(f"{tool} failed ({returncode}): {detail}")
+        self.tool, self.returncode, self.detail, self.stdout = tool, returncode, detail, stdout
+
+
+# Every worker runs with --dns 127.0.0.1 on purpose (no name resolution beyond the broker alias),
+# so Docker's warning about it is expected on every run and would hide the real failure.
+DOCKER_DNS_WARNING = re.compile(r"(?m)^WARNING: Localhost DNS\b[^\n]*may fail in containers\.?[ \t\r]*(?:\n|$)")
+
+
+def failure_detail(stderr: bytes) -> str:
+    """Bounded stderr of a failed command; stderr can be model- or daemon-controlled."""
+    return DOCKER_DNS_WARNING.sub("", stderr.decode(errors="replace"))[-2000:].strip()
+
+
 def regular_read(path: Path, limit=2 * 1024 * 1024) -> bytes:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
         raise ClientError(f"expected bounded regular file: {path}")
@@ -270,10 +288,8 @@ def command(args, *, cwd=None, env=None, timeout=60, input=None, capture=True, o
         stdout = out.read(8 * 1024 * 1024)
         stderr = err.read(8 * 1024 * 1024)
     if result.returncode:
-        # stderr can be model- or daemon-controlled. Keep errors bounded, and never
-        # include a command/env dump with credentials.
-        detail = stderr.decode(errors="replace")[-2000:]
-        raise ClientError(f"{Path(args[0]).name} failed ({result.returncode}): {detail}")
+        # Keep errors bounded, and never include a command/env dump with credentials.
+        raise CommandFailed(Path(args[0]).name, result.returncode, failure_detail(stderr), stdout)
     return stdout
 
 
@@ -332,8 +348,7 @@ def stream_lines(args, *, cwd, env, timeout, input, on_line, preexec_fn) -> byte
             process.stdout.close()
         if process.returncode:
             err.seek(0)
-            detail = err.read(8 * 1024 * 1024).decode(errors="replace")[-2000:]
-            raise ClientError(f"{Path(args[0]).name} failed ({process.returncode}): {detail}")
+            raise CommandFailed(Path(args[0]).name, process.returncode, failure_detail(err.read(8 * 1024 * 1024)))
     return b""
 
 
@@ -490,6 +505,61 @@ def worker_arguments(runner: str, model: str, interactive=False, max_turns: int 
         if max_budget_usd:
             args += ["--max-budget-usd", str(max_budget_usd)]
     return args
+
+
+STOP_HINTS = {"error_max_turns": "turn limit limits.author_max_turns reached",
+              "error_max_budget_usd": "USD budget limits.max_run_cost_usd reached"}
+
+
+def native_failure(runner: str, output: bytes | None, secrets: tuple[str, ...] = ()) -> str | None:
+    """Why the native CLI stopped, from its own final events: fixed fields and a bounded, redacted
+    excerpt of its error text; never reasoning or a transcript. None when the output says nothing."""
+    text, parts = None, []
+    if runner == "claude":
+        # Claude Code's result message (Agent SDK SDKResultMessage): subtype, num_turns, errors on the
+        # error subtypes; an API error ends as subtype success with is_error, api_error_status and result.
+        try:
+            data = json.loads(output or b"")
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or data.get("type", "result") != "result":
+            return None
+        subtype = data.get("subtype")
+        if isinstance(subtype, str) and re.fullmatch(r"[a-z_]{1,64}", subtype) and subtype != "success":
+            parts.append(subtype + (": " + STOP_HINTS[subtype] if subtype in STOP_HINTS else ""))
+        status = data.get("api_error_status")
+        if type(status) is int:
+            parts.append(f"API status {status}")
+        turns = data.get("num_turns")
+        if type(turns) is int and turns >= 0:
+            parts.append(f"{turns} turns")
+        errors = data.get("errors")
+        if isinstance(errors, list) and any(isinstance(e, str) and e.strip() for e in errors):
+            text = "; ".join(e.strip() for e in errors if isinstance(e, str) and e.strip())
+        elif data.get("is_error") is True and isinstance(data.get("result"), str):
+            text = data["result"]
+        name = "Claude"
+    else:
+        # Codex exec --json: the last turn.failed error or error event.
+        for line in (output or b"").decode("utf-8", errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            error = event.get("error") if event.get("type") == "turn.failed" else event if event.get("type") == "error" else None
+            message = error.get("message") if isinstance(error, dict) else None
+            if isinstance(message, str) and message.strip():
+                text = message
+        name = "Codex"
+    if text is not None:
+        for secret in secrets:  # before the excerpt can cut a credential in half
+            text = text.replace(secret, "[credential redacted]")
+        text = printable(" ".join(text.split()), 300)
+    if not parts and not text:
+        return None
+    return f"{name} stopped" + (f" ({', '.join(parts)})" if parts else "") + (f": {text}" if text else "")
 
 
 def final_report(runner: str, output: bytes) -> tuple[str, bool]:
@@ -853,6 +923,14 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
             sink = EventSink(events, credentials) if stream else None
             try:
                 native_output = command(args, env=env, timeout=policy["timeout"], input=prompt, capture=not interactive, on_line=sink)
+            except CommandFailed as failure:
+                # The native CLI's own final events say why it stopped; Docker's stderr rarely does.
+                # The fixed "<tool> failed (<code>):" prefix stays first for engine.author_failure.
+                reason = native_failure(runner, sink.result if sink else failure.stdout, credentials)
+                if reason is None:
+                    raise
+                raise ClientError(f"{failure.tool} failed ({failure.returncode}): {reason}"
+                                  + (f"; {failure.detail}" if failure.detail else "")) from None
             finally:
                 if sink:
                     sink.close()

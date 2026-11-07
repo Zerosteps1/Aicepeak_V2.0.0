@@ -576,8 +576,9 @@ class CommandTests(Repos):
                 contextlib.redirect_stdout(io.StringIO()):
             commands.submit(ctx, finished=True)
 
-    def submit_finished(self, ctx, branch, hub, **options):
-        """`factory submit --finished` on a new `branch` with one staged file: (exit code, [(task, base, body)], output)."""
+    def submit_finished(self, ctx, branch, hub, created=3, **options):
+        """`factory submit --finished` on a new `branch` with one staged file: (exit code, [(task, base, body)], output).
+        session.py opens PR `created` (None: no PR, as after a preflight that does not pass)."""
         git(self.candidate, 'switch', '--quiet', '-c', branch, self.tip)
         (self.candidate / 'docs/guide.md').write_text(branch + '\n')
         git(self.candidate, 'add', 'docs/guide.md')
@@ -585,7 +586,9 @@ class CommandTests(Repos):
 
         def fake(context, snapshot, task, title, body, *args, **kwargs):
             opened.append((task, kwargs['base'], Path(body).read_text()))
-            return 3
+            if created and kwargs.get('on_created'):
+                kwargs['on_created'](created)
+            return created
         with mock.patch.object(commands, 'session_submit', side_effect=fake), \
                 mock.patch.object(commands, 'watch', return_value=0), \
                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
@@ -600,7 +603,11 @@ class CommandTests(Repos):
         self.assertEqual((code, [entry[:2] for entry in opened]), (0, [('#57', 'testing')]))
         self.assertIn('Work order: #57\n\nCloses #57\n\nCommits:', opened[0][2])
         self.assertRegex(opened[0][2], CLOSES_57)
-        self.assertIn('The PR says `Closes #57`: GitHub closes the issue when the PR merges into its default branch.', output)
+        self.assertIn('PR #3 says `Closes #57`: GitHub closes the issue when it merges into its default branch.', output)
+        # Said only once the PR exists: after a preflight that does not pass there is none.
+        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/issue-57-3', hub, created=None)
+        self.assertEqual((code, len(opened)), (1, 1))
+        self.assertNotIn('says `Closes', output)
         # GitHub decides when to close: the keyword is written for any target (GitHub ignores it outside its default branch).
         git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
         ctx = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['factory']))

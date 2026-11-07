@@ -592,45 +592,26 @@ class CommandTests(Repos):
             code = commands.submit(ctx, finished=True, **options)
         return code, opened, out.getvalue() + err.getvalue()
 
-    def test_submit_finished_closes_the_work_order_issue_unless_kept_open(self):
+    def test_submit_finished_links_the_work_order_issue_with_a_closing_keyword(self):
         hub = IssuesAndPulls(self.config)
         hub.issue()
         hub.approve()
         code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/issue-57', hub)
         self.assertEqual((code, [entry[:2] for entry in opened]), (0, [('#57', 'testing')]))
-        self.assertIn('Work order: #57\n\nCloses #57 when this PR is merged into `testing`.\n\nCommits:', opened[0][2])
+        self.assertIn('Work order: #57\n\nCloses #57\n\nCommits:', opened[0][2])
         self.assertRegex(opened[0][2], CLOSES_57)
-        self.assertIn('Merging the PR into testing closes issue #57 (keep it open with --keep-open).', output)
-        # One PR of several names the issue without a closing keyword: a closed issue is no longer a work order.
-        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/issue-57-2', hub, keep_open=True)
-        self.assertEqual((code, [entry[:2] for entry in opened]), (0, [('#57', 'testing')]))
-        self.assertIn('Work order: #57 (one part of it: this PR leaves the issue open)', opened[0][2])
-        self.assertNotRegex(opened[0][2], CLOSES_57)
-        self.assertIn('Issue #57 stays open: this PR is one part of the work order.', output)
-        # GitHub acts on closing keywords only for PRs into its default branch: a PR into staging says so instead.
+        self.assertIn('The PR says `Closes #57`: GitHub closes the issue when the PR merges into its default branch.', output)
+        # GitHub decides when to close: the keyword is written for any target (GitHub ignores it outside its default branch).
         git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
         ctx = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['factory']))
-        code, opened, output = self.submit_finished(ctx, 'ftrutschnig/issue-57-3', hub)
+        code, opened, _ = self.submit_finished(ctx, 'ftrutschnig/issue-57-2', hub)
         self.assertEqual((code, [entry[:2] for entry in opened]), (0, [('#57', 'staging')]))
-        self.assertIn('only for PRs into its default branch `testing`: close the issue by hand', opened[0][2])
-        self.assertNotRegex(opened[0][2], CLOSES_57)
-        self.assertIn('Issue #57 stays open: GitHub closes issues only for PRs into its default branch testing', output)
-
-    def test_keep_open_applies_only_to_a_new_pull_request_of_a_work_order_issue(self):
-        hub = IssuesAndPulls(self.config)
-        hub.issue()
-        hub.approve()
-        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/FACTORY-003', hub, keep_open=True)
+        self.assertRegex(opened[0][2], CLOSES_57)
+        # A legacy file is named by its path; there is no issue to close.
+        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/FACTORY-003', hub)
         self.assertEqual(code, 0)
-        self.assertIn('Work order: `docs/work/FACTORY-003.md`\n\nCommits:', opened[0][2])  # a legacy file: unchanged
-        self.assertIn('--keep-open applies only to work-order issues', output)
-        maintainer = self.config['maintainers'][0]
-        hub.pulls = [{'number': 12, 'draft': False, 'base': {'ref': 'testing'},
-                      'user': {'id': maintainer['id'], 'login': maintainer['login']},
-                      'head': {'ref': 'ftrutschnig/issue-57-4', 'repo': {'full_name': self.config['repository']}}}]
-        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/issue-57-4', hub, keep_open=True)
-        self.assertEqual((code, opened), (0, []))  # the open PR keeps its description and is watched
-        self.assertIn('--keep-open is ignored: pull request #12 already exists', output)
+        self.assertIn('Work order: `docs/work/FACTORY-003.md`\n\nCommits:', opened[0][2])
+        self.assertNotIn('Closes', opened[0][2] + output)
 
     def test_submit_refuses_a_branch_behind_github(self):
         git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/FACTORY-003')
@@ -1817,8 +1798,6 @@ class HelpAndInstallTests(unittest.TestCase):
         self.assertIsNone(factory.misuse(args))
         self.assertEqual(args.kinds, ['smoke', 'factory'])
         self.assertIsNone(factory.misuse(parser.parse_args(['update', 'testing'])))
-        self.assertEqual(factory.misuse(parser.parse_args(['submit', '--keep-open'])), '--keep-open needs --finished')
-        self.assertIsNone(factory.misuse(parser.parse_args(['submit', '--finished', '--keep-open'])))
         # The replaced sync names factory update and exits 2, before any configuration, lock or network.
         for argv in (['sync', 'workorders'], ['sync', 'workorder', '9'], ['sync']):
             with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()) as stderr, \

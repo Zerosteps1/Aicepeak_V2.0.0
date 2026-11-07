@@ -112,14 +112,12 @@ COMMANDS = {
                 'a listed branch and never with force. The work order comes from the branch (<login>/<ID>…) or '
                 '--workorder; any other branch gets a warning and 5 seconds to abort. --finished opens the PR into the '
                 "validation branch routed for the work order's kind through session.py (collision sweep, advisory "
-                'preflight, ready on pass) and watches its review; an existing PR is watched. For a work-order issue the '
-                'PR body says "Closes #57", so merging it into the default branch closes the issue, and a closed issue '
-                'is no longer a work order; --keep-open leaves it open for one PR of several.',
-        'when': 'Daily: commit and push your work. When the work order is done: --finished (one part of it: '
-                '--finished --keep-open).',
+                'preflight, ready on pass) and watches its review; an existing PR is watched. One work order is one PR: '
+                'for a work-order issue the PR body says "Closes #57", and GitHub closes the issue when the PR merges '
+                'into its default branch.',
+        'when': 'Daily: commit and push your work. When the work order is done: --finished.',
         'examples': ['factory submit --title "feat(export): CSV export" --desc "Adds the endpoint and tests"',
-                     'factory submit --finished', 'factory submit --finished --keep-open',
-                     'factory submit --finished --workorder 7 --draft'],
+                     'factory submit --finished', 'factory submit --finished --workorder 7 --draft'],
         'docs': ['docs/factory-cli.md#factory-submit', FLOW, 'docs/way-of-working.md#working-in-parallel'],
     },
     'watch': {

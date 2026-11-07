@@ -320,21 +320,15 @@ def finish_open_pr(ctx, pull, sha, branch, task, context):
     return watch(ctx, number)
 
 
-def work_order_line(order, task, target, default_branch, keep_open=False):
-    """The PR body's work-order lines. GitHub closes an issue named after a closing keyword only when the PR merges
-    into its default branch; a closed issue is no longer a work order (issues.read_issue), so one PR of several, or a PR
-    into another branch, names the issue without a closing keyword."""
+def work_order_line(order, task):
+    """The PR body's work-order lines. One work order is one PR: `Closes #57` links the PR to its issue and GitHub
+    decides when to close it (on the merge into its default branch; it ignores the keyword for other targets)."""
     if not workorders.is_issue(order):
         return f'Work order: `{task}`'
-    if keep_open:
-        return f'Work order: {task} (one part of it: this PR leaves the issue open)'
-    if target != default_branch:
-        return (f'Work order: {task} (GitHub closes issues only for PRs into its default branch `{default_branch}`: '
-                'close the issue by hand when the work order is done)')
-    return f'Work order: {task}\n\nCloses {task} when this PR is merged into `{target}`.'
+    return f'Work order: {task}\n\nCloses {task}'
 
 
-def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=None, context=(), keep_open=False):
+def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=None, context=()):
     candidate, config, model = ctx.candidate, ctx.config, ctx.model
     branch = checkouts.current_branch(candidate)
     require(branch, 'the candidate has a detached HEAD; switch to a branch first')
@@ -390,26 +384,14 @@ def submit(ctx, title=None, desc=None, finished=False, draft=False, workorder=No
     if pull:
         if draft:
             warn(f'--draft is ignored: pull request #{pull["number"]} already exists')
-        if keep_open:
-            warn(f'--keep-open is ignored: pull request #{pull["number"]} already exists')
         return finish_open_pr(ctx, pull, local, branch, task, imports)
-    default = config['default_branch']
-    if not workorders.is_issue(order):
-        if keep_open:
-            warn('--keep-open applies only to work-order issues')
-    elif keep_open:
-        say(f'Issue {task} stays open: this PR is one part of the work order.')
-    elif target != default:
-        say(f'Issue {task} stays open: GitHub closes issues only for PRs into its default branch {default}; '
-            'close it by hand when the work order is done.')
-    else:
-        say(f'Merging the PR into {target} closes issue {task} (keep it open with --keep-open).')
+    if workorders.is_issue(order):
+        say(f'The PR says `Closes {task}`: GitHub closes the issue when the PR merges into its default branch.')
     heading = title or f'{workorders.label(order)}: {workorders.title_of(text)}'
     commits = out(candidate, 'log', '--format=- %s', f'{tip}..{local}')
     with checkouts.scratch('submit-') as scratch:
         body = scratch / 'body.md'
-        # An issue reference links the PR into the work-order issue's timeline; `Closes` also closes it on merge.
-        reference = work_order_line(order, task, target, default, keep_open)
+        reference = work_order_line(order, task)
         body.write_text((desc.strip() + '\n\n' if desc else '') + f'{reference}\n\nCommits:\n{commits}\n')
         with checkouts.candidate_snapshot(candidate, ctx.control, local, branch, config) as snapshot:
             created = session_submit(ctx, snapshot, task, heading, body, imports, draft, base=target)

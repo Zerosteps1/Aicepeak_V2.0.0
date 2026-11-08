@@ -1,30 +1,18 @@
-"""Work-order issues (FACTORY-009): authentic records, maintainer commands and the pinned approval."""
+"""Work-order issues: authentic records, maintainer commands, the pinned approval and the one work-order reader."""
 import json
-import os
-from pathlib import Path
-import sys
+import re
 import unittest
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import branch_fixture  # noqa: E402
-import contracts  # noqa: E402
-import issue_fixture  # noqa: E402
-import issues  # noqa: E402
-from contracts import Blocked  # noqa: E402
-
-
-def fixture_config(**changes):
-    config = branch_fixture.load(ROOT)
-    config.update(changes)
-    return config
+from factory_testlib import BOT, DRAFT, LATER, STRANGER, IssueHub, candidate_config, user
+import contracts
+import issues
+from contracts import Blocked
 
 
 class Records(unittest.TestCase):
     def setUp(self):
-        self.config = fixture_config()
-        self.hub = issue_fixture.IssueHub(self.config)
+        self.config = candidate_config()
+        self.hub = IssueHub(self.config)
         self.hub.issue()
 
     def test_only_unedited_publisher_app_records_of_this_issue_count(self):
@@ -35,12 +23,12 @@ class Records(unittest.TestCase):
         self.assertIsNone(issues.record(good, self.config, 58, issues.FINDINGS))  # another issue
         forged = [self.hub.record(57, issues.FINDINGS, data, app=12345),  # another App
                   self.hub.comment(57, issues.record_body(issues.FINDINGS, data, 'x')),  # a maintainer, no App
-                  self.hub.comment(57, issues.record_body(issues.FINDINGS, data, 'x'), issue_fixture.BOT, None),
+                  self.hub.comment(57, issues.record_body(issues.FINDINGS, data, 'x'), BOT, None),
                   self.hub.comment(57, issues.record_body(issues.FINDINGS, data, 'x'), self.hub.maintainer, self.hub.app),
-                  self.hub.comment(57, issues.record_body(issues.FINDINGS, data, 'x'), issue_fixture.BOT, self.hub.app, edited=True),
-                  self.hub.comment(57, 'Quoted:\n' + issues.record_body(issues.FINDINGS, data, 'x'), issue_fixture.BOT, self.hub.app),
-                  self.hub.comment(57, issues.FINDINGS + '\n<!-- {"issue":57} -->\n', issue_fixture.BOT, self.hub.app),
-                  self.hub.comment(57, issues.FINDINGS + '\n<!-- not json -->\n', issue_fixture.BOT, self.hub.app),
+                  self.hub.comment(57, issues.record_body(issues.FINDINGS, data, 'x'), BOT, self.hub.app, edited=True),
+                  self.hub.comment(57, 'Quoted:\n' + issues.record_body(issues.FINDINGS, data, 'x'), BOT, self.hub.app),
+                  self.hub.comment(57, issues.FINDINGS + '\n<!-- {"issue":57} -->\n', BOT, self.hub.app),
+                  self.hub.comment(57, issues.FINDINGS + '\n<!-- not json -->\n', BOT, self.hub.app),
                   self.hub.record(57, issues.FINDINGS, {**data, 'issue': 58})]
         for comment in forged:
             with self.subTest(body=comment['body'][:60], app=comment.get('performed_via_github_app')):
@@ -60,8 +48,8 @@ class Records(unittest.TestCase):
     def test_commands_need_an_unedited_maintainer_comment_on_this_issue(self):
         cases = [('/accept', {}, 'accept'), ('/review please', {}, 'review'), ('/accept\nthanks', {}, 'accept'),
                  ('/accepted', {}, None), (' /accept', {}, None), ('please /accept', {}, None),
-                 ('/accept', {'edited': True}, None), ('/accept', {'author': issue_fixture.STRANGER}, None),
-                 ('/accept', {'author': issue_fixture.BOT, 'app': 5510081}, None)]
+                 ('/accept', {'edited': True}, None), ('/accept', {'author': STRANGER}, None),
+                 ('/accept', {'author': BOT, 'app': 5510081}, None)]
         for body, options, expected in cases:
             with self.subTest(body=body, options=options):
                 self.assertEqual(issues.command(self.hub.comment(57, body, **options), self.config, 57), expected)
@@ -72,8 +60,8 @@ class Records(unittest.TestCase):
 
 class Approval(unittest.TestCase):
     def setUp(self):
-        self.config = fixture_config()
-        self.hub = issue_fixture.IssueHub(self.config)
+        self.config = candidate_config()
+        self.hub = IssueHub(self.config)
         self.issue = self.hub.issue()
 
     def test_an_accepted_issue_is_an_approved_work_order_with_a_pin(self):
@@ -106,14 +94,14 @@ class Approval(unittest.TestCase):
         data = {'issue': 57, 'text_sha256': reviewed, 'reviewed_sha256': reviewed, 'review': 1, 'kind': 'factory',
                 'allowed_paths': ['docs/'], 'run_id': 1, 'accepted_by': [{'login': 'ftrutschnig', 'id': 306226744, 'comment': 1}]}
         self.hub.record(57, issues.APPROVAL, data, app=4242)
-        self.hub.comment(57, issues.record_body(issues.APPROVAL, data, 'x'), issue_fixture.BOT, self.hub.app, edited=True)
+        self.hub.comment(57, issues.record_body(issues.APPROVAL, data, 'x'), BOT, self.hub.app, edited=True)
         self.hub.comment(57, issues.record_body(issues.APPROVAL, data, 'x'))
         with self.assertRaisesRegex(Blocked, 'is not an approved work order'):
             issues.approved(self.hub, self.config, 57)
 
     def test_the_issue_itself_must_still_qualify(self):
         self.hub.approve()
-        cases = [('state', 'closed', 'is closed; reopen it'), ('user', issue_fixture.STRANGER, 'not opened by a configured maintainer'),
+        cases = [('state', 'closed', 'is closed; reopen it'), ('user', STRANGER, 'not opened by a configured maintainer'),
                  ('pull_request', {'url': 'x'}, 'is a pull request'),
                  ('repository_url', 'https://api.github.com/repos/someone/fork', 'belongs to another repository')]
         for key, value, message in cases:
@@ -131,7 +119,7 @@ class Approval(unittest.TestCase):
     def test_accept_comments_are_read_again(self):
         self.hub.approve()
         accept = next(c for c in self.hub.comments if c['body'] == '/accept')
-        accept['updated_at'] = issue_fixture.LATER
+        accept['updated_at'] = LATER
         with self.assertRaisesRegex(Blocked, 'was edited or deleted'):
             issues.approved(self.hub, self.config, 57)
         self.hub.comments.remove(accept)
@@ -139,18 +127,18 @@ class Approval(unittest.TestCase):
             issues.approved(self.hub, self.config, 57)
 
     def test_an_accept_by_a_former_maintainer_or_too_few_accounts_does_not_count(self):
-        self.issue = self.hub.issue(author=issue_fixture.user(self.config['maintainers'][1]))
+        self.issue = self.hub.issue(author=user(self.config['maintainers'][1]))
         self.hub.approve()  # accepted by maintainers[0], who then leaves
-        former = fixture_config(maintainers=self.config['maintainers'][1:], work_order_approvals=1)
+        former = candidate_config(maintainers=self.config['maintainers'][1:], work_order_approvals=1)
         with self.assertRaisesRegex(Blocked, 'no maintainer any more'):
             issues.approved(self.hub, former, 57)
         with self.assertRaisesRegex(Blocked, 'fewer /accept than work_order_approvals'):
-            issues.approved(self.hub, fixture_config(work_order_approvals=2), 57)
+            issues.approved(self.hub, candidate_config(work_order_approvals=2), 57)
 
     def test_two_accounts_satisfy_two_approvals(self):
-        second = issue_fixture.user(self.config['maintainers'][1])
+        second = user(self.config['maintainers'][1])
         self.hub.approve(accepters=[self.hub.maintainer, second])
-        issues.approved(self.hub, fixture_config(work_order_approvals=2), 57)
+        issues.approved(self.hub, candidate_config(work_order_approvals=2), 57)
 
     def test_a_record_that_does_not_match_the_block_counts_nothing(self):
         self.hub.approve(paths=('docs/',))
@@ -177,7 +165,7 @@ class Readers(unittest.TestCase):
             def text(self, repo, path, sha):
                 self.read = (repo, path, sha)
                 return '```factory-task\n{"status":"approved","kind":"smoke","allowed_paths":["x/"]}\n```'
-        config, gh = fixture_config(), Files()
+        config, gh = candidate_config(), Files()
         text, spec, pin = issues.work_order(gh, config, 'docs/work/FACTORY-008.md', 'p' * 40)
         self.assertEqual((spec['kind'], pin, gh.read), ('smoke', None, (config['repository'], 'docs/work/FACTORY-008.md', 'p' * 40)))
         self.assertEqual(issues.text_for(gh, config, 'fixture/repo', 'docs/work/X.md', 'q' * 40, None), text)
@@ -187,11 +175,12 @@ class Readers(unittest.TestCase):
 
     def test_session_reads_issues_through_the_maintainers_github_only(self):
         import session
-        config = fixture_config()
-        hub = issue_fixture.IssueHub(config)
+        config = candidate_config()
+        hub = IssueHub(config)
         hub.issue()
         hub.approve(paths=('docs/',))
-        spec, text, pin = session.work_order(config, 'p' * 40, '#57', hub)
+        text, spec, pin = session.work_order(config, 'p' * 40, '#57', hub)
+        self.assertEqual((text, spec, pin), issues.work_order(hub, config, '#57', 'p' * 40))
         self.assertEqual((spec['allowed_paths'], pin['issue']), (['docs/'], 57))
         self.assertTrue(text.startswith('# #57 – CSV export'))
         self.assertEqual(session.order_source(config, 'p' * 40, '#57', text)['url'],
@@ -200,10 +189,46 @@ class Readers(unittest.TestCase):
             session.work_order(config, 'p' * 40, '#57')
         hub.issues[57]['body'] += '\nchanged'
         with self.assertRaisesRegex(Blocked, 'edited after its approval'):
-            session.task_order(config, 'p' * 40, '#57', hub)
+            session.work_order(config, 'p' * 40, '#57', hub)
+
+    def test_a_work_order_file_is_read_from_the_trusted_checkout_when_one_is_given(self):
+        class NoGitHub:
+            def text(self, *args):
+                raise AssertionError('read from GitHub although a trusted checkout was given')
+        read = []
+        order = '# FACTORY-SMOKE\n```factory-task\n{"status":"approved","kind":"smoke","allowed_paths":["x/"]}\n```\n'
+        text, spec, pin = issues.work_order(NoGitHub(), candidate_config(), 'docs/work/FACTORY-SMOKE.md', 'p' * 40,
+                                            lambda path: read.append(path) or order)
+        self.assertEqual((text, spec, pin, read), (order, {'status': 'approved', 'kind': 'smoke', 'allowed_paths': ['x/']}, None,
+                                                   ['docs/work/FACTORY-SMOKE.md']))
+        for task in ('docs/work/../x.md', 'docs/work/sub/X.md', 'README.md'):
+            with self.subTest(task=task), self.assertRaisesRegex(Blocked, 'invalid work-order reference'):
+                issues.work_order(NoGitHub(), candidate_config(), task, 'p' * 40, lambda path: order)
+        with self.assertRaisesRegex(Blocked, 'task not approved'):
+            issues.work_order(NoGitHub(), candidate_config(), 'docs/work/X.md', 'p' * 40, lambda path: order.replace('approved', 'draft'))
+
+    def test_product_work_orders_need_the_approved_north_star_and_product_checks(self):
+        ready = {'northstar_path': 'AICEPEAK_NORDSTERN.md', 'northstar_approved': True, 'product_checks_ready': True}
+        self.assertTrue(issues.product_allowed(candidate_config(**ready)))
+        for change in ({'product_checks_ready': False}, {'product_checks_ready': 'true'}, {'product_checks_ready': None},
+                       {'northstar_approved': 1}, {'northstar_approved': False}, {'northstar_path': ''}, {'northstar_path': None}):
+            with self.subTest(change=change):
+                self.assertFalse(issues.product_allowed(candidate_config(**{**ready, **change})))
+        product = '```factory-task\n{"status":"approved","kind":"product","allowed_paths":["src/"]}\n```\n'
+        blocked, allowed = candidate_config(**{**ready, 'product_checks_ready': False}), candidate_config(**ready)
+        self.assertEqual(issues.work_order(None, allowed, 'docs/work/P.md', 'p' * 40, lambda path: product)[1]['kind'], 'product')
+        with self.assertRaisesRegex(Blocked, '^' + re.escape(issues.PRODUCT_BLOCKED) + '$'):
+            issues.work_order(None, blocked, 'docs/work/P.md', 'p' * 40, lambda path: product)
+        # An approved issue of kind product is refused the same way.
+        hub = IssueHub(blocked)
+        hub.issue(body=DRAFT.replace('"kind":"factory"', '"kind":"product"'))
+        hub.approve(kind='product')
+        with self.assertRaisesRegex(Blocked, 'product work orders stay blocked'):
+            issues.work_order(hub, blocked, '#57', 'p' * 40)
+        self.assertEqual(issues.work_order(hub, allowed, '#57', 'p' * 40)[1]['kind'], 'product')
 
     def test_handoff_names_an_issue_or_a_file(self):
-        config = fixture_config(runners=['claude'])
+        config = candidate_config(runners=['claude'])
         owner = config['maintainers'][0]['login']
         for task in ('#57', '#1', 'docs/work/FACTORY-009.md'):
             body = '```factory-handoff\n' + json.dumps({'runner': 'claude', 'task': task, 'owner': owner}) + '\n```'
@@ -215,8 +240,8 @@ class Readers(unittest.TestCase):
             contracts.handoff('```factory-handoff\n["runner","task","owner"]\n```', config)
 
     def test_draft_blocks_follow_the_gate_rules_with_any_status(self):
-        self.assertEqual(issues.draft_spec(issue_fixture.DRAFT), {'status': 'draft', 'kind': 'factory', 'allowed_paths': []})
-        bad = ['no block', issue_fixture.DRAFT * 2, '```factory-task\n{"status":"draft"}\n```',
+        self.assertEqual(issues.draft_spec(DRAFT), {'status': 'draft', 'kind': 'factory', 'allowed_paths': []})
+        bad = ['no block', DRAFT * 2, '```factory-task\n{"status":"draft"}\n```',
                '```factory-task\n{"status":"","kind":"factory","allowed_paths":[]}\n```',
                '```factory-task\n{"status":"draft","kind":"other","allowed_paths":[]}\n```',
                '```factory-task\n{"status":"draft","kind":"factory","allowed_paths":["../x"]}\n```',
@@ -233,11 +258,12 @@ class Readers(unittest.TestCase):
         self.assertEqual(issues.without_block(changed), issues.without_block(text))
         self.assertNotEqual(issues.without_block(changed + 'x'), issues.without_block(text))
 
-    def test_configuration_enables_issue_work_orders_only_completely(self):
-        config = branch_fixture.load(ROOT)
+    def test_the_issue_reviewer_needs_its_model_and_limits(self):
+        config = candidate_config()
         self.assertEqual(issues.config_problems(config), [])
-        self.assertEqual(issues.config_problems({k: v for k, v in config.items() if k != 'issue_review_model'}), [])
-        broken = fixture_config(issue_review_model='gpt-6', limits={**config['limits'], 'max_issue_reviews': 0})
+        self.assertEqual(issues.config_problems({k: v for k, v in config.items() if k != 'issue_review_model'}),
+                         ['issue_review_model must name a Claude model'])
+        broken = candidate_config(issue_review_model='gpt-6', limits={**config['limits'], 'max_issue_reviews': 0})
         del broken['limits']['issue_review_output_tokens']
         self.assertEqual(issues.config_problems(broken), [
             'issue_review_model must name a Claude model', 'limits.max_issue_reviews must be a whole number from 1 to 20',

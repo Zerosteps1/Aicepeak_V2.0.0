@@ -3,71 +3,26 @@ import argparse
 import copy
 import json
 import os
-from pathlib import Path
-import sys
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import branch_fixture
+from factory_testlib import JOB_ENV, MAINTAINER, ROOT, QueueTransport, fixture_config, job, review_for, reviewer
+import clients
 import contracts
 import engine
 import local_review
 import local_review_queue as queue
 from contracts import Blocked
-from test_engine import ENV, Transport, job
-
-
-class QueueTransport(Transport):
-    def __init__(self, config):
-        super().__init__(config)
-        self.jobs = {}
-        self.add_run(1, ['Snapshot', 'Deterministic tests', 'Publish gates'])
-        self.fail_final_patch = False
-
-    def add_run(self, number, names=None):
-        self.runs[number] = {'id': number, 'run_attempt': 1, 'repository': {'full_name': 'fixture/repo'},
-                             'event': 'workflow_dispatch', 'head_sha': 'b' * 40, 'head_branch': 'production',
-                             'workflow_id': 10, 'triggering_actor': {'type': 'User', 'id': 1, 'login': 'test-human'}}
-        self.jobs[number] = [{'name': name, 'status': 'completed', 'conclusion': 'success'}
-                             for name in (names or ['Review coordination'])]
-
-    def request(self, method, path, data=None):
-        if method == 'GET' and path == '/repos/fixture/repo/actions/workflows/10':
-            return {'path': self.config['workflow']}
-        if self.fail_final_patch and method == 'PATCH' and data.get('status') == 'completed':
-            raise Blocked('transport lost before publication')
-        return super().request(method, path, data)
-
-    def pages(self, path, field=None):
-        if '/jobs?' in path:
-            return copy.deepcopy(self.jobs[int(path.split('/runs/')[1].split('/')[0])])
-        return super().pages(path, field)
-
-
-def review_for(snapshot, outcome='changes_requested'):
-    findings = [{'id': 'F-1', 'kind': 'defect', 'confidence': 'high', 'priority': 'P1', 'file': 'example.txt', 'line': 1, 'impact': 'i', 'evidence': 'e',
-                 'requirement': 'r', 'minimal_fix': 'm', 'verification': 'v'}] if outcome == 'changes_requested' else []
-    return {**{k: snapshot[k] for k in ('repository', 'pr', 'head_sha', 'base_sha', 'policy_sha', 'run_id', 'run_attempt')},
-            'model': 'gpt-6-astra', 'effort': 'high', 'scope': ['example.txt'], 'evidence': [], 'limitations': [],
-            'complete': True, 'outcome': outcome, 'summary': 's', 'findings': findings}
-
-
-def reviewer():
-    return {**queue.REVIEWER_IDENTITY, 'thread_id': 'thread-1', 'turns': 1, 'usage': {'input_tokens': 10, 'output_tokens': 3}}
 
 
 class Coordination(unittest.TestCase):
     def setUp(self):
-        self.config = branch_fixture.load(ROOT)
-        self.config.update(repository='fixture/repo', publisher_app_id=7, maintainers=[{'id': 1, 'login': 'test-human'}])
+        self.config = fixture_config()
         self.gh = QueueTransport(self.config)
-        env = patch.dict(os.environ, ENV)
+        env = patch.dict(os.environ, JOB_ENV)
         env.start()
         self.addCleanup(env.stop)
         self.snapshot = self.pending()
@@ -312,7 +267,8 @@ class Coordination(unittest.TestCase):
             self.claim()
         self.gh.jobs[1][1]['conclusion'] = 'success'
         for field, value in [('event', 'push'), ('head_branch', 'other'), ('head_sha', 'c' * 40),
-                             ('run_attempt', 2), ('triggering_actor', {'type': 'Bot', 'id': 1, 'login': 'test-human'})]:
+                             ('run_attempt', 2), ('triggering_actor', {**MAINTAINER, 'type': 'Bot'}),
+                             ('triggering_actor', {**MAINTAINER, 'login': 'impostor'}), ('triggering_actor', {'type': 'User', 'id': 1})]:
             with self.subTest(field=field):
                 self.gh.add_run(40)
                 self.gh.runs[40][field] = value
@@ -396,19 +352,22 @@ class Coordination(unittest.TestCase):
                 self.claim()
         self.assertEqual(self.gh.calls, [])
 
-    def test_legacy_six_field_pending_binding_never_counts(self):
+    def test_a_pending_binding_without_the_target_branch_never_counts(self):
         check = self.gh.checks[self.snapshot['check_id']]
         fields = check['external_id'].split(':')
         check['external_id'] = ':'.join(fields[:4] + fields[5:])
         with self.assertRaisesRegex(Blocked, 'unauthenticated'):
             self.claim()
-        check['external_id'] = contracts.binding(self.snapshot)
-        record = engine.receipt(check)
-        record['snapshot'] = {k: v for k, v in self.snapshot.items() if k != 'base_ref'}
-        check['output']['text'] = json.dumps(record)
-        with self.assertRaisesRegex(Blocked, 'legacy'):
-            self.claim()
         self.assertNotIn('claim', engine.receipt(check))
+        check['external_id'] = contracts.binding(self.snapshot)
+        self.claim()
+        self.assertEqual(engine.receipt(check)['claim']['id'], '1' * 32)
+
+    def test_the_reviewer_identity_names_the_contract_reviewer_and_the_pinned_codex(self):
+        self.assertEqual(queue.CODEX_VERSION, clients.VERSIONS['codex'])
+        self.assertEqual(queue.REVIEWER_IDENTITY, {'host': 'maintainer-local', 'client': clients.VERSIONS['codex'],
+                                                   **contracts.REVIEWER, 'auth': 'chatgpt-workspace-access-token'})
+        self.assertEqual({key: reviewer()[key] for key in contracts.REVIEWER}, contracts.REVIEWER)
 
     def requested(self, review='maintainer-manual'):
         """A promotion PR: pipeline run 10 tests the head, then a maintainer's /review (run 30) reserves the review."""

@@ -3,15 +3,14 @@ import importlib.util
 import http.client
 import io
 import json
-import os
-from pathlib import Path
 import sys
 import types
 import unittest
 from unittest import mock
 
-REPO = Path(os.environ.get("FACTORY_CANDIDATE", Path(__file__).resolve().parents[3])).resolve()
-spec = importlib.util.spec_from_file_location("_factory_proxy_candidate", REPO / "tools/factory/proxy.py")
+from factory_testlib import ROOT
+
+spec = importlib.util.spec_from_file_location("_factory_proxy_candidate", ROOT / "tools/factory/proxy.py")
 proxy = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = proxy
 spec.loader.exec_module(proxy)

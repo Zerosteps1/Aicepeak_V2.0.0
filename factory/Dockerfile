@@ -9,8 +9,8 @@ WORKDIR /opt/factory-clients
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --include=optional --no-audit --no-fund \
     && PATH="/opt/factory-clients/node_modules/.bin:$PATH" \
-    && test "$(codex --version)" = "codex-cli 0.164.0" \
-    && test "$(claude --version)" = "2.1.311 (Claude Code)" \
+    && test "$(codex --version)" = "codex-cli $(node -p "require('./package.json').dependencies['@openai/codex']")" \
+    && test "$(claude --version)" = "$(node -p "require('./package.json').dependencies['@anthropic-ai/claude-code']") (Claude Code)" \
     && npm cache clean --force
 
 ENV DISABLE_UPDATES=1 \

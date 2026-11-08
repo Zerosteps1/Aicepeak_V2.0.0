@@ -13,13 +13,13 @@ import sys
 sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CLI use.
 
 import branches
+import clients
 import engine
-from contracts import Blocked, binding, digest, gates, require, validate_review
+from contracts import REVIEWER, Blocked, binding, digest, gates, maintainer, require, validate_review
 from github_api import installation, verify_run
 
-CODEX_VERSION = 'codex-cli 0.164.0'
-REVIEWER_IDENTITY = {'host': 'maintainer-local', 'client': CODEX_VERSION, 'model': 'gpt-6-astra',
-                     'effort': 'high', 'auth': 'chatgpt-workspace-access-token'}
+CODEX_VERSION = clients.VERSIONS['codex']
+REVIEWER_IDENTITY = {'host': 'maintainer-local', 'client': CODEX_VERSION, **REVIEWER, 'auth': 'chatgpt-workspace-access-token'}
 RESULT_NAME = 'factory/local-review-result'
 JOB_NAME = 'Review coordination'
 MAX_RECEIPT_BYTES = 60000
@@ -43,8 +43,6 @@ def verified_gate(gh, pr, check_id, config):
     snapshot = record.get('snapshot')
     require(isinstance(snapshot, dict) and snapshot.get('repository') == repo and snapshot.get('pr') == pr
             and snapshot.get('check_id') == check_id, 'pending receipt does not match its check')
-    # Receipts from before the target branch joined the binding never count; they need a fresh run.
-    require(isinstance(snapshot.get('base_ref'), str), 'legacy review binding; dispatch a fresh run')
     require(check['app']['id'] == config['publisher_app_id'] and check['external_id'] == binding(snapshot)
             and check['head_sha'] == snapshot['head_sha']
             and check['details_url'] == f"https://github.com/{repo}/actions/runs/{snapshot['run_id']}",
@@ -64,9 +62,7 @@ def require_review_budget(gh, pr, config):
 def workflow_run(gh, config, snapshot, run_id, jobs):
     run = verify_run(gh, snapshot, config, jobs, run_id=run_id)
     actor = run.get('triggering_actor', run.get('actor', {}))
-    require(actor.get('type') == 'User'
-            and any(actor.get('id') == m['id'] and actor.get('login') == m['login'] for m in config['maintainers']),
-            'review coordination requires a verified human maintainer')
+    require(maintainer(actor, config), 'review coordination requires a verified human maintainer')
     return {'id': actor['id'], 'login': actor['login']}
 
 
@@ -231,7 +227,7 @@ def main():
     parser.add_argument('--result-id', type=int, default=0)
     args = parser.parse_args()
     try:
-        config = engine.load_config()
+        config = branches.load_config()
         outcome = coordinate(installation(config, 'publisher'), config, args.pr, args.check_id, args.claim_id, args.result_id)
         print(json.dumps({'coordination': outcome}))
     except (Blocked, KeyError, ValueError, OSError) as exc:

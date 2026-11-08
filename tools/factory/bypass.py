@@ -12,23 +12,21 @@ sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CL
 from urllib.parse import quote
 
 import branches
-from contracts import Blocked, require, safe_path
+from contracts import Blocked, maintainer, require, safe_path
 
 
-def maintainer(user, config):
-    """The configured maintainer entry of a GitHub user (id and login must both match), else None."""
-    if not isinstance(user, dict) or user.get('type') != 'User':
-        return None
-    return next((m for m in config['maintainers'] if m['id'] == user.get('id')
-                 and m['login'].lower() == str(user.get('login', '')).lower()), None)
+def reason(text):
+    """A bypass reason as the check shows it: one line of 1 to 500 characters; control characters could forge lines
+    in the check output."""
+    value = ' '.join((text or '').split())
+    require(0 < len(value) <= 500 and not any(ord(c) < 32 or ord(c) == 127 for c in value),
+            'a bypass needs a comment `/bypass <reason>` with a reason of at most 500 characters')
+    return value
 
 
 def bypass_reason(body):
-    """Reason of `/bypass <reason>`: whitespace collapsed to one line, 1 to 500 characters."""
     match = re.match(r'/bypass\s(.*)', body or '', re.S)
-    reason = ' '.join(match[1].split()) if match else ''
-    require(0 < len(reason) <= 500, 'a bypass needs a comment `/bypass <reason>` with a reason of at most 500 characters')
-    return reason
+    return reason(match[1] if match else '')
 
 
 def unedited(comment):
@@ -38,7 +36,8 @@ def unedited(comment):
 
 
 def commanded_head(head, current, word):
-    """The head the dispatcher saw when the command was posted is still the PR's head."""
+    """`head` is the one the dispatcher saw when the command was posted: a maintainer vouches for that head, not for
+    commits pushed after the command."""
     require(isinstance(head, str) and re.fullmatch('[0-9a-f]{40}', head) is not None and head == current,
             f'the PR head changed after the command; post a new `{word}`')
 
@@ -93,7 +92,7 @@ def head_runs(gh, config, snap, name):
 
 def bound_runs(gh, config, snap, name, any_policy=False):
     """Publisher-App runs of check `name` on the head, bound to this PR, target and config tip; newest first.
-    any_policy also accepts runs bound to another config tip (only to explain why a bypass no longer holds)."""
+    any_policy also accepts other config tips, only to explain why a bypass given for one of them does not hold."""
     expected = [snap['repository'], str(snap['pr']), snap['head_sha'], snap['policy_sha'], snap['base_ref']]
     def bound(fields):
         return len(fields) == 7 and fields[:3] == expected[:3] and fields[4] == expected[4] and (any_policy or fields[3] == expected[3])
@@ -102,7 +101,6 @@ def bound_runs(gh, config, snap, name, any_policy=False):
 
 
 def comment_of(check):
-    """Comment ID in the receipt of a successful bypass check run, else None."""
     if (check.get('status'), check.get('conclusion')) != ('completed', 'success'):
         return None
     try:
@@ -131,7 +129,6 @@ def kept_run(gh, config, snap, name, any_policy=False):
 
 
 def kept_bypass(gh, config, snap, name, any_policy=False):
-    """Receipt of the bypass of `name` that still holds for this head, PR, target and config tip, or None."""
     return kept_run(gh, config, snap, name, any_policy)[1]
 
 
@@ -172,9 +169,9 @@ def pr_files(gh, repo, pr):
 
 
 def production_kind(model, repo, pr, files):
-    """Kind of a PR into a production branch: 'promotion' when its head is a validation branch of this repository;
-    otherwise 'work-order' when every path, rename sources included, is a work order or factory/config.json
-    (branches.config_change); else 'other'. files() returns the PR's file list; a promotion never reads it."""
+    """'promotion', 'work-order' (a config PR) or 'other' for a PR into a production branch. The pipeline and the
+    production check both classify with it, so they never disagree. `files` is a callable so that a promotion, which
+    may carry a whole validation branch, never reads its file list."""
     if model.level(pr['head']['ref']) == 'validation' and (pr['head'].get('repo') or {}).get('full_name') == repo:
         return 'promotion'
     paths = [p for f in files() for p in (f['filename'], f.get('previous_filename')) if p]

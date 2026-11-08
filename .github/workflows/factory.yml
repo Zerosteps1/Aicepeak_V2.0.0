@@ -1,3 +1,11 @@
+# Why: every factory stage that holds a credential (App keys, the Anthropic federation, the publisher's write access)
+# must run trusted code, so all of them live in this one workflow and run only from the config branch tip.
+# What: snapshot -> deterministic tests -> publish gates for each PR; the senior-review coordination and the
+# automatic correction (author, push); the /review and /bypass commands; the issue reviewer and /accept for
+# work-order issues; a WIF smoke.
+# When: never on its own events. factory-dispatch.yml dispatches it (workflow_dispatch on the config branch) for PR
+# events, feedback and commands; a maintainer device dispatches the correction after a review; a maintainer
+# dispatches it by hand only for an explicit retry.
 name: Factory trusted pipeline
 
 on:
@@ -317,7 +325,7 @@ jobs:
         run: python3 tools/factory/engine.py review-request --pr "$PR_NUMBER" --comment-id "$COMMENT_ID" --head "$HEAD_SHA"
 
   # A maintainer's /bypass <reason> comment publishes the PR's required factory checks for the head
-  # it was posted for as passed by bypass, recording login and reason. Never for work-order/config PRs.
+  # it was posted for as passed by bypass, recording login and reason. Never for config PRs.
   bypass:
     name: Bypass
     if: ${{ !inputs.wif_smoke && inputs.issue == '0' && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' && inputs.bypass != '' && inputs.review_request == '' && inputs.correction == '' && inputs.review_check == '' && inputs.review_claim == '' && inputs.review_result == '' }}
@@ -338,7 +346,7 @@ jobs:
           HEAD_SHA: ${{ inputs.head }}
         run: python3 tools/factory/engine.py bypass --pr "$PR_NUMBER" --comment-id "$COMMENT_ID" --head "$HEAD_SHA"
 
-  # Work-order issues (FACTORY-009, tools/factory/issue_review.py). A maintainer's /review on a maintainer's issue:
+  # Work-order issues (tools/factory/issue_review.py). A maintainer's /review on a maintainer's issue:
   # the review job calls the model without any App key, the publish job posts with the publisher App and no
   # model credential. A maintainer's /accept: the accept job edits only the factory-task block and records the approval.
   issue-review:

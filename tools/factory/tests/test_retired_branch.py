@@ -1,12 +1,8 @@
-"""AC-14: branch names come from the config branch, so trusted code never names the retired default branch."""
-import os
-from pathlib import Path
+"""Branch names come from the config branch, so trusted code never names the reserved default branch name `main`."""
 import re
-import sys
 import unittest
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
+from factory_testlib import ROOT
 import branches
 
 RETIRED = 'main'
@@ -16,7 +12,6 @@ DEFINITION = re.compile(r"RESERVED = \((?:'[a-z]+', )*'[a-z]+'\)")
 
 
 def sources(root):
-    """Trusted factory code (tests excluded), the CLI installer, the workflows and the dispatcher."""
     factory = root / 'tools/factory'
     found = [p for p in factory.rglob('*.py') if 'tests' not in p.relative_to(factory).parts]
     found += [*(factory / 'cli').glob('*.sh'), *(root / '.github/workflows').glob('*.yml'),
@@ -25,7 +20,7 @@ def sources(root):
 
 
 def offending(name, text):
-    """(line number, line) of every use of the retired name as a word, apart from the entry-point idiom and the
+    """(line number, line) of every use of the reserved name as a word, apart from the entry-point idiom and the
     definition of branches.RESERVED."""
     return [(number, line) for number, line in enumerate(text.splitlines(), 1)
             if WORD.search(CALL.sub('', line))
@@ -44,7 +39,7 @@ class RetiredBranchName(unittest.TestCase):
         found = [f'{name}:{number}: {line.strip()}' for name, path in files.items()
                  for number, line in offending(name, path.read_text())]
         self.assertEqual(found, [])
-        # The retired name stays reserved, and its one allowed literal is that definition.
+        # The name stays reserved, and its one allowed literal is that definition.
         self.assertIn(RETIRED, branches.RESERVED)
         self.assertEqual(sum(bool(DEFINITION.fullmatch(line))
                              for line in files['tools/factory/branches.py'].read_text().splitlines()), 1)

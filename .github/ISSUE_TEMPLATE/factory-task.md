@@ -6,7 +6,7 @@ labels: ''
 assignees: ''
 ---
 
-*A work order for the factory ([way of working](https://github.com/Zerosteps1/Aicepeak_V2.0.0/blob/testing/docs/way-of-working.md)). Only issues opened by a configured maintainer count. Fill in the sections and delete the guidance in italics, then comment `/review`: the factory proposes `allowed_paths` and fixes for weak or missing sections, which you copy into this description by hand. A maintainer's `/accept` writes the proposed paths into the block below and approves the work order. Any later edit of the title or the description withdraws the approval until it is accepted again (`/review`, then `/accept`). Then: `factory start workorder <issue number>`.*
+*A work order for the factory ([way of working](https://github.com/Zerosteps1/Aicepeak_V2.0.0/blob/testing/docs/way-of-working.md)). Only issues opened by a configured maintainer count. Fill in the sections and delete the guidance in italics, then comment `/review`: the factory proposes `allowed_paths` and fixes for weak or missing sections, which you copy into this description by hand. A maintainer's `/accept` writes the proposed paths into the block below and approves the work order. Any later edit of the title or the description withdraws the approval until it is accepted again (`/review`, then `/accept`). Then: `factory start workorder <issue number>`. One work order is one PR: its branch is `<issue number>-<title words>` (as GitHub's "Create a branch" names it), its PR says `Closes #<issue number>`, and merging it into `testing` closes this issue; follow-up work is a new work order.*
 
 ```factory-task
 {"status":"draft","kind":"factory","allowed_paths":[]}

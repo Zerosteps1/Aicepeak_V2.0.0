@@ -69,7 +69,7 @@ self="tools/factory/cli/install-factory-cli.sh"
 name_pattern='^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$'
 safe_git() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
 
-# Before the owner runbook of ADR-0008, GitHub's default branch still carries the configuration without a branch model.
+# A configuration without a branch model means the branch model is not set up on GitHub yet; the message names its runbook.
 not_yet="GitHub does not carry the branch model of FACTORY-008 yet, and the installer installs only what GitHub's config \
 branch carries: finish the owner runbook in docs/decisions/0008-branch-model.md (land the change, rename the default \
 branch, create the config branch), then retry"

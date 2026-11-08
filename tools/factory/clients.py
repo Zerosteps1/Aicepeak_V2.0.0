@@ -35,8 +35,6 @@ SKILLS = ("factory-start", "factory-change", "factory-review", "factory-fix-revi
 CONTROL_PATHS = (".agents", ".claude", ".codex", ".mcp.json", "AGENTS.md", "CLAUDE.md", "factory", "tools/factory")
 IGNORED_DIRS = {".git", ".agents", ".claude", ".codex", ".ssh", ".aws", ".azure", ".kube", "node_modules", ".venv", "__pycache__"}
 IGNORED_FILES = {".git", "AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", ".mcp.json", ".npmrc", ".netrc", ".pypirc"}
-IMAGE = "aicepeak-factory-clients:codex-0.164.0-claude-2.1.311"
-VERSIONS = {"codex": "codex-cli 0.164.0", "claude": "2.1.311 (Claude Code)"}
 AUTHOR_TOOLS = "Bash,Read,Write,Edit,Glob,Grep,Agent,Skill"
 # --allowedTools only pre-approves; --tools removes every other built-in tool (Agent, Bash, Edit, Write, ...).
 REVIEW_TOOLS = "Read,Glob,Grep,Skill"
@@ -52,8 +50,7 @@ class ClientError(ValueError):
 
 
 class CommandFailed(ClientError):
-    """A captured command exited non-zero. Its stdout stays with the error for the caller's own
-    diagnosis (the worker's final events); it is never shown raw."""
+    """Carries stdout for the caller's own diagnosis (the worker's final events); it is never shown raw."""
     def __init__(self, tool: str, returncode: int, detail: str, stdout: bytes = b""):
         super().__init__(f"{tool} failed ({returncode}): {detail}")
         self.tool, self.returncode, self.detail, self.stdout = tool, returncode, detail, stdout
@@ -75,11 +72,31 @@ def regular_read(path: Path, limit=2 * 1024 * 1024) -> bytes:
     return path.read_bytes()
 
 
+def pinned_clients() -> tuple[str, dict[str, str]]:
+    """(image tag, `--version` output per runner) from the npm manifest that installs both CLIs, so a version bump in
+    that one file changes the image, the worker check and every reviewer check. The worker container mounts only this
+    file and proxy.py, so it reads the manifest's copy in the image."""
+    for path in (Path(__file__).resolve().parents[2] / "factory/package.json", Path("/opt/factory-clients/package.json")):
+        if path.is_file():
+            pins = json.loads(regular_read(path, 100000))["dependencies"]
+            codex, claude = pins["@openai/codex"], pins["@anthropic-ai/claude-code"]
+            return (f"aicepeak-factory-clients:codex-{codex}-claude-{claude}",
+                    {"codex": f"codex-cli {codex}", "claude": f"{claude} (Claude Code)"})
+    raise ClientError("factory/package.json not found")
+
+
+IMAGE, VERSIONS = pinned_clients()
+
+
 def configuration(root: Path) -> dict:
     return json.loads(regular_read(root / "factory/config.json"))
 
 
 def render_adapters(root: Path) -> dict[str, bytes]:
+    try:  # host only: the worker container mounts no contracts.py, and it never renders adapters
+        from .contracts import REVIEWER
+    except ImportError:
+        from contracts import REVIEWER
     config = configuration(root)
     result = {"CLAUDE.md": b"@AGENTS.md\n"}
     for name in SKILLS:
@@ -96,9 +113,9 @@ def render_adapters(root: Path) -> dict[str, bytes]:
             raise ClientError("role references an unknown skill")
         codex_name = "factory_author" if name == "author" else "factory_senior_reviewer"
         claude_name = "factory-author" if name == "author" else "factory-local-reviewer"
-        model = config["author_models"]["codex"] if name == "author" else config["review_model"]
+        model, effort = (config["author_models"]["codex"], "high") if name == "author" else (REVIEWER["model"], REVIEWER["effort"])
         # Codex roles cannot set sandbox_mode; the local reviewer inherits the session sandbox.
-        codex = f'model = {json.dumps(model)}\nmodel_reasoning_effort = "high"\ndeveloper_instructions = {json.dumps(data["instructions"])}\n'
+        codex = f'model = {json.dumps(model)}\nmodel_reasoning_effort = {json.dumps(effort)}\ndeveloper_instructions = {json.dumps(data["instructions"])}\n'
         result[f".codex/agents/{codex_name}.toml"] = codex.encode()
         tools = "Read, Glob, Grep, Bash, Edit, Write, Skill" if name == "author" else "Read, Glob, Grep, Skill"
         tools += ", mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__openai_docs__search_openai_docs, mcp__openai_docs__list_openai_docs, mcp__openai_docs__fetch_openai_doc"
@@ -359,7 +376,7 @@ def printable(text: str, limit: int) -> str:
 
 
 def tool_summaries(event) -> list[str]:
-    """One line per tool call: tool name and its target. No model text or reasoning."""
+    """Only the tool name and its target: model text and reasoning never reach the event log."""
     message = event.get("message") if isinstance(event, dict) and event.get("type") == "assistant" else None
     content = message.get("content") if isinstance(message, dict) else None
     lines = []
@@ -375,7 +392,6 @@ def tool_summaries(event) -> list[str]:
 
 
 class EventSink:
-    """Keeps the final result line and appends bounded tool summaries to a 0600 file."""
     def __init__(self, path: Path, secrets: tuple[str, ...]):
         self.descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         self.secrets, self.result, self.written = secrets, None, 0
@@ -976,6 +992,7 @@ def _cancelled(_signum, _frame):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("image", help="print the author image tag that factory/package.json pins")
     for name in ("check", "sync", "smoke", "launch", "run"):
         item = sub.add_parser(name)
         item.add_argument("--root", type=Path, required=True)
@@ -1001,6 +1018,9 @@ def main():
     item = sub.add_parser("_smoke")
     item.add_argument("--host-canary", type=Path, required=True)
     args = parser.parse_args()
+    if args.command == "image":
+        print(IMAGE)
+        return 0
     try:
         if args.command == "_smoke":
             print(json.dumps(smoke_inside(args.host_canary)))

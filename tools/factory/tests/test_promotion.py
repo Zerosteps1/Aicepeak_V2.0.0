@@ -5,24 +5,18 @@ import copy
 import io
 import json
 import os
-from pathlib import Path
-import sys
 import unittest
 from unittest.mock import patch
 from urllib.parse import unquote
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
+from factory_testlib import DISPATCHER, FIXTURE_REPO as REPO, ROOT, STRANGER
 import promotion
 from contracts import Blocked, binding
 
-REPO = 'fixture/repo'
 HEAD, PRODUCTION, RELEASE, OTHER = 'a' * 40, 'b' * 40, 'c' * 40, 'd' * 40
 ALICE = {'type': 'User', 'id': 101, 'login': 'alice'}
 BOB = {'type': 'User', 'id': 102, 'login': 'Bob'}
-STRANGER = {'type': 'User', 'id': 999, 'login': 'stranger'}
 ENV = {'GITHUB_REF': 'refs/heads/production', 'GITHUB_SHA': PRODUCTION, 'GITHUB_RUN_ID': '9', 'GITHUB_RUN_ATTEMPT': '1'}
-DISPATCHER = {'type': 'Bot', 'id': 41898282, 'login': 'github-actions[bot]'}
 POSTED, COMMITTED = '2026-11-01T10:00:00Z', '2026-11-01T09:59:00Z'
 
 
@@ -42,7 +36,7 @@ def config():
                 {'name': 'scratch', 'gate': 'none', 'kinds': []}],
                 'production': [{'name': 'production', 'review': 'maintainer-manual'},
                                {'name': 'release', 'review': 'no'}]},
-            'maintainers': [{'login': 'alice', 'id': 101}, {'login': 'bob', 'id': 102}]}
+            'maintainers': [{'login': 'alice', 'id': 101}, {'login': 'bob', 'id': 102}], 'work_order_approvals': 2}
 
 
 class FakeGitHub:
@@ -103,7 +97,7 @@ class PromotionTests(unittest.TestCase):
         self.gh = FakeGitHub()
 
     def judge(self, bypass=0, env=None, value=None, head=HEAD):
-        """The single published check, or None when nothing was published."""
+        """Every judgement publishes exactly one check; that check is returned."""
         with patch.object(promotion, 'installation', return_value=self.gh):
             promotion.run(argparse.Namespace(pr=5, bypass_comment=bypass, head=head), value or config(), env or ENV)
         self.assertEqual(len(self.gh.posted), 1)
@@ -232,7 +226,7 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(check['output']['title'], 'Bypassed by alice')
         self.assertIn(':9:1', check['external_id'])  # Bound to this run, not the earlier one.
 
-    def test_earlier_bypass_does_not_carry_to_another_head_policy_target_app_or_legacy_binding(self):
+    def test_earlier_bypass_does_not_carry_to_another_head_policy_target_app_or_malformed_binding(self):
         for change in ({'head_sha': OTHER}, {'external_id': f'{REPO}:5:{HEAD}:{OTHER}:production:8:1'},
                        {'external_id': f'{REPO}:5:{HEAD}:{PRODUCTION}:release:8:1'},
                        {'external_id': f'{REPO}:6:{HEAD}:{PRODUCTION}:production:8:1'},
@@ -244,25 +238,25 @@ class PromotionTests(unittest.TestCase):
                 self.comment('/bypass release freeze')
                 self.gh.checks = [self.bypass_check(**change)]
                 self.assertRefused(self.judge(), 'the head is not the current tip of testing')
-        # A deleted or rewritten comment no longer bypasses.
+        # A deleted or rewritten comment does not bypass.
         self.gh = FakeGitHub()
         self.gh.tips['testing'] = OTHER
         self.comment('just a note')
         self.gh.checks = [self.bypass_check()]
         self.assertRefused(self.judge(), 'the head is not the current tip of testing')
 
-    def work_order_pr(self, *paths, renames=()):
-        self.gh.pr['head'].update(ref='ftrutschnig/FACTORY-009')
+    def config_pr(self, *paths, renames=()):
+        self.gh.pr['head'].update(ref='ftrutschnig/config-add-qa')
         self.gh.files = [{'filename': p} for p in paths] + [{'filename': new, 'previous_filename': old} for old, new in renames]
         self.gh.pr['changed_files'] = len(self.gh.files)
 
     def review(self, user, state='APPROVED', commit=HEAD, ident=None):
         self.gh.reviews.append({'id': ident or 100 + len(self.gh.reviews), 'user': user, 'state': state, 'commit_id': commit})
 
-    def test_work_order_pr_needs_two_maintainer_accounts_at_the_head(self):
-        self.work_order_pr('docs/work/FACTORY-009.md', 'factory/config.json')
+    def test_config_pr_needs_two_maintainer_accounts_at_the_head(self):
+        self.config_pr('docs/work/FACTORY-009.md', 'factory/config.json')
         self.review(ALICE)
-        check = self.judge()  # no work_order_approvals in config.json: two, as before the setting existed
+        check = self.judge()
         self.assertRefused(check, 'Needs approving reviews by 2 maintainer accounts', 'approved by: alice')
         self.assertEqual(check['output']['title'], 'Work-order/config PR')
         self.gh.posted.clear()
@@ -272,7 +266,7 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(json.loads(check['output']['text']), {'production': {'kind': 'work-order', 'approvals': ['alice', 'bob']}})
 
     def test_work_order_approvals_sets_how_many_maintainer_accounts_approve(self):
-        self.work_order_pr('docs/work/FACTORY-009.md')
+        self.config_pr('docs/work/FACTORY-009.md')
         one = {**config(), 'work_order_approvals': 1}
         check = self.judge(value=one)
         self.assertRefused(check, 'Needs approving reviews by 1 maintainer account at', 'approved by: nobody')
@@ -281,6 +275,12 @@ class PromotionTests(unittest.TestCase):
         check = self.judge(value=one)
         self.assertEqual((check['conclusion'], json.loads(check['output']['text'])),
                          ('success', {'production': {'kind': 'work-order', 'approvals': ['bob']}}))
+        # The number is required: a configuration without it, or with more than there are maintainers, judges nothing.
+        for value in ({k: v for k, v in config().items() if k != 'work_order_approvals'}, {**config(), 'work_order_approvals': 3}):
+            with self.subTest(value=value.get('work_order_approvals')), \
+                    patch.object(promotion, 'installation', side_effect=AssertionError('no credential')), \
+                    self.assertRaisesRegex(Blocked, 'work_order_approvals must be a whole number from 1 to the number of maintainers'):
+                promotion.run(argparse.Namespace(pr=5, bypass_comment=0, head=''), value, ENV)
 
     def test_approvals_that_do_not_count(self):
         cases = {'same account twice': [(ALICE,), (ALICE,)],
@@ -294,21 +294,21 @@ class PromotionTests(unittest.TestCase):
         for name, reviews in cases.items():
             with self.subTest(name):
                 self.gh = FakeGitHub()
-                self.work_order_pr('docs/work/FACTORY-009.md')
+                self.config_pr('docs/work/FACTORY-009.md')
                 for review in reviews:
                     self.review(*review)
                 self.assertRefused(self.judge(), 'approved by: alice')
         self.gh = FakeGitHub()
-        self.work_order_pr('docs/work/FACTORY-009.md')
+        self.config_pr('docs/work/FACTORY-009.md')
         self.review(BOB, 'CHANGES_REQUESTED', ident=1)
         self.review(ALICE, ident=2)
         self.review(BOB, ident=3)
         self.review(BOB, 'COMMENTED', ident=4)  # A comment does not withdraw a decision.
         self.assertEqual(self.judge()['conclusion'], 'success')
 
-    def test_bypass_never_applies_to_work_order_or_other_prs(self):
+    def test_bypass_never_applies_to_config_or_other_prs(self):
         ident = self.comment('/bypass urgent')
-        self.work_order_pr('docs/work/FACTORY-009.md')
+        self.config_pr('docs/work/FACTORY-009.md')
         self.review(ALICE)
         check = self.judge(ident)
         self.assertRefused(check, 'Needs approving reviews', '`/bypass` does not apply')
@@ -322,6 +322,7 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(check['output']['title'], 'Refused')
 
     def test_anything_else_is_refused(self):
+        self.assertEqual(promotion.REFUSED, 'only promotions and config PRs may target a production branch')
         cases = [(['docs/work/FACTORY-009.md', 'README.md'], ()), (['docs/work/sub/FACTORY-009.md'], ()),
                  (['docs/work/FACTORY-009.txt'], ()), (['factory/config.json.bak'], ()), ([], ()),
                  ([], (('tools/factory/engine.py', 'docs/work/FACTORY-009.md'),)),
@@ -329,18 +330,18 @@ class PromotionTests(unittest.TestCase):
         for paths, renames in cases:
             with self.subTest(paths=paths, renames=renames):
                 self.gh = FakeGitHub()
-                self.work_order_pr(*paths, renames=renames)
+                self.config_pr(*paths, renames=renames)
                 self.review(ALICE)
                 self.review(BOB)
                 self.assertRefused(self.judge(), promotion.REFUSED)
         self.gh = FakeGitHub()
-        self.work_order_pr(renames=(('docs/work/OLD.md', 'docs/work/NEW.md'),))
+        self.config_pr(renames=(('docs/work/OLD.md', 'docs/work/NEW.md'),))
         self.review(ALICE)
         self.review(BOB)
         self.assertEqual(self.judge()['conclusion'], 'success')
 
     def test_incomplete_file_list_publishes_nothing(self):
-        self.work_order_pr('docs/work/FACTORY-009.md')
+        self.config_pr('docs/work/FACTORY-009.md')
         self.gh.pr['changed_files'] = 2
         with patch.object(promotion, 'installation', return_value=self.gh), self.assertRaisesRegex(Blocked, 'incomplete'):
             promotion.run(argparse.Namespace(pr=5, bypass_comment=0, head=''), config(), ENV)
@@ -411,8 +412,6 @@ class PromotionTests(unittest.TestCase):
         self.assertIn('--head "$HEAD_SHA"', workflow)
         self.assertIn('HEAD_SHA: ${{ inputs.head }}', workflow)
 
-    # Review fixes: the AI review is part of the production check (D1); a /bypass binds its head (D3).
-
     def test_promotion_into_maintainer_manual_needs_a_passed_review_bound_to_this_pr(self):
         cases = {'missing': ([], 'the AI review of this head is missing: a maintainer comments `/review` (a review that passed since '
                                  'needs only a re-run of this check: `gh workflow run factory-promotion.yml --repo fixture/repo '
@@ -420,7 +419,7 @@ class PromotionTests(unittest.TestCase):
                  'another PR on the same commit': ([senior(pr=6)], 'is missing'),
                  'another target': ([senior(base='release')], 'is missing'),
                  'an older config tip': ([senior(policy=OTHER)], 'is missing'),
-                 'legacy binding': ([senior(external_id=f'{REPO}:5:{HEAD}:{PRODUCTION}:3:1')], 'is missing'),
+                 'a binding without the target': ([senior(external_id=f'{REPO}:5:{HEAD}:{PRODUCTION}:3:1')], 'is missing'),
                  'another App': ([senior(app={'id': 8})], 'is missing'),
                  'in progress': ([senior(status='in_progress', conclusion=None)], 'awaiting the local AI review'),
                  'failed': ([senior(conclusion='failure')], 'the AI review did not pass'),
@@ -475,9 +474,9 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual((check['conclusion'], check['output']['title']), ('success', 'Bypassed by alice'))
         self.assertFalse(any(path.endswith('/files') or path.endswith('/reviews') for _, path in self.gh.calls))
 
-    def test_work_order_pr_into_maintainer_manual_needs_no_ai_review(self):
+    def test_config_pr_into_maintainer_manual_needs_no_ai_review(self):
         self.gh.checks = []
-        self.work_order_pr('docs/work/FACTORY-009.md', 'factory/config.json')
+        self.config_pr('docs/work/FACTORY-009.md', 'factory/config.json')
         self.review(ALICE)
         self.review(BOB)
         check = self.judge()

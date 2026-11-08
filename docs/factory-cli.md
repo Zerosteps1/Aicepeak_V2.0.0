@@ -1,14 +1,14 @@
 # The factory command
 
-`factory` is the maintainer's daily command for the [software factory](software-factory.md). It issues and activates work orders, runs the isolated author, fixes and reviews, submits, watches, merges and promotes, brings the config branch back into your branches (`factory update`), and manages the branch list, from any directory. It manages two checkouts for you: the **control checkout** (trusted CLI code on the listed branch you follow, by default the config branch `production`) and the **candidate checkout** (where your changes land). Every rule (branch list, gates, routing, policy and limits) comes from the tip of the **config branch** ([branch model](factory-branches.md)); work orders are approved GitHub issues ([ADR-0009](decisions/0009-issues-as-work-orders.md)), legacy work-order files also come from the config branch tip. It adds no new authority: the gate, the binding review, the isolated launcher, the credential broker and the human merge work exactly as described in [software-factory.md](software-factory.md). The decision records are [ADR-0007](decisions/0007-factory-cli.md), [ADR-0008](decisions/0008-branch-model.md) and [ADR-0009](decisions/0009-issues-as-work-orders.md); the daily flow is in [way-of-working.md](way-of-working.md).
+`factory` is the maintainer's daily command for the [software factory](software-factory.md). It runs the isolated author on work orders, fixes and reviews, submits, watches, merges and promotes, brings the config branch back into your branches (`factory update`), and manages the branch list, from any directory. It manages two checkouts for you: the **control checkout** (trusted CLI code on the listed branch you follow, by default the config branch `production`) and the **candidate checkout** (where your changes land). Every rule (branch list, gates, routing, policy and limits) comes from the tip of the **config branch** ([branch model](factory-branches.md)); a work order is an approved GitHub issue ([ADR-0009](decisions/0009-issues-as-work-orders.md)) whose number is its ID. The examples use **57** as that issue number: texts write `#57`, and in the shell you write `57` or `"#57"` (quoted, because `#` after a space starts a comment); **42** stands for a pull request number. It adds no new authority: the gate, the binding review, the isolated launcher, the credential broker and the human merge work exactly as described in [software-factory.md](software-factory.md). The decision records are [ADR-0007](decisions/0007-factory-cli.md), [ADR-0008](decisions/0008-branch-model.md) and [ADR-0009](decisions/0009-issues-as-work-orders.md); the daily flow is in [way-of-working.md](way-of-working.md).
 
 ```sh
 factory --help              # commands grouped by flow
 factory <command> --help    # what it does, when to use it, examples, documentation
-factory --version           # the version of the CLI in use: "factory 0.4.0"
+factory --version           # the version of the CLI in use: "factory 0.5.0"
 ```
 
-Help and `--version` work without installation, configuration, lock or network. The version is `VERSION` in `tools/factory/cli/factory.py`, the copy in your control checkout; this documentation describes `factory 0.4.0`. Help texts link to the documentation on the config branch.
+Help and `--version` work without installation, configuration, lock or network. The version is `VERSION` in `tools/factory/cli/factory.py`, the copy in your control checkout; this documentation describes `factory 0.5.0`. Help texts link to the documentation on the config branch.
 
 ## Install
 
@@ -25,10 +25,10 @@ The installer has two stages:
 1. **The script** checks `git`, `gh` and Python and takes the initial configuration from a production branch, because only reviewed PRs reach those. Production branches are the ones GitHub protects with an active ruleset `Factory production: <branch>` that targets exactly that branch; only an admin creates these rulesets (`settings.py apply`), and `gh` reads them with any login that can read the repository.
    - One protected production branch: it is used.
    - Several: on a terminal the script lists them and asks for a number; otherwise name one with `--config-branch NAME`.
-   - `--config-branch NAME` must name a protected production branch.
-   - None yet (before `settings.py apply`), or `gh` cannot read the rulesets: the script falls back to the GitHub default branch and prints `note: GitHub protects no production branch yet …; the default branch <name> names the config branch`.
+   - `--config-branch NAME` must name a protected production branch whenever GitHub protects any; without protected branches (or when `gh` cannot read the rulesets) any valid branch name is taken.
+   - None, or `gh` cannot read the rulesets: the script falls back to the GitHub default branch and prints `note: GitHub protects no production branch yet …; the default branch <name> names the config branch`.
 
-   It reads the `config_branch` that branch's `factory/config.json` names, fetches the config branch and checks that the configuration there names that same branch and lists the control branch (`--branch`, default: the config branch). When GitHub protects production branches, the config branch must be one of them. Every problem with a configuration (missing file, invalid JSON, no `config_branch`, no branch list, a branch missing on GitHub) ends with a message that names it; while GitHub's default branch still carries the configuration from before the branch model, the message names the [owner runbook](decisions/0008-branch-model.md#owner-runbook-after-the-merge). After a finished [change of the config branch](#factory-set-config-branch) that configuration names another listed production branch whose own configuration names itself: the script then fetches that branch too, follows it once (printing `note: <old> names the config branch <new>; following it`) and uses it as the config branch from then on. It compares itself with the config branch's copy, clones the control checkout on the control branch if it is missing (or switches a clean existing one to it and fast-forwards it), and then starts stage 2 from the control checkout.
+   It reads the `config_branch` that branch's `factory/config.json` names, fetches the config branch and checks that the configuration there names that same branch and lists the control branch (`--branch`, default: the config branch). When GitHub protects production branches, the config branch must be one of them. Every problem with a configuration (missing file, invalid JSON, no `config_branch`, no branch list, a branch missing on GitHub) ends with a message that names it. After a finished [change of the config branch](#factory-set-config-branch) that configuration names another listed production branch whose own configuration names itself: the script then fetches that branch too, follows it once (printing `note: <old> names the config branch <new>; following it`) and uses it as the config branch from then on. It compares itself with the config branch's copy, clones the control checkout on the control branch if it is missing (or switches a clean existing one to it and fast-forwards it), and then starts stage 2 from the control checkout.
 2. **Stage 2** (`factory.py _install`, reviewed code of the control branch) verifies the control checkout (configured repository, on the control branch, clean including untracked and ignored files, listed on the config branch) and fast-forwards it, reuses or clones the candidate checkout, asks for a local Git `user.name`/`user.email` in the candidate if missing (default: your global Git setting), writes the device configuration (including the control branch) and the shim, adds a PATH block to `~/.zshrc` only if the shim directory is not on `PATH`, and offers to store the author keys in the macOS login keychain.
 
 | Option | Default | Meaning |
@@ -40,7 +40,7 @@ The installer has two stages:
 | `--config-branch NAME` | the protected production branch | Production branch to take the initial configuration from; needed without a terminal when GitHub protects several |
 | `--author-keys` | off | Store the author keys again (rotation), even if keychain items exist |
 
-A second run with the same options changes nothing. An existing control clone is switched to the control branch and fast-forwarded before its stage 2 starts; the script stops if that clone has local changes, extra or ignored files, or own commits on that branch. A device installed before the branch model (control checkout on `main`) stops working once `main` is renamed; reinstall it as described in [dev-setup.md](dev-setup.md#install-the-factory-command). An existing candidate clone (for example an earlier `Aicepeak-candidate`) is reused if it is a plain clone of the configured repository (its `.git` is a folder, not a linked worktree) whose local Git configuration contains only the keys `factory` accepts ([troubleshooting](#troubleshooting)).
+A second run with the same options changes nothing. An existing control clone is switched to the control branch and fast-forwarded before its stage 2 starts; the script stops if that clone has local changes, extra or ignored files, or own commits on that branch. An existing candidate clone is reused if it is a plain clone of the configured repository (its `.git` is a folder, not a linked worktree) whose local Git configuration contains only the keys `factory` accepts ([troubleshooting](#troubleshooting)).
 
 **Author keys.** Author runs need `ANTHROPIC_API_KEY` and `CONTEXT7_API_KEY`. The installer stores them as the keychain items `aicepeak-factory-anthropic-api-key` and `aicepeak-factory-context7-api-key` through `security add-generic-password` at a hidden prompt (enter the value twice). Exported environment variables win over the keychain. Rotate with `install-factory-cli.sh --author-keys`. Without a macOS keychain, export both variables before author runs. Reviewer-only devices need no author keys.
 
@@ -53,130 +53,100 @@ After installing, open a new terminal if the installer added the PATH block, the
 | Control checkout (default `../aicepeak-control-checkout`) | Clean clone on its control branch: the config branch by default, or the listed branch chosen with [factory use branch](#factory-use-branch). `factory` verifies and fast-forwards it before every command and runs trusted CLI code only from it. Never change, add or delete anything there; `factory` refuses to run while it differs from that branch and never deletes files there itself. |
 | Candidate checkout (default `../aicepeak-candidate`) | Your working clone: branches, edits, staging, commits. Every command acts on it, whatever your current directory. |
 | `~/.local/bin/factory` | The shim: runs the configured control checkout's `tools/factory/cli/factory.py` with the Python found at install time (`-I -S -B`). An existing file that is not this shim is never replaced. |
-| `~/.config/aicepeak-factory/cli.json` | Device configuration (mode 0600): absolute paths of control, candidate, Python and shim directory, and the control branch (`branch`). A configuration without `branch` (installed before the branch model) gets the verified control branch recorded by the next command, before any fast-forward. The repository and every rule always come from `factory/config.json`, never from here. |
+| `~/.config/aicepeak-factory/cli.json` | Device configuration (mode 0600): absolute paths of control, candidate, Python and shim directory, and the control branch (`branch`). The repository and every rule always come from `factory/config.json`, never from here. |
 | `~/.local/state/aicepeak-factory/runs/` | One folder per run ([details](#runs-steps-budget-and-logs)). |
-| `~/.local/state/aicepeak-factory/locks/` | `control.lock` and `candidate.lock` with a `.holder` note (process, command, start time). The kernel releases a lock when its holder ends; there is nothing to delete by hand. |
+| `~/.local/state/aicepeak-factory/locks/` | `control.lock`, `candidate.lock` and one `start-<work order>.lock` per starting run (`start-hotfix.lock` for a hotfix without a work order), each with a `.holder` note (process, command, start time). The kernel releases a lock when its holder ends; there is nothing to delete by hand. |
 | `~/.local/state/aicepeak-factory/reviews/` | Saved reports of `factory review`. |
 | `~/.local/state/aicepeak-factory/branches.html` | The page written by `factory branches --show`. |
 | `~/.local/state/aicepeak-factory/tmp/` | Disposable checkouts; each is removed after use. |
 
-`factory` puts the pinned Codex directory `~/.local/share/aicepeak-factory-cli/node_modules/.bin` in front of the `PATH` of its helper processes, so the reviewer finds `codex-cli 0.164.0` without an `export` in your terminal. When you run a command outside the candidate, it prints `(working on the candidate checkout …)`.
+`factory` puts the pinned Codex directory `~/.local/share/aicepeak-factory-cli/node_modules/.bin` in front of the `PATH` of its helper processes, so the reviewer finds the Codex CLI that [factory/package.json](../factory/package.json) pins without an `export` in your terminal. When you run a command outside the candidate, it prints `(working on the candidate checkout …)`.
 
-**Which code and which rules.** The CLI code is the control checkout's commit. Every rule is read from `factory/config.json` and `docs/work/` at the config branch tip that the command fetched and pinned: the branch list, gates, routing, review modes, limits and legacy work-order files. Work-order issues are read from GitHub with your own `gh` login and count only while approved ([factory issue](#factory-issue)). `session.py` and `doctor.py` always run from a disposable checkout of that config branch tip, so the checks and reviews they start bind to it even when your control checkout follows a validation branch. Only the repository and the name of the config branch come from the control checkout's own `factory/config.json`. When the configuration on that branch names another listed production branch whose own configuration names itself (a finished [config branch change](#factory-set-config-branch)), `factory` fetches both and follows that one hop; every message and every later use then names the followed config branch.
+**Which code and which rules.** The CLI code is the control checkout's commit. Every rule is read from `factory/config.json` at the config branch tip that the command fetched and pinned: the branch list, gates, routing, review modes and limits (and from there the device smoke's work-order file). Work-order issues are read from GitHub with your own `gh` login and count only while approved ([work orders](#work-orders)). `session.py` and `doctor.py` always run from a disposable checkout of that config branch tip, so the checks and reviews they start bind to it even when your control checkout follows a validation branch. Only the repository and the name of the config branch come from the control checkout's own `factory/config.json`. When the configuration on that branch names another listed production branch whose own configuration names itself (a finished [config branch change](#factory-set-config-branch)), `factory` fetches both and follows that one hop; every message and every later use then names the followed config branch.
 
 ## Daily flow
 
 ```sh
-factory issue --title "Export energy costs as CSV"   # write the work order in your editor; creates issue #57
-                                                     # on the issue: /review (factory proposes allowed_paths and fixes),
-                                                     # edit by hand, /review again, then /accept (approves it)
-factory start workorder 57                           # author → preflight → corrections → applied, unstaged
+# On GitHub: open an issue with the "Factory work order" template (issue #57),
+# comment /review (the factory proposes allowed_paths and fixes), edit by hand, /review again, then /accept
+factory start workorder 57                           # author → preflight → corrections → applied, unstaged, on 57-<issue title>
 git diff; git add -p                                 # in the candidate: review and stage what you accept
 factory submit                                       # commit the staged files and push (repeat as needed)
 factory submit --finished                            # open the PR into the routed validation branch, preflight, ready on pass, watch
-factory watch 52                                     # later reviews: after new pushes or comments
-factory merge 52 --dry-run && factory merge 52
+factory watch 42                                     # later reviews of PR 42: after new pushes or comments
+factory merge 42 --dry-run && factory merge 42
 factory promote testing                              # when testing should go to production
                                                      # merge the promotion on GitHub ("Create a merge commit"), then:
 factory update testing                               # fast-forward testing to production in the candidate; push it
 ```
 
-**Branches.** Feature branches (below) target the validation branch that the work order's kind is routed to (today `testing` for every kind). Legacy work-order files and changes of the branch list target the config branch (today `production`); everything else reaches a production branch only by [promotion](#factory-promote). The generated [branch diagram](factory-branches.md) shows the current list, gates, routing and review modes.
+**Branches.** Issue branches (below) target the validation branch that the work order's kind is routed to (today `testing` for every kind). Changes of the branch list target the config branch (today `production`); everything else reaches a production branch only by [promotion](#factory-promote). The generated [branch diagram](factory-branches.md) shows the current list, gates, routing and review modes.
 
-**Work-order references.** `57`, `#57` and `issue-57` name the work-order issue 57 (quote `"#57"` in the shell). For a legacy file, `7`, `007` and `FACTORY-007` work; a reference resolves only when exactly one file at the config branch tip matches (for `continue`, `stop` and `cancel`: one work order with runs on this device), and a bare number that no file has names the issue with that number. If several files match, `factory` lists them; use the full name.
+**Work orders.** A work order is a GitHub issue opened by a configured maintainer and approved with `/review` and `/accept` ([work orders](#work-orders)). Its issue number is its ID; texts name it `#57`. Every command that takes a work order names it `workorder <issue>`: `factory start workorder 57`, or `factory start workorder "#57"` (quoted, because `#` after a space starts a shell comment). Only `factory hotfix` also runs without one. `factory submit` takes the work order from the branch name.
 
-**Work-order numbers.** A work order's number is its issue number, which GitHub assigns. Legacy files keep their names `<KIND>-<NNN>.md`; [factory submit workorders](#factory-submit-workorders) still checks that a new file's number was never used on the config branch.
+**One work order is one PR.** A work order has one branch and one PR. `factory start` continues the issue's branch when it exists, `factory fix` lands on the issue's open PR (or its branch before the PR exists), and neither ever opens a second branch or PR for the same work order. Work too big for one PR becomes several work orders; follow-up work after the merge is a new work order.
 
 **Branch names.** `factory` uses and recognises:
 
 | Branch | Created by | Meaning |
 |---|---|---|
-| `<login>/issue-<N>` (`<login>/<ID>` for a legacy file) | `factory start` | First implementation branch of a work order |
-| `<login>/<ID>-<k>` | `factory start` | Next implementation branch once the previous one is merged |
-| `<login>/<ID>-fix-<k>` | `factory fix`, `factory hotfix` | Fix branch when the work order has no open PR |
-| `<login>/new-workorders` | `factory submit workorders` | Your PR of legacy work-order files into the config branch |
+| `57-<issue title>`, e.g. `57-export-energy-costs-as-csv` | `factory start`, or GitHub's "Create a branch" on the issue | The branch of work-order issue #57, named as GitHub names an issue's branch: the number, then the title's words in lower case (ASCII), joined by hyphens |
+| `hotfix/<date>-<words of the prompt>` | `factory hotfix "<problem>"` | A hotfix without a work order; pushed, never opened as a PR by `factory` |
 | `<login>/config-<change>-<branch>` | `factory add … branch`, `factory remove branch` | Your config PR into the config branch; `<change>` is `add`, `change` or `remove` |
 | `<login>/config-set-config-<branch>-into-<target>` | `factory set config branch` | Your two config PRs, one into the new config branch and one into the current one |
 
-`<login>` is your GitHub login. `factory submit` derives the work order from these names; on any other branch use `--workorder`. Listed branches (validation and production branches, whose names never contain `/`) are never a working branch: `factory submit` refuses them.
+`<login>` is your GitHub login. Any branch whose name starts with the issue number and a hyphen (or is just the number) belongs to that issue, however its title words are spelled. Listed branches (validation and production branches) are never a working branch: `factory submit` refuses them.
 
-## factory issue
+## Work orders
 
-Creates a new work order as a GitHub issue. Use it whenever the factory should build something new: one work order per feature, not per commit.
-
-```sh
-factory issue --title "Export energy costs as CSV"
-factory issue --kind smoke --title "Reviewer device smoke" --noedit
-factory issue          # title in the editor
-```
-
-It writes the body of the [work-order template](../.github/ISSUE_TEMPLATE/factory-task.md) (status `draft`, the chosen `--kind`, `allowed_paths` empty) with `# <title>` as first line into a draft file in `~/.local/state/aicepeak-factory/tmp/`, opens it in `$VISUAL`, `$EDITOR` or `vi` and waits until you close the editor. After you confirm, it creates the issue under your own GitHub login (the factory never creates issues itself) and prints its number and URL; the number is the work order's ID. `--kind` is `factory` (default), `product` or `smoke`; `--noedit` creates the issue from the template without the editor and needs `--title`. No file is written and you can stay on any branch. The issue template on GitHub ("Factory work order") gives the same body.
+A work order is created on GitHub, not with `factory`: open an issue with the **"Factory work order"** template ([.github/ISSUE_TEMPLATE/factory-task.md](../.github/ISSUE_TEMPLATE/factory-task.md); its `factory-task` block starts as `status: draft` with empty `allowed_paths`), write goal, non-goals, acceptance criteria and verification, and choose its `kind` (`factory`, `product` or `smoke`). Only issues opened by a configured maintainer count. Use one work order per feature, not per commit.
 
 Then, on the issue:
 
 - **`/review`** (a configured maintainer's new, unedited comment on an issue a configured maintainer opened): the dispatcher starts the issue reviewer on the config branch. It calls the configured model (`issue_review_model`, today `claude-sonnet-5-5`) once, without tools, and the publisher App posts two comments: the proposed `allowed_paths` with a reason each (new paths and control paths are marked), and the unclear, weak or missing sections, each with a proposed text that you copy into the description by hand. After an edit, comment `/review` again. At most `limits.max_issue_reviews` (5) reviews per issue; nothing reviews automatically.
-- **`/accept`**: once as many maintainer accounts as `work_order_approvals` (today 1) accepted the newest proposal of the unchanged issue, the publisher App writes its paths and `status: approved` into the `factory-task` block (nothing else changes; the description's edit history shows the App) and posts the approval record. With fewer accounts it reports the count. It is refused when there is no proposal yet, the title or description changed after the newest review, or the work order is `product` while product work is blocked.
+- **`/accept`**: once as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) accepted the newest proposal of the unchanged issue, the publisher App writes its paths and `status: approved` into the `factory-task` block (nothing else changes; the description's edit history shows the App) and posts the approval record. With fewer accounts it reports the count. It is refused when there is no proposal yet, the title or description changed after the newest review, or the work order is `product` while product work is blocked.
 
-The work order is approved only while the issue is open and its title and description are exactly the accepted ones: any later edit withdraws the approval until `/review` and `/accept` again, and a hand-written `status: approved` counts for nothing ([ADR-0009](decisions/0009-issues-as-work-orders.md)).
+The work order is approved only while the issue is open and its title and description are exactly the accepted ones: any later edit withdraws the approval until `/review` and `/accept` again, and a hand-written `status: approved` counts for nothing ([ADR-0009](decisions/0009-issues-as-work-orders.md)). Then `factory start workorder 57`.
 
-Notable refusals: `--noedit` without `--title`; the template title left unchanged; you decline the confirmation (the draft file stays and its path is printed); an invalid `factory-task` block.
-
-## factory submit workorders
-
-Changes legacy work-order files in `docs/work/` (new work orders are [issues](#factory-issue)). Use it after editing or deleting such a file, or for a new file written by hand. A work-order file authorizes work only once it is approved and merged into the config branch, because the factory reads work-order files only from there.
-
-```sh
-factory submit workorders
-```
-
-What it does:
-
-1. Collects your uncommitted changes of `docs/work/*.md` against the candidate's `HEAD`: new files, edits and deletions (the template excluded). Everything else in your checkout stays untouched.
-2. Checks every file and lists all problems at once: the `factory-task` block rules of the gate (exactly one block, valid JSON, exactly `status`, `kind`, `allowed_paths`, safe non-empty paths; any status is accepted here); for new files the name `<KIND>-<NNN>.md`, a prefix matching `kind`, the first line `# <ID> – <title>` and an unused number; no template placeholder (`REPLACE-WITH-EXACT-PATHS`, `TASK-ID`, the template title and acceptance-criteria lines); at most one `factory-handoff` block, naming the file itself.
-3. Shows the diff of every edited work order and asks before submitting it; asks before every deletion; asks for every draft whether it should become `approved` (and writes that into your file).
-4. Commits only these files in a disposable checkout of the config branch tip on `<login>/new-workorders` (title `docs(work): add …, update …, remove …`) and pushes. Without an open PR it opens one into the config branch through `session.py submit --base <config branch>`: collision sweep, no AI preflight (maintainer approvals decide work-order PRs), ready at once; an open draft is marked ready. The PR carries no handoff block. With your open PR it adds the commit and promotes a draft only after a passing preflight.
-5. Moves the submitted files out of your working tree, because they now live on the work-order branch: only after the PR exists (for a new PR, as soon as `session.py submit` reports it; for your open PR, once the push succeeded) and only files still byte-identical to what was submitted. New files are removed; edited or deleted ones return to the version of your `HEAD`. If no PR is created (for example the preflight does not pass), the files stay in your working tree.
-
-It does not watch the PR: a work-order PR gets no senior review. A PR into a production branch whose head is not a validation branch of this repository and that changes only `docs/work/*.md` and/or `factory/config.json` (rename sources included) is a **work-order/config PR**; a promotion stays a promotion whatever its files. Its check `factory/production/<config branch>` passes only when as many different configured maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) have approved its current head (the latest review decision of each account counts; the check runs again after every review, dismissals included), and `/bypass` never applies to it. Besides that it needs only `factory/deterministic` (automatic); it never needs `/review` or an AI review, whatever the branch's review mode: a `/review` on it is refused (`work-order and config PRs need no AI review: maintainer approvals decide them`), and its pipeline comment says the same ([branches and promotion](way-of-working.md#branches-and-promotion)). Then a maintainer merges it on GitHub with a merge commit (production branches allow no other method); `factory merge` refuses PRs into production branches. Afterwards bring the change into your branch, and into each validation branch, with [factory update](#factory-update).
-
-Notable refusals: no work-order changes; any validation problem (nothing is pushed); a work order whose version in your `HEAD` differs from the config branch or your open work-order PR (merge `origin/<config branch>` into the candidate first); the candidate is itself on `<login>/new-workorders`; your open work-order PR targets another branch than the config branch (close it, then submit again); a conflict with the config branch on your open work-order PR. If `<login>/new-workorders` exists on GitHub with commits that are not on the config branch and has no open PR, `factory` lists those commits and replaces the branch only after you confirm (with `--force-with-lease`).
+The device smoke is the one work order that is not an issue: the file [docs/work/FACTORY-SMOKE.md](work/FACTORY-SMOKE.md) on the config branch, which [dev-setup.md](dev-setup.md#5-complete-the-first-real-review-on-a-new-device) submits from a branch `<login>/FACTORY-SMOKE-<timestamp>`. Apart from it, `factory submit` refuses work-order files.
 
 ## factory start workorder
 
-Starts the isolated author on an approved work order as a background run and attaches to it. Use it when the work-order issue is approved (after `/accept`), or a legacy work-order file is merged into the config branch with status `approved`, and you want the factory to implement it.
+Starts the isolated author on an approved work-order issue as a background run and attaches to it. Use it when the issue is approved (after `/accept`) and you want the factory to implement it.
 
 ```sh
 factory start workorder 57
-factory start workorder FACTORY-007
+factory start workorder "#57"      # the same, quoted for the shell
 ```
 
-Before the run starts, `factory` checks in the foreground: the work order is approved (an issue through your `gh` login, a legacy file at the current config branch tip; `product` only when the north star and product checks are ready), no run for it is active, Docker runs and the factory image exists, and both author keys are available. The run's **target** is the validation branch routed for the work order's kind (today `testing`). The branch is the newest `<login>/issue-<N>` or `<login>/issue-<N>-<k>` (`<login>/<ID>` for a legacy file) not yet merged into the target (continued; it must contain the target's current tip), otherwise a new one from the target's tip.
+Before the run starts, `factory` checks in the foreground: the issue is an approved work order (read through your `gh` login; `product` only when the north star and product checks are ready), no run for it is active, Docker runs and the factory image exists, and both author keys are available. The run's **target** is the validation branch routed for the work order's kind (today `testing`). The branch is the issue's branch: an existing `57` or `57-…` branch, local or on GitHub, is continued (it must contain the target's current tip; a branch on GitHub without commits of its own, for example one created with GitHub's "Create a branch", starts at the target's tip under its name); otherwise a new `57-<issue title>` from the target's tip. Several branches of the same issue refuse: one work order is one branch.
 
-The run then goes: **author** (`factory-start`, then `factory-change` for this work order, limited to its `allowed_paths`) → **advisory Astra preflight** (`session.py preflight`) → at most `max_rounds` (2) **corrections** with `factory-fix-review` while P0/P1 findings remain → **apply**. The result is applied **unstaged** to the branch in your candidate; nothing is committed or pushed. The log shows each step, one line per author tool call, a heartbeat every minute and the cost estimate ([runs](#runs-steps-budget-and-logs)). Ctrl-C only detaches; the run goes on (`factory continue 7`). Next: review `git diff`, stage what you accept, [factory submit](#factory-submit).
+The run then goes: **author** (`factory-start`, then `factory-change` for this work order, limited to its `allowed_paths`) → **advisory Astra preflight** (`session.py preflight`) → at most `max_rounds` (2) **corrections** with `factory-fix-review` while P0/P1 findings remain → **apply**. The result is applied **unstaged** to the branch in your candidate; nothing is committed or pushed. The log shows each step, one line per author tool call, a heartbeat every minute and the cost estimate ([runs](#runs-steps-budget-and-logs)). Ctrl-C only detaches; the run goes on (`factory continue workorder 57`). Next: review `git diff`, stage what you accept, [factory submit](#factory-submit).
 
 The isolated author cannot write the control paths (`.agents`, `.claude`, `.codex`, `.mcp.json`, `AGENTS.md`, `CLAUDE.md`, `factory/`, `tools/factory/`). `factory` refuses a work order whose `allowed_paths` all lie there and warns when some do; such changes stay [protected factory changes](../factory/clients.md#protected-factory-changes) made by hand.
 
-The result is **not applied** (the patch is kept in the run folder and the exact `git switch` and `git apply` commands are printed) when it changes files outside `allowed_paths`, under `.github/` or `docs/work/`, binary files, symlinks or submodules; when the candidate has uncommitted changes in tracked files, is on a branch other than the run's branch or a listed branch, or untracked files would be overwritten; when the run's branch moved since the run started; when the patch does not apply; or when the target had to be merged for the preflight of an existing branch. The remaining steps are skipped, with the reason in the log, when nothing differs from the target, more than `max_changed_files` (40) files changed, files outside the work order changed, the target moved and conflicts, the preflight could not run, or the [run budget](#runs-steps-budget-and-logs) is spent.
+The result is **not applied** (the patch is kept in the run folder and the exact `git switch` and `git apply` commands are printed) when it changes files outside `allowed_paths`, under `.github/` or `docs/work/`, binary files, symlinks or submodules; when the candidate has uncommitted changes in tracked files (a regenerated `docs/factory-branches.md` does not count), is on a branch other than the run's branch or a listed branch, or untracked files would be overwritten; when the run's branch moved since the run started; when the patch does not apply; or when the target had to be merged for the preflight of an existing branch. The remaining steps are skipped, with the reason in the log, when nothing differs from the target, more than `max_changed_files` (40) files changed, files outside the work order changed, the target moved and conflicts, the preflight could not run, or the [run budget](#runs-steps-budget-and-logs) is spent.
 
-Notable refusals: no unique work order; not approved (an issue that is closed, never accepted or edited after its approval); a run for it already active; all `allowed_paths` are control paths; Docker or image missing; a key missing; your local branch lacks commits that are on GitHub (`git pull --ff-only` first); an existing branch that does not contain the target's current tip (merge `origin/<target>` first).
+Notable refusals: no GitHub issue number; not approved (an issue that is closed, never accepted or edited after its approval); another start of the same work order is still preparing (`another start of #57 is busy …`); a run for it already active; several branches of the issue; all `allowed_paths` are control paths; Docker or image missing; a key missing; your local branch lacks commits that are on GitHub (`git pull --ff-only` first); an existing branch that does not contain the target's current tip (merge `origin/<target>` first).
 
-## factory continue
+## factory continue workorder
 
 Reattaches to a running run: shows its log from the start and follows it until the run ends; the exit code is the run's result. Use it after Ctrl-C or after closing the terminal.
 
 ```sh
-factory continue 7
-factory continue        # the only active run
+factory continue workorder 57
+factory continue hotfix            # the hotfix without a work order
 ```
 
-Without a work order it works only when exactly one run is active. When no run is active it fails and names the last run's result, reason and log path. It needs no network.
+When no run of that work order is active it fails and names the last run's result, reason and log path. It needs no network. A hotfix without a work order has no issue number: `continue`, `stop` and `cancel` name its run `hotfix` (one such run at a time).
 
 ## factory stop workorder
 
-Stops a run after its current step. The step in progress (author, review, fix, correction or preflight) finishes; every further model and review step is skipped; what exists is applied as usual. The run ends `stopped`. Nothing changes on GitHub: a stopped `hotfix` pushes nothing and ends like `fix`. A watch that a run already started (after its PR exists) is interrupted at once. Use it when the run is heading in the wrong direction or you need the machine, but the current step may finish.
+Stops a run after its current step. The step in progress (author, review, fix, correction or preflight) finishes; every further model and review step is skipped; what exists is applied as usual. The run ends `stopped`. Nothing changes on GitHub when the stop comes before a hotfix's push gate: a stopped `hotfix` then pushes nothing and ends like `fix`. Once the push gate has passed, the push and the opening of the PR finish; only the watch that follows is interrupted, at once. Use it when the run is heading in the wrong direction or you need the machine, but the current step may finish.
 
 ```sh
-factory stop workorder 7
+factory stop workorder 57
+factory stop hotfix                # the hotfix without a work order
 ```
 
 ## factory cancel workorder
@@ -184,42 +154,49 @@ factory stop workorder 7
 Emergency stop. Terminates the run and its processes at once (SIGTERM to the runner, which forwards it to the launcher or `session.py` and waits up to 30 seconds; after 45 seconds the process group is killed), removes every Docker container, network and volume that carries the run's label, and applies nothing. The run ends `cancelled`. Use it when something is clearly wrong (cost, scope, a runaway step) and waiting for the step is not acceptable.
 
 ```sh
-factory cancel workorder 7
+factory cancel workorder 57
+factory cancel hotfix              # the hotfix without a work order
 ```
 
 The cancel itself changes no GitHub state. If the run already had a PR, it prints how to pause it (`gh pr ready <n> --undo`), close it, and retry a claimed review that got stuck (`gh workflow run factory.yml --ref production -f pr=<n> -f retry=true`, with the run's config branch); a review that was already claimed stays claimed. [Stop vs. cancel in the daily flow](way-of-working.md#stop-or-cancel-a-task).
 
 ## factory fix and factory hotfix
 
-`factory fix <n> ["prompt"] [--pr N]` fixes a problem within an approved work order: it reviews the problem read-only, lets the author write a fix plan and the smallest fix inside the work order's `allowed_paths` (with a regression test and verification), runs the preflight/correction loop and applies the result unstaged. You check it and submit. Use it when a problem belongs to an approved work order and you want to look at the fix before it is pushed.
+`factory fix workorder <issue> ["prompt"]` fixes a problem in the implementation of an approved work order: it reviews the problem read-only, lets the author write a fix plan and the smallest fix inside the work order's `allowed_paths` (with a regression test and verification), runs the preflight/correction loop and applies the result unstaged. You check it and submit. A fix **needs a work order that is already being implemented**; a problem without one is a `factory hotfix`.
 
 ```sh
-factory fix 7 "CSV export drops rows with empty tariffs"
-factory fix 7 "#42"                  # a maintainer-written issue, PR or comment
-factory fix 7                        # the open PR's review findings
-factory hotfix 7 "Totals use the wrong VAT rate"
+factory fix workorder 57 "CSV export drops rows with empty tariffs"
+factory fix workorder 57 "#42"           # a maintainer-written issue, PR or comment
+factory fix workorder 57                 # the open PR's review findings
+factory hotfix workorder 57 "Totals use the wrong VAT rate"
+factory hotfix "The CSV export header misspells kWh"   # no work order
 ```
 
-**Target.** The work order's open PR (same repository, opened by a configured maintainer, handoff naming this work order): the fix lands on its branch and keeps that PR's target branch, which must be a validation branch. With several such PRs choose one with `--pr`. A PR owned by another maintainer needs your confirmation, which names the owner. Without an open PR, a new `<login>/<ID>-fix-<k>` from the tip of the validation branch routed for the work order's kind.
+**Target.** The work order's open PR (same repository, opened by a configured maintainer, handoff naming `#57`): the fix lands on its branch and keeps that PR's target branch, which must be a validation branch. A PR owned by another maintainer needs your confirmation, which names the owner. Before the PR exists, the issue's branch (`57-<issue title>`). Without either, `fix` refuses: start the work order first. It never opens a second branch or PR for the work order; several open PRs of it refuse.
 
-**Input.** The prompt is free text, or `#N` or a GitHub URL of an issue, PR or comment in this repository written by a configured maintainer (anything else is refused; paste the text instead). Without a prompt, the open PR's newest authentic senior review of its current head plus all maintainer feedback is fixed directly; without an open PR, a read-only review against the work order's acceptance criteria comes first.
+**Input.** The prompt is free text, or `#N` or a GitHub URL of an issue, PR or comment in this repository written by a configured maintainer (anything else is refused; paste the text instead). Without a prompt, the open PR's newest authentic senior review of its current head plus all maintainer feedback is fixed directly; before the PR exists, a read-only review against the work order's acceptance criteria comes first.
 
-After applying, `fix` prints the exact next command, for example `factory submit --finished --title 'fix(FACTORY-007): CSV export drops rows with empty tariffs'`.
+After applying, `fix` prints the exact next command with the commit title `<problem> #57`, for example `factory submit --finished --title 'CSV export drops rows with empty tariffs #57'`.
 
-`factory hotfix` runs the same steps and then the **push gate**. It pushes automatically only if every changed file is inside `allowed_paths`, outside `.github/`, `docs/work/` and every `protected_paths` entry (and not the north star file), with no binary, symlink or submodule entry, the last preflight returned `pass` on exactly this result, the target branch did not move since (and did not have to be merged into an existing PR branch), and the branch on GitHub is unchanged (an existing PR branch still at the run's base; a new fix branch not yet present). Then it creates one commit with your candidate's Git identity, pushes it without force, fetches it into the candidate (`origin/<branch>`) and either watches the existing PR or opens a new one through `session.py submit` (preflight, ready on `pass`, watch). If any condition fails, it names them and ends exactly like `fix`. Use `hotfix` for urgent, small fixes outside the protected factory paths.
+`factory hotfix` runs the same steps and then the **push gate**:
 
-Notable refusals: an automatic correction is running on the PR (`factory/author-reservation` in progress); the PR has no senior review yet, it is still running, it has no findings, or the head moved since (give a prompt instead); the referenced text is not by a configured maintainer; the same refusals as [factory start workorder](#factory-start-workorder).
+- **With a work order** (`factory hotfix workorder 57 …`) it pushes automatically only if every changed file is inside `allowed_paths`, outside `.github/`, `docs/work/` and every `protected_paths` entry (and not the north star file), with no binary, symlink or submodule entry, the last preflight returned `pass` on exactly this result, the target branch did not move since (and did not have to be merged into an existing PR branch), and the branch on GitHub is unchanged (the PR's or the issue's branch still at the run's base on GitHub, so an issue branch you have not pushed yet is never pushed automatically: `factory submit` it first; a new branch not yet present). Then it creates one commit (`<problem> #57`) with your candidate's Git identity, pushes it without force, fetches it into the candidate (`origin/<branch>`) and either watches the existing PR or opens it through `session.py submit` (preflight, ready on `pass`, watch); its body names the work order and says `Closes #57`, like every PR of a work order.
+- **Without a work order** (`factory hotfix "<problem>"`, the prompt is required) the author fixes the problem on a new branch `hotfix/<date>-<words of the prompt>` from the default branch (today `testing`). There are no `allowed_paths` and no preflight, which needs a work order. It pushes the branch when no changed file lies under `.github/`, `docs/work/` or a `protected_paths` entry and no binary, symlink or submodule entry changed, and opens no PR. The maintainer in charge merges that branch or opens a PR as they see fit; a PR from it names no work order, so the factory checks do not pass it on their own.
 
-## factory review
+If any condition fails, `hotfix` names them and ends like `fix`: the result is applied unstaged (without a work order on the new hotfix branch, with the commands to commit and push it yourself). Use `hotfix` for urgent, small fixes outside the protected factory paths.
 
-A local, read-only review of your candidate: a list of problems, nothing changed. Use it before you submit, or to hunt a suspected problem.
+Notable refusals: no implementation of the work order yet (`fix`); several open PRs of the work order; an automatic correction is running on the PR (`factory/author-reservation` in progress); the PR has no senior review yet, it is still running, it has no findings, or the head moved since (give a prompt instead); the referenced text is not by a configured maintainer; a hotfix branch of the same name exists already; the same refusals as [factory start workorder](#factory-start-workorder).
+
+## factory review workorder
+
+A local, read-only review of your candidate against a work order: a list of problems, nothing changed. Use it before you submit, or to hunt a suspected problem.
 
 ```sh
-factory review "Are there error paths in the CSV export without tests?"
-factory review "Check the acceptance criteria" --workorder 7
+factory review workorder 57 "Are there error paths in the CSV export without tests?"
+factory review workorder 57 "Check the acceptance criteria"
 ```
 
-It copies the tracked and untracked-but-not-ignored regular files of the candidate exactly as they are on disk (uncommitted changes included) and runs the read-only reviewer in the isolated container (`clients.py run --read-only`: only Read, Glob, Grep, Skill and the documentation tools, no patch). It prints a numbered list of problems with `file:line`, evidence and a minimal fix, and saves the report in `~/.local/state/aicepeak-factory/reviews/`. `--workorder` adds the work order as context. It runs in the foreground; Ctrl-C cancels it and removes its containers. It needs Docker, the image and the author keys and costs one model run (up to `max_run_cost_usd`).
+It copies the tracked and untracked-but-not-ignored regular files of the candidate exactly as they are on disk (uncommitted changes included) and runs the read-only reviewer in the isolated container (`clients.py run --read-only`: only Read, Glob, Grep, Skill and the documentation tools, no patch), with the approved work-order issue as context. It prints a numbered list of problems with `file:line`, evidence and a minimal fix, and saves the report in `~/.local/state/aicepeak-factory/reviews/`. It runs in the foreground; Ctrl-C cancels it and removes its containers. It needs Docker, the image and the author keys and costs one model run (up to `max_run_cost_usd`).
 
 Advisory only: it does not replace the preflight or the binding review. Symlinks and special files are skipped and listed. Control paths are listed as **not reviewed** where your candidate differs from the control checkout, because the container shows the reviewer the control checkout's version.
 
@@ -228,19 +205,19 @@ Advisory only: it does not replace the preflight or the binding review. Symlinks
 Commits what you staged and pushes the branch; with `--finished` opens the pull request for the work order. Use it daily to commit and push your work, and with `--finished` when the work order is done.
 
 ```sh
-factory submit --title "feat(export): CSV export" --desc "Adds the endpoint and tests"
+factory submit --desc "Adds the endpoint and tests"
+factory submit --title "Export energy costs as CSV #57"
 factory submit --finished
-factory submit --finished --workorder 57 --draft
 ```
 
-- Commits **only staged** files. The title defaults to `#57: <work order title>` (`<ID>: …` for a legacy file), `--desc` becomes the body; on a branch without a work order and without `--title`, your commit editor opens. Unstaged changes stay where they are.
+- Commits **only staged** files. The title defaults to `<issue title> #57` (the issue number last, so that no editor ever takes the line for a comment), `--desc` becomes the body; on a branch without a work order and without `--title`, your commit editor opens. Unstaged changes stay where they are.
 - Pushes the current branch to GitHub, never a listed branch and never with force.
-- The work order comes from the [branch name](#daily-flow) or `--workorder` (`57`, `#57`, or `FACTORY-007` for a legacy file) and must be approved: an issue read through your `gh` login, a legacy file at the config branch tip. On any other branch `factory` warns and waits 5 seconds (Ctrl-C aborts); `--finished` then requires `--workorder`.
-- `--finished` targets the validation branch routed for the work order's kind (today `testing`); an open PR keeps its own target. It requires that the branch contains the target's current tip. Without an open PR it runs `session.py submit --base <target>` on a disposable checkout of the pushed commit: collision sweep, advisory preflight, PR with the handoff block (runner `claude`, the work order as `#57` or the legacy file's path, you as owner), ready only on `pass`, then watch while the target's gate is `full`. The PR body contains `--desc`, the work order (an issue reference, so the PR appears in the issue's timeline, with `Closes #57`; see below) and the commit list. Unchanged repository modules that changed Python files import directly are added as preflight context automatically; add more with `--context <path>` (repeatable). With an open PR it promotes a draft only after a passing preflight and then watches; a ready PR is only watched.
-- If the preflight does not pass, no PR is opened: fix the findings and run `--finished` again, or open it as a draft with `--draft`. Ctrl-C stops watching; the PR keeps waiting for a watcher ([factory watch](#factory-watch)).
-- **Closing the work-order issue.** One work order is one PR. For a work-order issue the PR body says `Closes #57`, which links the PR to the issue; GitHub decides when to close it: on the merge into its default branch (today `testing`), and never for a PR into another branch, where it ignores the keyword. `factory` names this once the PR is opened. A closed issue is no longer a work order: `factory start`, `submit`, `fix` and the gate refuse it until you reopen it, and reopening restores the approval while title and description are unchanged (for example for a later `factory fix`). Work too big for one PR becomes several work orders.
+- The work order comes from the [branch name](#daily-flow), `57-<issue title>`. It is read through your `gh` login and must be approved whenever `submit` needs it: for the default commit title (something staged and no `--title`) and for `--finished`; a plain push or a commit with `--title` does not read it. A hotfix branch (`hotfix/…`, from a hotfix without a work order) is committed and pushed without a warning; on any other branch `factory` warns and waits 5 seconds (Ctrl-C aborts). `--finished` refuses both: they have no work order.
+- `--finished` targets the validation branch routed for the work order's kind (today `testing`); an open PR keeps its own target. It requires that the branch contains the target's current tip. Without an open PR it runs `session.py submit --base <target>` on a disposable checkout of the pushed commit: collision sweep, advisory preflight, and only on `pass` the PR with the handoff block (runner `claude`, the work order as `#57`, you as owner), then watch while the target's gate is `full`; the Mac is kept from idle-sleeping meanwhile. The PR title is the commit title default, `<issue title> #57`, unless you give `--title`. The PR body contains `--desc`, the work order (an issue reference, so the PR appears in the issue's timeline, with `Closes #57`; see below) and the commit list. Unchanged repository modules that changed Python files import directly are added to the preflight automatically. With an open PR it is only watched; a PR a maintainer paused as a draft becomes ready again only after a passing preflight.
+- If the preflight does not pass, no PR is opened: fix the findings and run `--finished` again. Ctrl-C stops watching; the PR keeps waiting for a watcher ([factory watch](#factory-watch)).
+- **Closing the work-order issue.** One work order is one PR. Its body says `Closes #57`, which links the PR to the issue; GitHub decides when to close it: on the merge into its default branch (today `testing`), and never for a PR into another branch, where it ignores the keyword. `factory` names this once the PR is opened. A closed issue is no longer a work order, so its merge ends the work order: `factory start`, `submit`, `fix` and the gate refuse it. Follow-up work is a new work order.
 
-Notable refusals: detached `HEAD`; a listed branch (create a feature branch first); a branch behind or diverged from GitHub (`git pull --ff-only` or merge first); `--finished` on a branch without the target's current tip (`git merge origin/<target>`, or `gh pr update-branch <n>` for an open PR).
+Notable refusals: detached `HEAD`; a listed branch (work on the issue's branch); a branch behind or diverged from GitHub (`git pull --ff-only` or merge first); `--finished` on a branch that names no work order, or on one without the target's current tip (`git merge origin/<target>`, or `gh pr update-branch <n>` for an open PR); a work-order file other than the device smoke.
 
 ## factory watch
 
@@ -251,7 +228,7 @@ factory watch 42
 factory watch --all
 ```
 
-`factory watch <pr>` runs `session.py watch --pr <pr>` from a disposable checkout of the verified config branch tip: it starts a pending review for the PR's current head through the shared claim and keeps polling until the PR is closed or `session.py`'s watch timeout (30 minutes by default) ends. A PR into a validation branch with gate `tests` has no senior review; the watch ends at once with status `no_review`. On a promotion a review is pending only after a maintainer's `/review` comment; work-order/config PRs refuse `/review` ([branches and promotion](way-of-working.md#branches-and-promotion)). Nothing re-reserves such a review, so when maintainer feedback, a moved config tip or a moved target branch made it stale, the watch does not wait: it ends with status `stale` and `factory` prints `WARNING: PR #<n>: feedback or the config branch changed after /review; comment /review again`, or, when the target branch moved (into the config branch it always moves with the config tip), ``WARNING: PR #<n>: the target branch moved after /review: update the promotion (`factory promote <validation branch>`), then comment /review again`` (with `--to <production branch>` when several production branches are listed). `--all` reviews every open PR labelled `awaiting-senior-review` once a minute (`session.py watch --pr <n> --once` each), updating the control checkout between rounds, until Ctrl-C; a stale or failed PR is reported and the others go on. Name one PR or use `--all`. Keep the Mac awake while watching.
+`factory watch <pr>` runs `session.py watch --pr <pr>` from a disposable checkout of the verified config branch tip: it starts a pending review for the PR's current head through the shared claim and keeps polling until the PR is closed or `session.py`'s watch timeout (30 minutes by default) ends. A PR into a validation branch with gate `tests` has no senior review; the watch ends at once with status `no_review`. On a promotion a review is pending only after a maintainer's `/review` comment; config PRs refuse `/review` ([branches and promotion](way-of-working.md#branches-and-promotion)). Nothing re-reserves such a review, so when maintainer feedback, a moved config tip or a moved target branch made it stale, the watch does not wait: it ends with status `stale` and `factory` prints `WARNING: PR #<n>: feedback or the config branch changed after /review; comment /review again`, or, when the target branch moved (into the config branch it always moves with the config tip), ``WARNING: PR #<n>: the target branch moved after /review: update the promotion (`factory promote <validation branch>`), then comment /review again`` (with `--to <production branch>` when several production branches are listed). `--all` reviews every open PR labelled `awaiting-senior-review` once a minute (`session.py watch --pr <n> --once` each), updating the control checkout between rounds, until Ctrl-C; a stale or failed PR is reported and the others go on. Name one PR or use `--all`. While it watches, `factory watch` keeps the Mac from idle-sleeping (`caffeinate`, on macOS); closing the lid or a system sleep still pauses it.
 
 ## factory merge
 
@@ -262,19 +239,19 @@ factory merge 42 --dry-run     # the verdict only
 factory merge 42
 ```
 
-It verifies the required checks of the target's gate (`full`: `factory/deterministic` and `factory/senior-review`; `tests`: `factory/deterministic`), each passed for exactly this head, the current target tip and the current config tip, normally or by an authentic maintainer `/bypass` (it counts only while its comment is still that maintainer's unedited `/bypass` on this PR; otherwise the verdict says `` <check>: the `/bypass` comment was edited or deleted; post a new `/bypass` ``); that the head contains the target's tip; the handoff, maintainer feedback and open threads. It then takes the target's merge lock `refs/tags/factory-merge-lock--<branch>` and merges with `--match-head-commit`. After a merge it fetches the target into the candidate; update your branches from `origin/<target>` when you continue. The exit code is non-zero when the PR is not mergeable, also with `--dry-run`. When a check differs only in the config tip, the config branch moved after that run: the verdict says that a fresh run is dispatched automatically and names the fallback if none arrives, `gh workflow run factory.yml --repo <repository> --ref <config branch> -f pr=<n> -f retry=true`.
+It verifies the required checks of the target's gate (`full`: `factory/deterministic` and `factory/senior-review`; `tests`: `factory/deterministic`), each passed for exactly this head, the current target tip and the current config tip, normally or by an authentic maintainer `/bypass` (it counts only while its comment is still that maintainer's unedited `/bypass` on this PR; otherwise the verdict says `` <check>: the `/bypass` comment could not be re-read, or was edited or deleted; retry, or post a new `/bypass` ``); that the head contains the target's tip; the handoff, maintainer feedback and open threads. It then takes the target's merge lock `refs/tags/factory-merge-lock--<branch>` and merges with `--match-head-commit`. After a merge it fetches the target into the candidate; update your branches from `origin/<target>` when you continue. The exit code is non-zero when the PR is not mergeable, also with `--dry-run`. When a check differs only in the config tip, the config branch moved after that run: the verdict says that a fresh run is dispatched automatically and names the fallback if none arrives, `gh workflow run factory.yml --repo <repository> --ref <config branch> -f pr=<n> -f retry=true`.
 
 Notable refusals: a PR into a production branch (maintainers merge those on GitHub); a PR into a gate `none` or unlisted branch; a PR from a listed branch.
 
 ## factory status
 
-Lists the latest 15 runs on this device: active marker, work order, kind, current step (active) or result, start time, branch and PR. Use it to see what the factory is doing or did.
+Lists the latest 15 runs on this device: active marker, work order (`#57`, or `hotfix`), run kind (`start`, `fix`, `hotfix`), current step (active) or result, start time, branch and PR. Use it to see what the factory is doing or did.
 
 ```sh
 factory status
 ```
 
-It needs no network. A run whose runner died is recorded as `failed` (`the runner ended unexpectedly`); its leftover processes and labelled Docker resources are removed.
+It needs no network. A run whose runner died is recorded as `failed` (`the runner ended unexpectedly`); its labelled Docker resources are removed (processes are never signalled by a recorded pid, which after a reboot can belong to anything).
 
 ## factory doctor
 
@@ -284,7 +261,7 @@ Checks this device and prints the fix for every failed check. Use it after insta
 factory doctor
 ```
 
-Checks: the shim on `PATH` is the installed one; control and candidate are separate repositories; the candidate checkout is usable (plain clone, configured repository, allowed local Git configuration, local `user.name`/`user.email`); both author keys (exported or in the keychain); Docker running and the factory image (like every author run, it starts a stopped Docker Desktop, wakes it from its resource saver and waits up to 2 minutes, and prints the `docker build` command only for an image that is really missing); the pinned `codex-cli 0.164.0`; your `gh` login is a configured maintainer with write access. The control checkout is verified before every command anyway. It then runs `doctor.py` from a disposable checkout of the config branch tip (which also validates the branch model) and summarises its status and each blocked check with its fix, including one command that installs missing pinned check tools. `doctor.py` sees only exported author keys (`factory doctor` marks those two checks as expected when the keychain holds the keys) and always exits with code 2 because it never certifies live acceptance ([check the tools](dev-setup.md#check-the-tools)). `factory doctor` exits 0 when all of its own checks pass.
+Checks: the shim on `PATH` is the installed one; control and candidate are separate repositories; the candidate checkout is usable (plain clone, configured repository, allowed local Git configuration, local `user.name`/`user.email`); both author keys (exported or in the keychain); Docker running and the factory image (like every author run, it starts a stopped Docker Desktop, wakes it from its resource saver and waits up to 2 minutes, and prints the `docker build` command only for an image that is really missing); the pinned Codex CLI; your `gh` login is a configured maintainer with write access. Every expected tool version, and the image tag built from it, comes from [factory/package.json](../factory/package.json); neither `factory doctor` nor `doctor.py` names a version of its own. The control checkout is verified before every command anyway. It then runs `doctor.py` from a disposable checkout of the config branch tip (which also validates the branch model) and summarises its status and each blocked check with its fix, including one command that installs missing pinned check tools. Under `factory doctor`, `doctor.py` never sees the author keys (only author runs get them), so `factory doctor` shows its two key checks as expected whenever its own check found the key, exported or in the keychain and always exits with code 2 because it never certifies live acceptance ([check the tools](dev-setup.md#check-the-tools)). `factory doctor` exits 0 when all of its own checks pass.
 
 ## factory promote
 
@@ -306,7 +283,7 @@ Notable refusals and warnings: the source is not a listed validation branch; sev
 
 ## factory update
 
-Brings the tip of the config branch (today `production`) into one branch of the candidate, so that it contains what was merged there: a promotion, a work-order PR or a config PR. Use it after such a merge, for each validation branch and for your own branch. Work-order issues never need it: they live on GitHub, not on a branch. It replaces `factory sync workorders` and `factory sync workorder <n>`, which now only name it and exit 2.
+Brings the tip of the config branch (today `production`) into one branch of the candidate, so that it contains what was merged there: a promotion or a config PR. Use it after such a merge, for each validation branch and for your own branch. Work orders never need it: they are issues on GitHub, not files on a branch.
 
 ```sh
 factory update                     # the branch checked out in the candidate
@@ -317,7 +294,7 @@ The target is the branch checked out in the candidate, or the one you name: `fac
 
 1. **Up to date.** When the config branch tip is already contained in the target, it says so, changes nothing and exits 0.
 2. **Fast-forward.** When the target has no commit that the config branch tip lacks, it fast-forwards the target to that tip: no new commit. After a promotion merged with a merge commit this is the normal case: the validation branch then equals production, and GitHub no longer reports production ahead of it.
-3. **Merge commit.** Otherwise (the target has own commits, for example your feature work, unpushed local commits, or a validation branch that got new commits after the promotion or a squashed promotion from before merge commits) it creates the local merge commit `Merge <config branch> into <target> (factory update)` with your candidate's Git identity.
+3. **Merge commit.** Otherwise (the target has own commits, for example the work on your issue branch, unpushed local commits, or a validation branch that got new commits after the promotion or a squashed promotion from before merge commits) it creates the local merge commit `Merge <config branch> into <target> (factory update)` with your candidate's Git identity.
 
 **Scope guard.** Before it touches the working tree, `factory` computes what the step would change in the target: for a fast-forward the config tip's tree, otherwise the tree `git merge-tree --write-tree` would write (in the object store only, needs Git 2.38 or later; conflicted paths count too), compared with the target tip (`--no-renames`). Only `docs/work/*.md` and `factory/config.json` may change. Anything else refuses with up to 20 of the paths named, and nothing is changed: bring a validation branch up to date with [factory promote](#factory-promote) (whose merge-back brings in all of production), or merge the config branch by hand (`git -C <candidate> merge origin/<config branch>`).
 
@@ -334,7 +311,7 @@ factory branches
 factory branches --show
 ```
 
-It reads the branch list at the config branch tip and prints one row per listed branch: name, level (with default and config branch), gate or review mode, routed kinds and required checks; then the config branch, the default branch and the branch this device's control checkout follows. It writes the generated [docs/factory-branches.md](factory-branches.md) into the candidate: a Mermaid `flowchart LR` of feature branches → validation branches (gate, kinds) → production branches (review mode), dotted arrows back from the config branch for the work orders that [factory update](#factory-update) brings into the validation branches, and the table. An identical file is left as it is; commit a changed one with your next change. A config PR changes only `factory/config.json` and cannot carry it, so after a change of the branch list is merged, run `factory branches` and commit the regenerated file with a later change. `--show` also writes `~/.local/state/aicepeak-factory/branches.html`, a self-contained page (inline SVG diagram, table and Mermaid source; nothing is loaded from the network), and opens it (on macOS with `open`; elsewhere it prints the path). In the SVG, every line of text stays inside its box: boxes widen to fit a long branch name, and an ungated validation branch shows `not gated` as the last line of its own box, so no arrow crosses it.
+It reads the branch list at the config branch tip and prints one row per listed branch: name, level (with default and config branch), gate or review mode, routed kinds and required checks; then the config branch, the default branch and the branch this device's control checkout follows. It writes the generated [docs/factory-branches.md](factory-branches.md) into the candidate: a Mermaid `flowchart LR` of issue branches → validation branches (gate, kinds) → production branches (review mode), dotted arrows back from the config branch for what [factory update](#factory-update) brings into the validation branches, and the table. An identical file is left as it is; commit a changed one with your next change. A config PR changes only `factory/config.json` and cannot carry it, so after a change of the branch list is merged, run `factory branches` and commit the regenerated file with a later change. `--show` also writes `~/.local/state/aicepeak-factory/branches.html`, a self-contained page (inline SVG diagram, table and Mermaid source; nothing is loaded from the network), and opens it (on macOS with `open`; elsewhere it prints the path). In the SVG, every line of text stays inside its box: boxes widen to fit a long branch name, and an ungated validation branch shows `not gated` as the last line of its own box, so no arrow crosses it.
 
 It never commits, pushes or changes the branch list; that is done by the [config PRs](#factory-add-validation-branch).
 
@@ -347,7 +324,7 @@ factory use branch testing
 factory use branch production
 ```
 
-It switches the control checkout to the named branch, only when the control checkout is clean (untracked and ignored files included) and its local copy of that branch has no own commits: it switches (creating the local branch from GitHub's tip if needed) and fast-forwards, never resets or deletes anything, and records the branch as `branch` in `cli.json`. From then on every command verifies and fast-forwards the control checkout on that branch. Only listed production and validation branches are accepted. Rules, branch list, policy and work orders still come from the config branch tip, `session.py` and `doctor.py` still run from a checkout of that tip, and every command still acts on the candidate, whatever your current directory. Runs that already started keep their pinned export. The installer's `--branch` sets the same value.
+It switches the control checkout to the named branch, only when the control checkout is clean (untracked and ignored files included) and its local copy of that branch has no own commits: it switches (creating the local branch from GitHub's tip if needed) and fast-forwards, never resets or deletes anything, and records the branch as `branch` in `cli.json`. From then on every command verifies and fast-forwards the control checkout on that branch. Only listed production and validation branches are accepted. Rules, branch list and policy still come from the config branch tip, `session.py` and `doctor.py` still run from a checkout of that tip, and every command still acts on the candidate, whatever your current directory. Runs that already started keep their pinned export. The installer's `--branch` sets the same value.
 
 It works from any state of the branch you follow now: unlisted, missing on GitHub, or naming an old config branch after a finished [config branch change](#factory-set-config-branch) (which is followed). An interrupted `factory use branch` (Ctrl-C, or a failed fast-forward or check after the switch) leaves a clean control checkout on the new listed branch while `cli.json` still records the old one: every other command then stops with ``control checkout … is on <new>, but it must stay on <old>, its recorded control branch: `factory use branch <listed branch>` switches it``. `factory use branch <new>` finishes the switch, and any other listed name switches on from there. If the branch you follow is later removed from the list, every command except `use`, `status`, `continue`, `stop` and `cancel` stops with the hint to run `factory use branch <config branch>`.
 
@@ -371,7 +348,7 @@ Every config PR (this command, [add production branch](#factory-add-production-b
 3. It commits the file alone (title `factory(config): …`, your candidate's Git identity) on that branch from the config branch tip in a disposable checkout, pushes the branch and opens the PR into the config branch through `session.py submit --base <config branch>` without `--task`: a collision sweep, no advisory preflight (the maintainer approvals and `factory/deterministic` decide), ready once the new PR is verified. A branch left on GitHub by an earlier attempt without a PR is reused when it holds exactly this proposal (one commit on the current config tip whose `factory/config.json` is the proposed one); otherwise `factory` lists its commits and replaces it only after you confirm (with `--force-with-lease`). Your candidate's working tree is not touched.
 4. The PR body lists the owner steps after the merge, for a new branch for example: create it on GitHub from the default branch's tip (validation) or the config branch's tip (production) before applying the settings, apply the settings (`python3 tools/factory/settings.py diff`, then `apply`, from a clean checkout of the config branch), then, for a new validation branch, `factory update <name>` in the candidate and a push of it.
 
-It is a work-order/config PR: it needs approving reviews at its current head from as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) and `factory/deterministic`, never `/review` (refused) or an AI review; `/bypass` never applies, and a maintainer merges it on GitHub ([factory submit workorders](#factory-submit-workorders)). `factory/deterministic` runs the config tip's trusted tests against the PR head and so against its changed `factory/config.json`; the tests never take the branch model from it (they use a fixed test model and only check that the changed one is valid), so a changed branch list or config branch does not fail them. The change counts once it is merged; open PRs keep their target. The PR does not change [docs/factory-branches.md](factory-branches.md): regenerate it with [factory branches](#factory-branches) in a later change.
+It is a config PR: it needs approving reviews at its current head from as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) and `factory/deterministic`, never `/review` (refused) or an AI review; `/bypass` never applies, and a maintainer merges it on GitHub ([branches and promotion](way-of-working.md#branches-and-promotion)). `factory/deterministic` runs the config tip's trusted tests against the PR head and so against its changed `factory/config.json`; the tests never take the branch model from it (they use a fixed test model and only check that the changed one is valid), so a changed branch list or config branch does not fail them. The change counts once it is merged; open PRs keep their target. The PR does not change [docs/factory-branches.md](factory-branches.md): regenerate it with [factory branches](#factory-branches) in a later change.
 
 Notable refusals: `--gate` missing or `--review` given; unknown or repeated `--kinds`; an invalid or reserved name; a change that would leave a kind unrouted; you decline to replace a differing branch of an earlier attempt.
 
@@ -384,7 +361,7 @@ factory add production branch release --review maintainer-manual
 factory add production branch production --review initiated     # change the review mode
 ```
 
-`--review` decides the AI review (`factory/senior-review`) of promotions into the branch: `maintainer-manual` (required: a maintainer starts it with `/review`, and `factory/production/<name>` passes a promotion only after the review of its own head passed, unless a maintainer bypasses the promotion), `initiated` (optional; started by `/review` when wanted) or `no` (never offered). Work-order/config PRs never need it. The production ruleset itself requires only `factory/deterministic` and `factory/production/<name>`. The config PR works as described under [add validation branch](#factory-add-validation-branch); its owner steps create a new branch from the config branch tip, apply the settings (a production ruleset without bypass actors) and name `factory promote <validation branch> --to <name>` for its first promotion.
+`--review` decides the AI review (`factory/senior-review`) of promotions into the branch: `maintainer-manual` (required: a maintainer starts it with `/review`, and `factory/production/<name>` passes a promotion only after the review of its own head passed, unless a maintainer bypasses the promotion), `initiated` (optional; started by `/review` when wanted) or `no` (never offered). Config PRs never need it. The production ruleset itself requires only `factory/deterministic` and `factory/production/<name>`. The config PR works as described under [add validation branch](#factory-add-validation-branch); its owner steps create a new branch from the config branch tip, apply the settings (a production ruleset without bypass actors) and name `factory promote <validation branch> --to <name>` for its first promotion.
 
 Notable refusals: `--review` missing, or `--gate` or `--kinds` given; an invalid or reserved name.
 
@@ -402,7 +379,7 @@ Notable refusals: an unlisted name; the config branch, the default branch or the
 
 ## factory set config branch
 
-`factory set config branch <name>` opens the two config PRs that make another listed production branch the config branch. Use it when rules, policy and work orders should come from another production branch.
+`factory set config branch <name>` opens the two config PRs that make another listed production branch the config branch. Use it when rules and policy should come from another production branch.
 
 ```sh
 factory set config branch release
@@ -428,19 +405,19 @@ Notable refusals: the name is not a listed production branch (add it first with 
 
 ## Runs: steps, budget and logs
 
-`start`, `fix` and `hotfix` run in the background, independent of the terminal; one run per work order at a time. The foreground command validates everything, writes a pinned export of the verified control commit into the run folder, starts the runner from that export and attaches. A later update of the control checkout therefore never changes a running job. On macOS, `caffeinate -i` keeps the Mac from idle-sleeping while the runner lives; closing the lid or system sleep still pauses the run.
+`start`, `fix` and `hotfix` run in the background, independent of the terminal; one run per work order at a time (and one hotfix without a work order). The foreground command validates everything, writes a pinned export of the verified control commit into the run folder, starts the runner from that export and attaches. A later update of the control checkout therefore never changes a running job. On macOS, `caffeinate -i` keeps the Mac from idle-sleeping while the runner lives; closing the lid or system sleep still pauses the run.
 
 | Kind | Steps |
 |---|---|
 | `start` | author → preflight → up to `max_rounds` corrections while P0/P1 findings remain → apply |
 | `fix` | review (or the PR's findings) → fix → preflight/correction loop → apply |
-| `hotfix` | as `fix`, then the push gate → push and PR, or apply as `fix` |
+| `hotfix` | as `fix`, then the push gate → push and PR, or apply as `fix`; without a work order: review → fix → push gate (no preflight) → push of its own branch, no PR |
 
 Every model step is one `clients.py run` from the pinned export, labelled `aicepeak.factory.run=<run id>` on every container, network and volume, with an event stream; review steps use `--read-only` ([launcher options](../factory/clients.md#build-and-run)). Each preflight runs on a disposable checkout of the run's commit against the run's target, with `session.py` from the newest config branch tip; if the target moved, the run first merges its new tip and stops on a conflict. Limits and protected paths come from the configuration pinned when the run started.
 
 **Budget.** One run stays within `max_cost_usd` (USD 25) across all its model steps; each model step may use up to `max_run_cost_usd` (USD 12), enforced by the credential broker. Before every model step the run checks that the spend so far plus USD 12 still fits into USD 25; otherwise it skips the remaining model steps and applies what exists. The spend is Claude's own reported estimate (`reported_cost_usd`); a failed step or one without a reported cost counts as the full USD 12. The broker's caps stay authoritative; the displayed amounts are estimates, not invoices. Preflights and binding reviews use the maintainer's Codex seat, not this budget.
 
-**Run folder** `~/.local/state/aicepeak-factory/runs/<ID>-<date>-<time>-<hex>/` (mode 0700):
+**Run folder** `~/.local/state/aicepeak-factory/runs/issue-<N>-<date>-<time>-<hex>/` (`hotfix-…` for a hotfix without a work order; mode 0700):
 
 | File | Content |
 |---|---|
@@ -466,7 +443,7 @@ The pinned export and the run's working checkout are removed when the run ends; 
 - **Author keys.** Taken from the environment or the keychain, handed to the background runner through a pipe, and put only into the environment of the `clients.py run` child, which gives them to the credential broker, never to the worker. They are never written to a file, log or argument.
 - **GitHub input only from maintainers.** Work-order numbers, fix targets and `#N` prompts use only same-repository PRs, issues and comments by configured maintainers. Model output, tool events and GitHub text are printed only with control characters escaped.
 - **Isolated author unchanged.** It cannot write control paths, cannot see your credentials and returns only a patch.
-- **Pushes and merges.** `factory` never pushes to a listed branch: `factory promote` and `factory update` leave their fast-forward or merge commit in the candidate for you to push, and nothing ever changes a production branch except a PR a maintainer merges on GitHub. It never force-pushes (except the confirmed replacement of an unmerged `<login>/new-workorders` or of a config-PR branch without an open PR, with lease), merges only PRs into validation branches through `session.py merge`, never merges a PR into a production branch, never deletes branches, and never deletes files except the documented move of submitted work orders.
+- **Pushes and merges.** `factory` never pushes to a listed branch: `factory promote` and `factory update` leave their fast-forward or merge commit in the candidate for you to push, and nothing ever changes a production branch except a PR a maintainer merges on GitHub. It pushes only branches that are not listed: your current branch (`factory submit`), the work order's PR or issue branch and a new hotfix branch (`factory hotfix`, behind its push gate), and config-PR branches. It never force-pushes (except the confirmed replacement of a config-PR branch without an open PR, with lease), merges only PRs into validation branches through `session.py merge`, never merges a PR into a production branch, never deletes branches, and never deletes files.
 
 ## Troubleshooting
 
@@ -479,19 +456,19 @@ The pinned export and the run's working checkout are removed when the run ends; 
 | `control checkout … is on …, but it must stay on <branch>, its recorded control branch` | Someone switched it by hand, or a `factory use branch` was interrupted. On a listed branch, `factory use branch <listed branch>` finishes or reverts the switch; otherwise switch it back with `git -C <control> switch <branch>`. Change branches only with [factory use branch](#factory-use-branch). |
 | `the control checkout follows …, which factory/config.json on … does not list (any more)` | The branch you follow was removed: `factory use branch <config branch>`. |
 | `factory/config.json on … names the config branch …, whose own configuration does not name itself: the change of the config branch is not finished` | A [config branch change](#factory-set-config-branch) was merged in the wrong order: merge the config PR into the new config branch, then retry. |
-| `the config branch … is not on GitHub` / `was never fetched` | Check your network and `gh` login. Before the owner runbook of [ADR-0008](decisions/0008-branch-model.md) is complete, the branch model is not live yet. |
+| `the config branch … is not on GitHub` / `was never fetched` | Check your network and `gh` login. |
 | `the control checkout is busy (held by pid …)` / `the candidate checkout is busy` | Another `factory` command holds the lock. Wait for it or stop it, then retry. |
 | `control and candidate checkouts share one Git repository` / `must be separate folders` | Use two separate clones, neither inside the other. |
 | `candidate … has settings factory does not run with: …` | Remove each named key with `git -C <candidate> config --local --unset <key>`. |
 | `candidate has no local user.name` | `git -C <candidate> config --local user.name '…'` (same for `user.email`), or rerun the installer. |
 | `Docker did not answer within 120 s, not even after starting Docker Desktop` / `author image … is missing` | `factory` starts a stopped Docker Desktop itself (`Starting Docker Desktop…`), wakes it from its resource saver with one no-op container from the author image (Docker Desktop answers queries without its VM and may then call a present image missing) and waits up to 2 minutes. The message means Docker Desktop is not installed or does not start. For a missing image, `factory doctor` prints the build command. Set `FACTORY_DOCKER_HOST` only if the active Docker context is not the right endpoint. |
 | `ANTHROPIC_API_KEY missing` | Rerun the installer with `--author-keys`, or export the key. |
-| `a run for … is already active` | `factory continue <n>`, or `factory stop`/`cancel workorder <n>`. |
+| `a run for … is already active` | `factory continue workorder <issue>` (or `hotfix`), or `factory stop`/`cancel workorder <issue>`. |
 | `every allowed path of this work order is a control path` | The isolated author cannot write it: make it a [protected factory change](../factory/clients.md#protected-factory-changes). |
 | `Patch kept, not applied: …` (in the run log) | Check the named reason, then run the printed `git switch` and `git apply` commands yourself. |
 | `… is behind or diverged from GitHub` | `git -C <candidate> pull --ff-only` (or merge), then retry. |
 | `… does not contain current <target>` | Merge `origin/<target>` into your branch (`gh pr update-branch <n>` for an open PR), then retry. |
-| `never on <branch>, a listed … branch` | `factory submit` commits only on feature branches: `git -C <candidate> switch -c <login>/<ID>`. |
+| `never on <branch>, a listed … branch` | `factory submit` never commits on a listed branch: work on the issue's branch `<issue>-<issue title>`, which `factory start workorder <issue>` creates. |
 | `PR #… targets the production branch …: merge production PRs on GitHub` | `factory merge` merges only into validation branches; merge production PRs on GitHub. |
 | `a promotion into … is already open` | A promotion from another validation branch is open: merge or close it first. An open promotion of the same validation branch is reported as updated instead. |
 | `… the config branch moved after this run; a fresh run is dispatched automatically` (`factory merge`) | Wait for the fresh run and its review; if none arrives, run the printed `gh workflow run factory.yml … --ref <config branch> -f pr=<n> -f retry=true`. |
@@ -500,9 +477,9 @@ The pinned export and the run's working checkout are removed when the run ends; 
 | `…: the /bypass comment could not be re-read, or was edited or deleted; retry, or post a new /bypass` (`factory merge`) | A bypass counts only while its comment is unchanged. Retry when GitHub was unreachable; otherwise a maintainer posts a new `/bypass <reason>`. |
 | `… cannot become the config branch yet, it would roll the policy back: …` | The new config branch lags behind the current one (configuration or work orders). Promote the current config branch into it through a validation branch as the message says, then retry ([set config branch](#factory-set-config-branch)). |
 | `factory/config.json on the default branch … still names …` (`set config branch`, `remove branch`) | An earlier config branch change has not reached the default branch: run the printed `factory promote <default branch> --to <config branch>`, push its merge, then retry. |
-| `the run did not start; see …/log` | Read the log; often Docker, the image or a key. |
+| `Run <id> ended: failed (…)` right after a start | The runner stopped early; the reason is in the run's log, whose path the start printed (`Run <id> of #57 (log: …)`). Often Docker, the image or a key. |
 | `command not found: factory` | Open a new terminal (PATH block) or add the shim directory to `PATH`. If the Python recorded in the shim no longer exists, rerun the installer. |
-| `pinned Codex 0.164.0` fails in `factory doctor` | Install it as in [dev-setup.md, step 2](dev-setup.md#2-install-tools-and-sign-in). |
+| `pinned Codex (codex-cli …)` fails in `factory doctor` | Install the version [factory/package.json](../factory/package.json) pins, as in [dev-setup.md, step 2](dev-setup.md#2-install-tools-and-sign-in). |
 | `merge lock refs/tags/factory-merge-lock--<branch> is held` | See [merge rules](way-of-working.md#merge-rules). |
 
 System sleep pauses runs and watchers; keep the Mac awake during long runs. `factory status` shows every run; each run's `log` has the complete history.
@@ -511,18 +488,17 @@ System sleep pauses runs and watchers; keep the Mac awake during long runs. `fac
 
 The CLI wraps the existing tools; for troubleshooting you can run them yourself. Run them from a clean checkout at the current config branch tip: the control checkout when it follows the config branch (the default; `git status --short --untracked-files=all --ignored` shows nothing; update with `git pull --ff-only`). `session.py` refuses any other revision. Pass the candidate checkout explicitly. Export the pinned Codex directory in that terminal (`export PATH="$HOME/.local/share/aicepeak-factory-cli/node_modules/.bin:$PATH"`).
 
-`--base <branch>` names the listed target branch. Without it, `preflight` and `submit` use the validation branch routed for the work order's kind and `collisions` uses it too, or the default branch without `--task`. `submit --base <production branch>` opens a work-order/config PR (only `docs/work/*.md` and `factory/config.json`, no handoff block; `--task` is optional there: with it an advisory preflight runs, as for `factory submit workorders`; `factory`'s config PRs give none). `watch`, `response` and `merge` always take the target from the PR; a given `--base` must match it.
+`--task '#57'` names the work-order issue (quoted for the shell). `--base <branch>` names the listed target branch. Without it, `preflight` and `submit` use the validation branch routed for the work order's kind and `collisions` uses it too, or the default branch without `--task`. `submit` runs the advisory preflight and opens the PR only when it passes. `submit --base <production branch>` opens a config PR (only `factory/config.json` and `docs/work/*.md`, no handoff block; `--task` is optional there and runs the advisory preflight when given; `factory`'s config PRs give none). `watch` and `merge` always take the target from the PR; a given `--base` must match it.
 
 ```sh
-python3 tools/factory/session.py collisions --candidate ../aicepeak-candidate --task docs/work/<ID>.md
-python3 tools/factory/session.py preflight --candidate ../aicepeak-candidate --task docs/work/<ID>.md
+python3 tools/factory/session.py collisions --candidate ../aicepeak-candidate --task '#57'
+python3 tools/factory/session.py preflight --candidate ../aicepeak-candidate --task '#57'
 python3 tools/factory/session.py submit --candidate ../aicepeak-candidate --base testing \
-  --task docs/work/<ID>.md --runner claude --title '<title>' --body-file /path/outside/checkouts/body.md
+  --task '#57' --runner claude --title 'Export energy costs as CSV #57' --body-file /path/outside/checkouts/body.md
 python3 tools/factory/session.py watch --pr <n>              # --once: poll once
-python3 tools/factory/session.py response --pr <n> --question '<question>' --post
 python3 tools/factory/session.py merge --pr <n> --dry-run
 python3 tools/factory/doctor.py --root . --runner claude
-python3 tools/factory/clients.py launch --root . --runner claude    # interactive author; needs exported keys
+python3 tools/factory/clients.py launch --root . --runner claude    # interactive author session; needs exported keys
 ```
 
-`session.py submit` needs a clean candidate whose branch is already pushed. The unattended launcher with labels, read-only mode and event stream is documented in [factory/clients.md](../factory/clients.md#build-and-run). Leftover Docker resources of a run can be listed with `docker ps -a --filter label=aicepeak.factory.run=<run id>` (likewise `docker network ls` and `docker volume ls`); `factory cancel` and `factory status` remove them for you.
+`session.py submit` needs a clean candidate whose branch is already pushed. Questions about a PR are asked in a manual Claude session, for example the interactive session `clients.py launch` above on the PR's branch; its answer is advisory and authorizes nothing. The unattended launcher with labels, read-only mode and event stream is documented in [factory/clients.md](../factory/clients.md#build-and-run). Leftover Docker resources of a run can be listed with `docker ps -a --filter label=aicepeak.factory.run=<run id>` (likewise `docker network ls` and `docker volume ls`); `factory cancel` and `factory status` remove them for you.

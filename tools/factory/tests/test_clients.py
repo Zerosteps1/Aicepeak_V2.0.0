@@ -1,4 +1,5 @@
 """Boundary tests: no Docker daemon, network, personal configuration, or credentials."""
+import contextlib
 import copy
 import importlib.util
 import io
@@ -16,14 +17,14 @@ import types
 import unittest
 from unittest import mock
 
-REPO = Path(os.environ.get("FACTORY_CANDIDATE", Path(__file__).resolve().parents[3])).resolve()
+from factory_testlib import ROOT
 # The harness is trusted base code, while the implementation under test must
 # come from the candidate even with python -I and previously imported modules.
 _package = types.ModuleType("_factory_client_candidate")
-_package.__path__ = [str(REPO / "tools/factory")]
+_package.__path__ = [str(ROOT / "tools/factory")]
 sys.modules[_package.__name__] = _package
 def _candidate_module(name):
-    spec = importlib.util.spec_from_file_location(f"{_package.__name__}.{name}", REPO / "tools/factory" / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"{_package.__name__}.{name}", ROOT / "tools/factory" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -39,7 +40,6 @@ SONNET = {
 }
 CONFIG = {
     "author_models": {"codex": "gpt-6-astra", "claude": None},
-    "review_model": "gpt-6-astra",
     "limits": {"max_cost_usd": 25, "max_run_cost_usd": 5, "author_output_tokens": 32000, "timeout_seconds": 900, "max_patch_bytes": 200000},
     "pricing_usd_per_million": {"review_input": 10, "review_output": 50},
     "author_pricing_usd_per_million": {"codex": {"input": 10, "output": 50}, "claude": None},
@@ -52,7 +52,7 @@ class AdapterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "trusted"
         self.root.mkdir()
-        shutil.copytree(REPO / ".agents", self.root / ".agents")
+        shutil.copytree(ROOT / ".agents", self.root / ".agents")
         (self.root / "factory").mkdir()
         (self.root / "factory/config.json").write_text(json.dumps(CONFIG))
         (self.root / "factory/policy.md").write_text("Trusted policy")
@@ -76,7 +76,7 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(config["mcp_servers"]["openai_docs"]["required"])
 
     def test_role_adapters_omit_keys_codex_ignores_for_roles(self):
-        # Codex 0.164.0 discards sandbox_mode from role files; the line would only mislead readers.
+        # The pinned Codex CLI discards sandbox_mode from role files; the line would only mislead readers.
         for name in ("factory_author", "factory_senior_reviewer"):
             role = tomllib.loads((self.root / f".codex/agents/{name}.toml").read_text())
             self.assertNotIn("sandbox_mode", role)
@@ -214,7 +214,7 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(any("target=/work," in value and "type=bind" in value for value in worker[0]))
         self.assertTrue(any("volume-keeper" in str(args) and "none" in args for args, _ in calls))
         # Without volume-nocopy Docker copies the image's /work owner onto the shared tmpfs
-        # when the second container mounts it; the host-uid seed then fails (live run 40762431387).
+        # when the second container mounts it; the host-uid seed then fails.
         work_mounts = [value for args, _ in calls for value in args if value.startswith("type=volume,") and "target=/work" in value]
         self.assertGreaterEqual(len(work_mounts), 4)
         self.assertTrue(all(value.endswith(",volume-nocopy") for value in work_mounts))
@@ -289,12 +289,12 @@ class AdapterTests(unittest.TestCase):
 
     def test_labels_reach_every_container_network_and_volume(self):
         result, calls = self.run_claude(lambda args, kwargs: json.dumps({"type": "result", "result": "done", "is_error": False}).encode(),
-                                        labels=["aicepeak.factory.run=FACTORY-007-1"])
+                                        labels=["aicepeak.factory.run=issue-57-20261108-101500-a1b2"])
         self.assertEqual(result["status"], "completed")
         created = [args for args in calls if args[:2] == ["docker", "run"] or args[:3] in (["docker", "network", "create"], ["docker", "volume", "create"])]
         self.assertGreaterEqual(len(created), 7)  # network, volume, keeper, seed, proxy, worker, extract
         for args in created:
-            self.assertEqual(args[args.index("--label") + 1], "aicepeak.factory.run=FACTORY-007-1", args[:3])
+            self.assertEqual(args[args.index("--label") + 1], "aicepeak.factory.run=issue-57-20261108-101500-a1b2", args[:3])
         for bad in (["Upper=case"], ["no-value="], ["a=b"] * 9):
             with self.assertRaisesRegex(clients.ClientError, "labels"):
                 clients.run(Path(self.temp.name), self.root, "claude", b"x", Path(self.temp.name) / "x.patch", labels=bad)
@@ -604,7 +604,7 @@ class BrokerTests(unittest.TestCase):
                 self.policy.prepare("/openai/v1/responses", json.dumps({**fixture, field: value}).encode())
 
     def test_incremental_tool_items_get_the_same_hosted_tool_check(self):
-        # Codex 0.164.0 announces tools as an input item of type additional_tools, not in "tools".
+        # The pinned Codex CLI announces tools as an input item of type additional_tools, not in "tools".
         native = {"type": "additional_tools", "role": "developer", "tools": [{"type": "namespace", "name": "functions", "tools": [{"type": "function", "name": "exec"}]}]}
         self.policy.prepare("/openai/v1/responses", self.payload(input=[native]))
         for hosted in ({"type": "web_search"}, {"type": "namespace", "name": "x", "tools": [{"type": "web_search"}]}):
@@ -731,8 +731,8 @@ class BrokerTests(unittest.TestCase):
 
 class LauncherTests(unittest.TestCase):
     def test_candidate_modules_and_canonical_inputs_share_root(self):
-        self.assertEqual(Path(clients.__file__).resolve().parents[2], REPO)
-        self.assertEqual(Path(proxy.__file__).resolve().parents[2], REPO)
+        self.assertEqual(Path(clients.__file__).resolve().parents[2], ROOT.resolve())
+        self.assertEqual(Path(proxy.__file__).resolve().parents[2], ROOT.resolve())
 
     def test_codex_worker_routes_through_broker_when_project_provider_keys_are_ignored(self):
         for interactive in (False, True):
@@ -807,15 +807,15 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn("--max-turns", clients.worker_arguments("claude", "claude-sonnet-5-5", interactive=True, max_turns=60, max_budget_usd=12.0))
 
     def test_factory_runs_only_the_claude_author(self):
-        config = json.loads((REPO / "factory/config.json").read_text())
+        config = json.loads((ROOT / "factory/config.json").read_text())
         self.assertEqual(config["runners"], ["claude"])
         self.assertEqual(set(config["anthropic_federation"]), {"organization_id", "service_account_id", "federation_rule_id", "workspace_id"})
         # The configured (non-secret) federation IDs must pass the broker's own validation.
         proxy.FederatedToken(config["anthropic_federation"], "https://pipelines.actions.githubusercontent.com/x/idtoken?api-version=2.0", "request-token", opener=lambda *a, **k: None)
 
     def test_standard_npm_lock_matches_reviewed_cli_versions(self):
-        package = json.loads((REPO / "factory/package.json").read_text())
-        lock = json.loads((REPO / "factory/package-lock.json").read_text())
+        package = json.loads((ROOT / "factory/package.json").read_text())
+        lock = json.loads((ROOT / "factory/package-lock.json").read_text())
         self.assertEqual(package["dependencies"], lock["packages"][""]["dependencies"])
         self.assertEqual(package["dependencies"]["@openai/codex"], clients.VERSIONS["codex"].split()[1])
         self.assertEqual(package["dependencies"]["@anthropic-ai/claude-code"], clients.VERSIONS["claude"].split()[0])
@@ -934,6 +934,31 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("--security-opt=no-new-privileges", flags)
         self.assertIn("127.0.0.1", flags)
         self.assertFalse(any("docker.sock" in flag for flag in flags))
+
+
+
+class PinnedClients(unittest.TestCase):
+    def test_image_and_versions_come_from_the_npm_manifest(self):
+        pins = json.loads((ROOT / "factory/package.json").read_text())["dependencies"]
+        codex, claude = pins["@openai/codex"], pins["@anthropic-ai/claude-code"]
+        expected = (f"aicepeak-factory-clients:codex-{codex}-claude-{claude}",
+                    {"codex": f"codex-cli {codex}", "claude": f"{claude} (Claude Code)"})
+        self.assertEqual(clients.pinned_clients(), expected)
+        self.assertEqual((clients.IMAGE, clients.VERSIONS), expected)
+        # One bump of the manifest changes the image and every version check at once.
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = Path(temp) / "factory/package.json"
+            manifest.parent.mkdir()
+            manifest.write_text(json.dumps({"dependencies": {"@openai/codex": "9.8.7", "@anthropic-ai/claude-code": "6.5.4"}}))
+            with mock.patch.object(clients, "__file__", str(Path(temp) / "tools/factory/clients.py")):
+                self.assertEqual(clients.pinned_clients(), ("aicepeak-factory-clients:codex-9.8.7-claude-6.5.4",
+                                                            {"codex": "codex-cli 9.8.7", "claude": "6.5.4 (Claude Code)"}))
+
+    def test_the_image_command_prints_the_pinned_tag(self):
+        with mock.patch.object(sys, "argv", ["clients.py", "image"]), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(clients.main(), 0)
+        self.assertEqual(output.getvalue(), clients.IMAGE + "\n")
+        self.assertIn('"$root/tools/factory/clients.py" image', (ROOT / "tools/factory/sandbox-verify.sh").read_text())
 
 
 if __name__ == "__main__":

@@ -9,9 +9,9 @@ import urllib.parse
 import urllib.request
 
 import branches
+from contracts import REPOSITORY
 
 AUDIENCE = 'https://api.anthropic.com'
-REPOSITORY = 'Zerosteps1/Aicepeak_V2.0.0'
 
 
 class SmokeFailure(Exception):

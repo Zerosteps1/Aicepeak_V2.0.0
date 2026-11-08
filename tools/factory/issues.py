@@ -1,22 +1,19 @@
-"""Work orders as GitHub issues (FACTORY-009, ADR-0009). No provider calls.
+"""Work orders as GitHub issues (ADR-0009). No provider calls.
 
 A configured maintainer opens the issue; its number is the work-order ID (`#57`). It is an approved work order only
 while it is open and the SHA-256 of its title and description equals the newest authentic approval record that the
-publisher App posted after `/accept` (tools/factory/issue_review.py). Any later edit withdraws the approval until it
-is accepted again. Legacy work-order files in docs/work/ are read from the config branch tip as before:
-work_order() is the one reader for both, so every consumer applies the same rules.
+publisher App posted after `/accept` (tools/factory/issue_review.py), so any later edit withdraws the approval until
+it is accepted again. work_order() is the only reader, also for the device smoke's file in docs/work/, so every
+consumer applies the same rules.
 """
 import hashlib
 import json
 import re
 
 import branches
-from contracts import Blocked, require, safe_path, task_spec, validate
+from contracts import FILE_TASK, ISSUE_TASK, KINDS, TASK_BLOCK, Blocked, maintainer, require, safe_path, task_spec, validate
 
-TASK = re.compile(r'#([1-9][0-9]{0,8})')
-FILE_TASK = re.compile(r'docs/work/[A-Za-z0-9_-]+\.md')
-TASK_BLOCK = re.compile(r'```factory-task\s*\n(.*?)\n```', re.S)
-KINDS = ('factory', 'product', 'smoke')
+PRODUCT_BLOCKED = 'product work orders stay blocked until the north star and product checks are ready (factory/config.json)'
 COMMAND = re.compile(r'/(review|accept)(?=\s|$)')
 
 # Publisher-App records: the marker line, then one JSON line inside an HTML comment, then text for humans.
@@ -51,19 +48,14 @@ def task_of(number):
 
 
 def number_of(task):
-    """The issue number of a handoff task `#N`, else None (a legacy file or anything else)."""
-    match = TASK.fullmatch(task) if isinstance(task, str) else None
+    match = ISSUE_TASK.fullmatch(task) if isinstance(task, str) else None
     return int(match[1]) if match else None
 
 
-def maintainer(user, config):
-    user = user or {}
-    return user.get('type') == 'User' and any(m['id'] == user.get('id') and m['login'] == user.get('login')
-                                              for m in config['maintainers'])
-
-
-def approvals_needed(config):
-    return config.get('work_order_approvals', branches.WORK_ORDER_APPROVALS)
+def product_allowed(config):
+    """Product work needs the approved north star and implemented product checks; only explicit `true` counts."""
+    return (isinstance(config.get('northstar_path'), str) and bool(config['northstar_path'])
+            and config.get('northstar_approved') is True and config.get('product_checks_ready') is True)
 
 
 def issue_url(config, number):
@@ -82,7 +74,6 @@ def document(issue):
 
 
 def identity(issue, config, number):
-    """Refuse anything that is not an issue of this repository opened by a configured maintainer."""
     require(isinstance(issue, dict) and issue.get('number') == number, f'issue #{number} not found')
     require('pull_request' not in issue, f'#{number} is a pull request, not a work-order issue')
     # A transferred issue redirects to its new repository.
@@ -110,7 +101,7 @@ def draft_spec(text):
     require(isinstance(spec, dict) and set(spec) == {'status', 'kind', 'allowed_paths'},
             'the factory-task block needs exactly the keys status, kind and allowed_paths')
     require(isinstance(spec['status'], str) and spec['status'], 'status must be a non-empty string')
-    require(spec['kind'] in KINDS, 'kind must be factory, product or smoke')
+    require(spec['kind'] in KINDS, 'kind must be one of ' + ', '.join(KINDS))
     require(isinstance(spec['allowed_paths'], list) and all(isinstance(p, str) for p in spec['allowed_paths']),
             'allowed_paths must be a list of paths')
     for path in spec['allowed_paths']:
@@ -119,13 +110,12 @@ def draft_spec(text):
 
 
 def with_block(text, spec):
-    """The description with only its factory-task block replaced."""
     require(len(TASK_BLOCK.findall(text or '')) == 1, 'the description needs exactly one factory-task block')
     return TASK_BLOCK.sub(lambda _: '```factory-task\n' + json.dumps(spec, separators=(',', ':')) + '\n```', text, count=1)
 
 
 def without_block(text):
-    """The description without its factory-task block content, line endings normalised, for comparisons."""
+    """Lets /accept prove that its write changed nothing in the description but the factory-task block."""
     return TASK_BLOCK.sub('```factory-task\n```', (text or '').replace('\r\n', '\n'), count=1)
 
 
@@ -200,7 +190,7 @@ def approved(gh, config, number):
                 f'an /accept of work order #{number} was edited or deleted, or its author is no maintainer any more; '
                 'comment /accept again')
         accepted.add(entry['id'])
-    require(len(accepted) >= approvals_needed(config),
+    require(len(accepted) >= branches.work_order_approvals(config),
             f'work order #{number} has fewer /accept than work_order_approvals requires; comment /accept again')
     return {'number': number, 'task': task_of(number), 'title': issue.get('title') or '', 'text': document(issue),
             'sha256': sha, 'spec': spec, 'record': newest['id']}
@@ -217,16 +207,20 @@ def pinned(gh, config, pin):
     return order
 
 
-def work_order(gh, config, task, policy):
-    """(text, spec, pin) of a handoff task: an approved issue `#N` (pin binds its text and approval record) or a
-    legacy work-order file at the config tip `policy` (pin None)."""
+def work_order(gh, config, task, policy, read_file=None):
+    """(text, spec, pin) of an approved work order: an issue `#N` (the pin binds its approved text and record) or a
+    docs/work file at the config tip `policy` (pin None). read_file(path) reads that file from a trusted local
+    checkout of the tip; without it the GitHub API reads it."""
     number = number_of(task)
     if number is not None:
         order = approved(gh, config, number)
-        return order['text'], order['spec'], pin_of(order)
-    require(isinstance(task, str) and FILE_TASK.fullmatch(task) is not None, 'invalid work-order reference')
-    text = gh.text(config['repository'], task, policy)
-    return text, task_spec(text), None
+        text, spec, pin = order['text'], order['spec'], pin_of(order)
+    else:
+        require(isinstance(task, str) and FILE_TASK.fullmatch(task) is not None, 'invalid work-order reference')
+        text = read_file(task) if read_file else gh.text(config['repository'], task, policy)
+        spec, pin = task_spec(text), None
+    require(spec['kind'] != 'product' or product_allowed(config), PRODUCT_BLOCKED)
+    return text, spec, pin
 
 
 def text_for(gh, config, repo, task, policy, pin):
@@ -235,11 +229,8 @@ def text_for(gh, config, repo, task, policy, pin):
 
 
 def config_problems(config):
-    """Issue work orders are enabled by issue_review_model and need their limits."""
-    if 'issue_review_model' not in config:
-        return []
     found = []
-    model = config['issue_review_model']
+    model = config.get('issue_review_model')
     if not isinstance(model, str) or re.fullmatch(r'claude-[a-z0-9.-]{1,60}', model) is None:
         found.append('issue_review_model must name a Claude model')
     limits = config.get('limits') or {}

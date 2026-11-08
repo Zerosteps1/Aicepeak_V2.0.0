@@ -17,11 +17,13 @@ import tempfile
 import time
 
 import common
-from common import Blocked, require, say
+from common import Blocked, say
+import workorders
 
 TERMINAL = ('completed', 'stopped', 'failed', 'cancelled')
 EXIT = {'completed': 0, 'stopped': 0, 'failed': 1, 'cancelled': 130}
 LABEL = 'aicepeak.factory.run'
+HOTFIX = 'hotfix'  # the run of a hotfix without a work order: one at a time, addressed as `hotfix`
 CANCEL_GRACE = 45
 POLL = 0.5
 
@@ -73,21 +75,29 @@ def active(order=None):
     return [path for path in every() if alive(path) and (order is None or state(path).get('order') == order)]
 
 
-def find(order=None):
-    """The active run of a work order (or the only active run)."""
+def shown(order):
+    """A run's work order as texts name it: #57; `hotfix` for a hotfix without a work order."""
+    return workorders.label(order) if workorders.is_issue(order) else str(order or '?')
+
+
+def address(order):
+    """How continue, stop and cancel name a run: `workorder 57` (a printed command takes 57: `#57` after a space starts
+    a shell comment), or `hotfix` for the hotfix without a work order."""
+    return f'workorder {workorders.command_reference(order)}' if workorders.is_issue(order) else str(order)
+
+
+def find(order):
     running = active(order)
-    if order is None:
-        require(len(running) <= 1, 'several runs are active: name the work order, e.g. `factory continue 7`')
     if running:
         return running[0]
-    last = next((path for path in every() if order is None or state(path).get('order') == order), None)
+    last = next((path for path in every() if state(path).get('order') == order), None)
     if last:
         settle_stale(last)
         data = state(last)
-        raise Blocked(f'no active run{" for " + order if order else ""}; the last run {last.name} ended '
+        raise Blocked(f'no active run for {shown(order)}; the last run {last.name} ended '
                       f'{data.get("status", "unknown")}' + (f' ({data["reason"]})' if data.get('reason') else '')
                       + f'. Log: {last / "log"}')
-    raise Blocked(f'no run{" for " + order if order else ""} found')
+    raise Blocked(f'no run for {shown(order)} found on this device')
 
 
 def spawn(path, python, keys, lock):
@@ -104,18 +114,16 @@ def spawn(path, python, keys, lock):
     update(path, pid=process.pid)  # session leader: its pid is also its process group
     with os.fdopen(write, 'w') as stream:
         json.dump(keys, stream)
-    caffeinate = common.tool('caffeinate', required=False)
-    if caffeinate:  # keeps the Mac from idle-sleeping while the run lives; ends with the runner
-        subprocess.Popen([caffeinate, '-i', '-w', str(process.pid)], start_new_session=True,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    common.keep_awake(process.pid)  # while the run lives; ends with the runner
     return process.pid
 
 
-def follow(path, reattach):
-    """Show the run's log as it grows. Ctrl-C only detaches; the run goes on."""
-    say(f'Run {path.name} (log: {path / "log"})')
-    say(f'Ctrl-C detaches. Reattach: factory continue {reattach} · stop after this step: factory stop workorder '
-        f'{reattach} · cancel now: factory cancel workorder {reattach}')
+def follow(path, order):
+    """Ctrl-C only detaches; the run goes on."""
+    reattach = address(order)
+    say(f'Run {path.name} of {shown(order)} (log: {path / "log"})')
+    say(f'Ctrl-C detaches. Reattach: factory continue {reattach} · stop after this step: factory stop {reattach} · '
+        f'cancel now: factory cancel {reattach}')
     try:
         with open(path / 'log', 'rb') as handle:
             while True:
@@ -185,7 +193,7 @@ def settle_stale(path):
 
 
 def sweep(path, value=None, host=None):
-    """Remove every Docker container, network and volume that carries this run's label (twice: late creations)."""
+    """Two passes, because a container, network or volume with the run's label can still appear during the first."""
     docker = common.tool('docker', required=False)
     if not docker:
         return
@@ -210,15 +218,15 @@ def listing():
         settle_stale(path)
         data = state(path)
         live = alive(path)
-        rows.append(f'{"▶" if live else " "} {data.get("order", "?"):<18} {data.get("kind", "?"):<7} '
+        rows.append(f'{"▶" if live else " "} {shown(data.get("order")):<12} {data.get("kind", "?"):<7} '
                     f'{(data.get("step") if live else data.get("status")) or "?":<16} {data.get("started", ""):<19} '
                     f'{data.get("branch", "")}' + (f'  PR #{data["pr"]}' if data.get('pr') else ''))
     if not rows:
-        say('No factory runs on this device yet. Start one with `factory start workorder <n>`.')
+        say('No factory runs on this device yet. Start one with `factory start workorder <issue>`.')
         return 0
-    say('  work order         kind    step/status      started             branch')
+    say('  work order   run     step/status      started             branch')
     for row in rows:
         say(row)
     if active():
-        say('Reattach to a running one: factory continue <n>')
+        say('Reattach to a running one: factory continue workorder <issue>')
     return 0

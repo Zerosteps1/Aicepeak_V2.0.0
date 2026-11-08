@@ -4,21 +4,22 @@ This repository holds two things: the product north star for Aicepeak ([AICEPEAK
 
 Only this repository, its work orders and review evidence, and official vendor documentation are project sources. Old projects, private chats, Workbrain content and personal agent memories are not.
 
-## Status on 2026-10-29
+## Status on 2026-11-08
 
 | Area | State |
 |---|---|
-| Factory | Installed on `main`; rulesets, environment secrets and both Apps verified active. The review-fix loop passed live on PR #20 and again on PR #13 (2026-10-29: Astra finding F-006, automatic Claude correction, re-review `pass`). Ready for factory and documentation work. |
-| Branch model | Validation branch `testing` (today's `main`, renamed) and production and config branch `production` ([ADR-0008](docs/decisions/0008-branch-model.md), 2026-11-02). It takes effect with the owner runbook in that record; its live acceptance is open until recorded in the [evidence](factory/evidence.md). |
+| Factory | Running on the validation branch `testing` and the production and config branch `production`; rulesets, environment secrets and both Apps active. The review-fix loop passed live on PR #20 and again on PR #13 (2026-10-29: Astra finding F-006, automatic Claude correction, re-review `pass`). The `factory` command is at 0.5.0. Ready for factory and documentation work. |
+| Branches | Three levels ([ADR-0008](docs/decisions/0008-branch-model.md), [diagram](docs/factory-branches.md)): **issue branches** (`57-<issue title>`, one per work order) → **`testing`** (validation branch, GitHub default branch, gate `full`, every kind routed to it) → **`production`** (production and config branch, review mode `maintainer-manual`, merge commits only). Promotions are merged with a merge commit since 2026-11-06 (latest: PR #54 on 2026-11-07). Live acceptance of the branch model is not yet recorded in the [evidence](factory/evidence.md). |
+| Work orders | GitHub issues ([ADR-0009](docs/decisions/0009-issues-as-work-orders.md)): `/review` and `/accept` are deployed; no issue has been reviewed or accepted yet (open issues #52, #55, #56, #57), so their live acceptance is open. One work order is one PR; its merge into `testing` closes the issue. |
 | Full operational acceptance | Open: a second maintainer's own reviewer device, two devices racing for one claim, a new head during a running review, a foreign App with the same check name, authenticated skill/MCP calls inside the author container. See [evidence](factory/evidence.md). |
 | Product development | North star approved by the repository owner on 2026-10-29 ([decision](docs/decisions/0006-northstar-approval.md)); architecture decisions and implemented product checks remain open. `northstar_approved: true`, `product_checks_ready: false`: only `factory` and `smoke` work orders run. |
 | Architecture | Non-binding draft proposal v0.4 (merged with PR #13): [specification sheet and target architecture](docs/architecture/AICEPEAK_SPEC_AND_ARCHITECTURE.md). Its AD-01..AD-12 bind only after adoption through decision records. |
 
-The start-readiness review with measured times, friction and recommendations is in [factory/review-2026-10-29.md](factory/review-2026-10-29.md).
+The start-readiness review of 2026-10-29 (measured times, friction and recommendations; a historical record of the single-branch setup before ADR-0008 and ADR-0009) is in [factory/review-2026-10-29.md](factory/review-2026-10-29.md).
 
 ## Development
 
-All development runs through the software factory, driven by the global **`factory`** command. It manages your control checkout (a clean clone on a listed branch, by default the config branch `production`, from which trusted code runs) and your candidate checkout (where changes land), so you run it from any directory. Every rule comes from the config branch; work orders are approved GitHub issues. This section gives the overview and the most common commands; the full details are in four documents:
+All development runs through the software factory, driven by the global **`factory`** command. It manages your control checkout (a clean clone on a listed branch, by default the config branch `production`, from which trusted code runs) and your candidate checkout (where changes land), so you run it from any directory. Every rule comes from the config branch; work orders are approved GitHub issues. This section gives the overview and the most common commands; the full details are in five documents:
 
 | Document | Content |
 |---|---|
@@ -55,16 +56,14 @@ factory doctor
 
 A task is a **work order**: a GitHub issue opened by a maintainer; the issue number is its ID ([ADR-0009](docs/decisions/0009-issues-as-work-orders.md)). It is created in two steps:
 
-1. **Write:** `factory issue --title "…"` opens the [work-order template](.github/ISSUE_TEMPLATE/factory-task.md) in your editor and creates the issue under your GitHub login with status `draft`. You write goal, non-goals, acceptance criteria and verification.
+1. **Write:** on GitHub, open a new issue with the **"Factory work order"** template ([.github/ISSUE_TEMPLATE/factory-task.md](.github/ISSUE_TEMPLATE/factory-task.md)); it starts with status `draft`. You write goal, non-goals, acceptance criteria and verification and choose the `kind`.
 2. **Review and accept:** comment `/review` on the issue. The factory proposes the `allowed_paths` and fixes for weak or missing sections as comments; copy what you agree with into the description and `/review` again. `/accept` writes the proposed paths and `status: approved` into the issue. Any later edit withdraws the approval until it is accepted again.
-
-Legacy work orders in `docs/work/` keep working; they change through `factory submit workorders`, and `factory update` brings them into the validation branches once merged.
 
 Details: [way of working, steps 1–2](docs/way-of-working.md#daily-use-step-by-step).
 
 ### Start a new task
 
-Start the [isolated author](docs/software-factory.md#the-isolated-author-session) on the approved work order; it runs in the background (Ctrl-C only detaches) and applies its result unstaged to `<login>/issue-<N>` in your candidate checkout. Review and stage what you accept, then commit, push and open the PR:
+Start the [isolated author](docs/software-factory.md#the-isolated-author-session) on the approved work order; it runs in the background (Ctrl-C only detaches) and applies its result unstaged to the issue's branch `57-<issue title>` in your candidate checkout (57 stands for the issue number). Review and stage what you accept, then commit, push and open the PR:
 
 ```sh
 factory start workorder 57
@@ -77,12 +76,12 @@ Details: [way of working, steps 3–6](docs/way-of-working.md#daily-use-step-by-
 
 ### Stop or cancel a task
 
-- **Running author:** Ctrl-C only detaches (`factory continue <n>` reattaches). `factory stop workorder <n>` ends the run after its current step and applies what exists; `factory cancel workorder <n>` ends it at once, removes its containers and applies nothing. Nothing reaches GitHub until you submit.
+- **Running author:** Ctrl-C only detaches (`factory continue workorder 57` reattaches). `factory stop workorder 57` ends the run after its current step and applies what exists; `factory cancel workorder 57` ends it at once, removes its containers and applies nothing. Nothing reaches GitHub until you submit.
 - **Watcher or review:** press Ctrl-C. The PR waits until a device watches again.
 - **Pause a PR:** convert it to draft with `gh pr ready <n> --undo`.
 - **Cancel a PR:** close it with a reason: `gh pr close <n> --comment '<reason>'`.
-- **Finish a work order:** one work order is one PR. Its PR says `Closes #57`, so merging it into `testing` closes the issue; reopen a closed issue to continue it.
-- **Withdraw a work order:** close its issue (or edit it, which withdraws the approval). Every PR that references it is then blocked. A legacy file: change its `status` from `approved` and submit that with `factory submit workorders`.
+- **Finish a work order:** one work order is one PR. Its PR says `Closes #57`, so merging it into `testing` closes the issue and ends the work order; follow-up work is a new work order.
+- **Withdraw a work order:** close its issue (or edit it, which withdraws the approval). Every PR that references it is then blocked.
 
 Details and side effects: [way of working, stop or cancel a task](docs/way-of-working.md#stop-or-cancel-a-task).
 
@@ -92,14 +91,14 @@ Details and side effects: [way of working, stop or cancel a task](docs/way-of-wo
 |---|---|---|
 | Run the binding review for a PR | `factory watch <n>`; all waiting PRs: `factory watch --all` | [factory watch](docs/factory-cli.md#factory-watch) |
 | Give feedback | Ordinary PR comments, reviews and inline comments; each starts a fresh review | [Step 8](docs/way-of-working.md#daily-use-step-by-step) |
-| Ask a question about a PR | `python3 tools/factory/session.py response --pr <n> --question '…' --post` (from the control checkout) | [Step 8](docs/way-of-working.md#daily-use-step-by-step) |
-| Fix findings marked `needs-author-action` | `factory fix <n>` (or `factory hotfix <n>` for urgent fixes outside protected paths) | [factory fix](docs/factory-cli.md#factory-fix-and-factory-hotfix) |
-| Review your candidate locally | `factory review "<question>"` (read-only, advisory) | [factory review](docs/factory-cli.md#factory-review) |
+| Ask a question about a PR | A manual Claude session, e.g. `python3 tools/factory/clients.py launch --root . --runner claude` on the PR's branch (advisory; authorizes nothing) | [Step 8](docs/way-of-working.md#daily-use-step-by-step) |
+| Fix findings marked `needs-author-action` | `factory fix workorder 57` (or `factory hotfix workorder 57` for urgent fixes outside protected paths); without a work order `factory hotfix "<problem>"` pushes a hotfix branch, no PR | [factory fix](docs/factory-cli.md#factory-fix-and-factory-hotfix) |
+| Review your candidate locally | `factory review workorder 57 "<question>"` (read-only, advisory) | [factory review](docs/factory-cli.md#factory-review-workorder) |
 | Merge into `testing` | `factory merge <n>` (`--dry-run` for the verdict only) | [Merge rules](docs/way-of-working.md#merge-rules) |
 | Promote `testing` to `production` | `factory promote testing`, then `/review` on the PR, `factory watch <n>`, and merge on GitHub with a merge commit once the production check is green; then `factory update testing` and push | [Branches and promotion](docs/way-of-working.md#branches-and-promotion) |
-| Pass a stuck PR's checks deliberately | Comment `/bypass <reason>` on the PR for its current head; post a new comment instead of editing it or re-running its dispatch (every promotion accepts it, work-order and config PRs never) | [Branches and promotion](docs/way-of-working.md#branches-and-promotion) |
+| Pass a stuck PR's checks deliberately | Comment `/bypass <reason>` on the PR for its current head; post a new comment instead of editing it or re-running its dispatch (every promotion and every PR into a gated validation branch accepts it; config PRs into a production branch never) | [Branches and promotion](docs/way-of-working.md#branches-and-promotion) |
 | See or change the branches | `factory branches [--show]`; `factory add validation branch`, `factory add production branch`, `factory remove branch`, `factory set config branch` | [factory branches](docs/factory-cli.md#factory-branches) |
-| Run another branch's CLI code | `factory use branch <n>` | [factory use branch](docs/factory-cli.md#factory-use-branch) |
+| Run another branch's CLI code | `factory use branch <branch>` | [factory use branch](docs/factory-cli.md#factory-use-branch) |
 | Restart a stuck run | `gh workflow run factory.yml --ref production -f pr=<n> -f retry=true` (`--ref` is the config branch; a moved config tip re-runs open PRs by itself, a change of the config branch does not) | [Restart](docs/way-of-working.md#restart-a-stuck-run) |
 | Work on several PRs at once | Collision sweep in `factory submit --finished`, then merge one PR at a time | [Working in parallel](docs/way-of-working.md#working-in-parallel) |
 | See local factory runs | `factory status` | [factory status](docs/factory-cli.md#factory-status) |
@@ -114,12 +113,12 @@ Details and side effects: [way of working, stop or cancel a task](docs/way-of-wo
 | [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md), [CONTRIBUTING.md](CONTRIBUTING.md) | Shared agent rules and the contribution flow |
 | [docs/software-factory.md](docs/software-factory.md), [docs/way-of-working.md](docs/way-of-working.md), [docs/factory-cli.md](docs/factory-cli.md), [docs/factory-branches.md](docs/factory-branches.md), [docs/dev-setup.md](docs/dev-setup.md) | Factory description, daily use, `factory` command reference, branch diagram and device setup |
 | [factory/policy.md](factory/policy.md), [factory/config.json](factory/config.json) | Binding policy, models, maintainers, limits, protected paths |
-| [factory/evidence.md](factory/evidence.md), [factory/review-2026-10-29.md](factory/review-2026-10-29.md) | Real verification evidence and the start-readiness review |
+| [factory/evidence.md](factory/evidence.md), [factory/review-2026-10-29.md](factory/review-2026-10-29.md) | Dated verification log and the historical start-readiness review of 2026-10-29 |
 | [factory/github.md](factory/github.md), [factory/clients.md](factory/clients.md) | GitHub operation, rulesets, isolated clients and the local reviewer |
 | `.agents/`, `.claude/`, `.codex/` | Canonical skills and roles; generated native adapters (`clients.py sync`, checked by `clients.py check`) |
 | `.github/` | Trusted pipeline, production check, dispatcher, feedback ingress, CODEOWNERS, templates |
 | `tools/factory/` | Factory tools and their regression tests |
 | `tools/factory/cli/` | The global `factory` command and its installer |
-| [docs/work/](docs/work/TEMPLATE.md) | Legacy work-order files (on the config branch, brought into the validation branches with `factory update`); new work orders are issues |
+| [docs/work/](docs/work/FACTORY-SMOKE.md) | The device smoke's work-order file (FACTORY-SMOKE) and the files of earlier work orders; work orders are GitHub issues |
 | [docs/decisions/](docs/decisions/0005-maintainer-local-senior-review.md) | Decision records |
 | [docs/architecture/](docs/architecture/AICEPEAK_SPEC_AND_ARCHITECTURE.md) | Non-binding architecture proposal and its validation |

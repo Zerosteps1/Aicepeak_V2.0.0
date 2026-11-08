@@ -1,4 +1,6 @@
-# Verification status and pending activation
+# Verification log
+
+> Dated records of live checks. Each section describes the setup of its date: entries up to 2026-10-29 refer to the single-branch setup on `main` and work-order files (for example `maintainer_check_bypass` and `session.py response`, both removed since). The branch model of [ADR-0008](../docs/decisions/0008-branch-model.md) was applied on 2026-11-06 and work orders are GitHub issues ([ADR-0009](../docs/decisions/0009-issues-as-work-orders.md)); the live acceptance of both is not recorded here yet.
 
 ## Merge safety for parallel PRs (FACTORY-004) — 2026-10-29
 

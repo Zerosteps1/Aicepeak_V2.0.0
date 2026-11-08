@@ -67,7 +67,7 @@ def check_payload_tree(value):
             raise Denied("remote files and media are not supported by this budget policy")
         if value.get("type") in ("input_image", "image", "input_audio", "audio", "document", "input_file", "item_reference"):
             raise Denied("media inputs are not supported by this budget policy")
-        # Codex 0.164.0 announces its tools incrementally as additional_tools input items.
+        # The pinned Codex CLI announces its tools incrementally as additional_tools input items.
         if value.get("type") in ("tool_search_output", "additional_tools"):
             for tool in value.get("tools", []):
                 check_codex_tool(tool)
@@ -163,7 +163,7 @@ class BrokerPolicy:
             raise Denied("remote persistence and background requests are not permitted")
         common = {"model", "tools", "tool_choice", "stream", "temperature", "top_p", "metadata", "service_tier"}
         provider_fields = {
-            # Codex 0.164.0 always serializes client_metadata (trace keys only); stream_options and
+            # The pinned Codex CLI always serializes client_metadata (trace keys only); stream_options and
             # prompt_cache_options are delivery/cache controls. Re-check this set on every CLI update.
             "codex": {"input", "instructions", "max_output_tokens", "parallel_tool_calls", "reasoning", "text", "store", "include", "truncation", "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options", "stream_options", "client_metadata", "safety_identifier", "user"},
             "claude": {"messages", "system", "max_tokens", "thinking", "stop_sequences", "top_k", "speed", "output_config", "context_management"},
@@ -224,7 +224,7 @@ class BrokerPolicy:
         return (cost + output * price["output_price"]) / 1_000_000, output
 
     def settle(self, reservation: Reservation | None, usage: dict | None):
-        """Replace a reservation by reported usage. Unknown usage keeps the reservation charged."""
+        """Unknown usage keeps the reservation charged."""
         if reservation is None or usage is None:
             return
         cost, output = self.usage_cost(usage)

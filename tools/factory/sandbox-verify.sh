@@ -6,8 +6,8 @@
 #   tools/factory/sandbox-verify.sh 'test_cli*.py'   only the unit tests whose file names match the pattern
 set -eu
 root="$(cd "$(dirname "$0")/../.." && pwd -P)"
-image="$(sed -n 's/^IMAGE = "\(.*\)"$/\1/p' "$root/tools/factory/clients.py")"
-[ -n "$image" ] || { echo "cannot read IMAGE from tools/factory/clients.py" >&2; exit 1; }
+image="$(python3 -E -s -B "$root/tools/factory/clients.py" image)"
+[ -n "$image" ] || { echo "cannot read the image tag from tools/factory/clients.py" >&2; exit 1; }
 # As `factory` does: start a stopped Docker Desktop, wake its VM from the resource saver with one no-op container
 # (queries are answered without the VM, which may call a present image missing), and wait up to 120 s.
 waited=0 started= woken=

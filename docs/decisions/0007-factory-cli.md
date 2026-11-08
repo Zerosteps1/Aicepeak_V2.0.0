@@ -1,6 +1,6 @@
 # ADR-0007: Global factory CLI for daily maintainer work
 
-- Status: Accepted by the maintainer on 2026-11-01 ([FACTORY-007](../work/FACTORY-007.md)); delivered locally outside the factory pipeline (decision 9)
+- Status: Accepted by the maintainer on 2026-11-01 ([FACTORY-007](../work/FACTORY-007.md)); delivered locally outside the factory pipeline (decision 9). Decision 8 is superseded by [ADR-0009](0009-issues-as-work-orders.md); the [amendments of 2026-11-08](#amendments-2026-11-08) describe the current commands.
 - Date: 2026-11-01
 - Deciders: Felix (`ftrutschnig`)
 - Related: [factory command reference](../factory-cli.md), [way of working](../way-of-working.md), [clients](../../factory/clients.md), [ADR-0005](0005-maintainer-local-senior-review.md)
@@ -28,3 +28,14 @@ Daily factory work needed two hand-managed clones, `cd` between them, long `sess
 - One local run stays within `max_cost_usd` across its model steps and each step within `max_run_cost_usd`. The displayed amounts are Claude-reported estimates; the broker's caps stay authoritative.
 - Changes to control paths (`tools/factory/`, `factory/`, `.agents/`, …) remain manual, protected changes: the isolated author cannot write them, `factory start` refuses work orders that lie entirely inside them, and `factory review` lists them as not reviewed.
 - Residual risks: whoever can write the maintainer's home directory can change the shim, the device configuration, the state folder or the control checkout, as before. Background runs and watchers pause during system sleep; `caffeinate` prevents only idle sleep. Cost figures are estimates. The CLI is macOS-first (keychain, `caffeinate`, `~/.zshrc`); elsewhere the author keys must be exported.
+
+## Amendments (2026-11-08)
+
+The CLI cleanup of 2026-11-08 (`factory` 0.5.0) describes the current state; where it differs, it replaces the decisions above.
+
+- **Work orders are GitHub issues** ([ADR-0009](0009-issues-as-work-orders.md), which supersedes decision 8). An issue is opened on GitHub from the "Factory work order" template and approved with `/review` and `/accept`; `factory issue`, `factory submit workorders` and the replaced `factory sync` are removed. The only work order that stays a file is the device smoke (`docs/work/FACTORY-SMOKE.md`), submitted with `factory submit` from its own branch.
+- **One grammar.** Every command that takes a work order names it `workorder <issue>` (`factory start|continue|stop|cancel|fix|review workorder 57`); texts name it `#57`. `continue`, `stop` and `cancel` name the run of a hotfix without a work order `hotfix`. `factory submit` takes the work order from the branch name only; `--workorder`, `--draft`, `--context` and `--pr` are removed.
+- **One work order is one branch and one PR.** The branch is named as GitHub names an issue's branch, `57-<issue title>`; `factory start` continues it and `factory fix` lands on its open PR (or the branch before the PR exists). There are no `-<k>` or `-fix-<k>` branches any more; follow-up work is a new work order.
+- **`hotfix` may run without a work order** (`factory hotfix "<problem>"`): it fixes the problem on a new branch `hotfix/<date>-<words>` from the default branch, without a preflight, and pushes that branch behind its push gate (no protected or guarded path, no binary, symlink or submodule entry) without opening a PR. With a work order it works as in decision 7, and its PR names the work order and says `Closes #57`.
+- **Commit titles** default to `<issue title> #57`: the issue number last, so that no editor takes the line for a comment.
+- **`session.py response` is removed**; questions about a PR are asked in a manual Claude session. `factory watch` keeps the Mac from idle-sleeping like a run, and `factory doctor` takes every tool version from `factory/package.json`.

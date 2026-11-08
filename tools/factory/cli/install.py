@@ -1,9 +1,7 @@
-"""Installer stage 2 (`factory _install`): runs from the control checkout and sets up this device.
+"""Installer stage 2 (`factory _install`): sets up this device from the control checkout.
 
 Stage 1 (install-factory-cli.sh) only checks prerequisites, verifies itself against the config branch's copy and
-clones the control checkout on the chosen control branch. Everything else happens here, from that reviewed code:
-verify and fast-forward the control checkout, reuse or clone the candidate, record both paths and the control
-branch, install the shim and, if needed, the PATH block and author keys.
+clones the control checkout on the chosen control branch; everything else runs here, from that reviewed code.
 """
 from __future__ import annotations
 
@@ -38,7 +36,6 @@ def write_shim(target, python, control):
 
 
 def path_block(bin_dir):
-    """Append bin_dir to PATH in ~/.zshrc, once, only if it is not on PATH already."""
     if str(bin_dir) in os.environ.get('PATH', '').split(os.pathsep):
         return False
     text = RC_FILE.read_text() if RC_FILE.is_file() else ''

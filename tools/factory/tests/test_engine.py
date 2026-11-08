@@ -1,6 +1,5 @@
 """Boundary regressions with real Git/stdlib and GitHub mocked only at transport."""
 import argparse
-import copy
 import json
 import os
 from pathlib import Path
@@ -12,115 +11,23 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-ROOT=Path(os.environ.get('FACTORY_CANDIDATE',Path(__file__).resolve().parents[3]))
-sys.path.insert(0,str(ROOT/'tools/factory'))
-sys.path.insert(0,str(Path(__file__).resolve().parent))
-import branch_fixture
+from factory_testlib import (BASE, DISPATCHER, HEAD, JOB_ENV, MAINTAINER, POLICY, POSTED, ROOT, STRANGER, IssueHub, Response,
+                             Transport, candidate_config, candidate_config_text, fixture_config, job, review_for)
 import branches
 import bypass
 import contracts
 import engine
-import issue_fixture
+import github_api
 import issues
 import verify
 from contracts import Blocked
-
-HEAD, POLICY, BASE = 'a'*40, 'b'*40, 'e'*40  # PR head, config branch tip (production), target tip (testing)
-ENV = {'GITHUB_SHA':POLICY,'GITHUB_REF':'refs/heads/production','GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1','FACTORY_RETRY':'false'}
-POSTED = '2026-11-01T10:00:00Z'  # when the human comments were posted; heads are committed a minute earlier
-DISPATCHER = {'type':'Bot','id':41898282,'login':'github-actions[bot]'}
-
-
-def job(workflow, name):
-    """One job's text of a workflow, wherever the job sits."""
-    rest=workflow.split(f'\n  {name}:\n',1)[1]
-    return next((rest[:i] for i in range(len(rest)) if rest.startswith('\n  ',i) and rest[i+3:i+4].isalnum()),rest)
-
-
-class Transport:
-    def __init__(self, config):
-        self.config=config
-        self.checks={}
-        self.comments=[]
-        self.labels=set()
-        self.calls=[]
-        self.runs={}
-        self.files=[{'filename':'example.txt','status':'modified'}]
-        self.task={'status':'approved','kind':'factory','allowed_paths':['example.txt']}
-        self.compare={'status':'ahead','behind_by':0}
-        self.tips={'production':POLICY,'testing':BASE}
-        self.foreign=[]
-        self.texts=[]
-        self.committed='2026-11-01T09:59:00Z'
-        self.pr={'number':1,'state':'open','draft':False,'changed_files':1,
-                 'head':{'sha':HEAD,'ref':'ftrutschnig/TEST','repo':{'full_name':'fixture/repo'}},
-                 'base':{'ref':'testing','sha':BASE},
-                 'body':'```factory-handoff\n'+json.dumps({'runner':'claude','task':'docs/work/TEST.md','owner':'test-human'})+'\n```'}
-
-    def comment(self,body,user=None,pr=1):
-        """A human issue comment as the API returns it; other PRs' comments are not listed on PR 1."""
-        ident=self.next_comment=getattr(self,'next_comment',1000)+1
-        (self.comments if pr==1 else self.foreign).append({'id':ident,'body':body,'user':user or {'type':'User','id':1,'login':'test-human'},
-                              'issue_url':f'https://api.github.com/repos/fixture/repo/issues/{pr}',
-                              'html_url':f'https://github.com/fixture/repo/pull/{pr}#issuecomment-{ident}','created_at':POSTED,'updated_at':POSTED})
-        return ident
-
-    def request(self,method,path,data=None):
-        self.calls.append((method,path,data))
-        if method=='GET':
-            if path.endswith('/check-runs/'+path.rsplit('/',1)[-1]) and '/check-runs/' in path:
-                return copy.deepcopy(self.checks[int(path.rsplit('/',1)[-1])])
-            if path=='/repos/fixture/repo':return {'full_name':'fixture/repo','default_branch':'testing'}
-            if path.endswith('/pulls/1'):return copy.deepcopy(self.pr)
-            if '/git/ref/heads/' in path:
-                name=path.rsplit('/heads/',1)[1]
-                if name not in self.tips:raise Blocked('GitHub GET ref: HTTP 404')
-                return {'object':{'sha':self.tips[name],'type':'commit'}}
-            if '/issues/comments/' in path:
-                return copy.deepcopy(next(c for c in self.comments+self.foreign if c.get('id')==int(path.rsplit('/',1)[-1])))
-            if '/compare/' in path:return copy.deepcopy(self.compare)
-            if '/commits/' in path and '/check-runs' not in path:
-                return {'sha':path.rsplit('/',1)[-1],'commit':{'committer':{'date':self.committed}}}
-        if method=='PATCH' and '/check-runs/' in path:
-            self.checks[int(path.rsplit('/',1)[-1])].update(copy.deepcopy(data))
-            return {}
-        if method=='GET' and '/actions/runs/' in path:
-            return copy.deepcopy(self.runs[int(path.rsplit('/',1)[-1])])
-        if method=='POST' and path.endswith('/issues/1/labels'):
-            self.labels.update(data['labels'])
-            return {}
-        if method=='DELETE' and '/issues/1/labels/' in path:
-            self.labels.remove(path.rsplit('/',1)[-1])
-            return {}
-        if path.endswith('/labels'):return {}
-        if method=='POST' and path.endswith('/check-runs'):
-            item={**data,'id':len(self.checks)+1,'app':{'id':7}}
-            self.checks[item['id']]=copy.deepcopy(item)
-            return item
-        if method=='POST' and path.endswith('/comments'):
-            self.comments.append({**data,'performed_via_github_app':{'id':7},'user':{'type':'Bot','id':77}})
-            return {'id':len(self.comments)}
-        raise AssertionError((method,path))
-
-    def pages(self,path,field=None):
-        if path.endswith('/issues/1/comments'):return copy.deepcopy(self.comments)
-        if path.endswith('/issues/1/labels'):return [{'name':name} for name in sorted(self.labels)]
-        if path.endswith('/files'):return copy.deepcopy(self.files)
-        if '/check-runs?' in path:
-            sha=path.split('/commits/',1)[1].split('/',1)[0]
-            return [copy.deepcopy(c) for c in self.checks.values() if c['head_sha']==sha and c['name']=='factory/deterministic']
-        return []
-
-    def text(self,*args):
-        self.texts.append(args)
-        return '```factory-task\n'+json.dumps(self.task)+'\n```'
 
 
 class IssueTransport(Transport):
     """The PR transport plus a work-order issue #57 on the same faked repository."""
     def __init__(self, config):
         super().__init__(config)
-        self.hub = issue_fixture.IssueHub(config)
+        self.hub = IssueHub(config)
 
     def request(self,method,path,data=None):
         if self.hub.owns(path):
@@ -135,14 +42,11 @@ class IssueTransport(Transport):
 
 class EngineBoundaries(unittest.TestCase):
     def setUp(self):
-        # Config PRs change the candidate's branch model; every other value comes from the candidate.
-        self.config=branch_fixture.load(ROOT)
-        self.config.update(repository='fixture/repo',publisher_app_id=7,
-                           maintainers=[{'id':1,'login':'test-human'}])
+        self.config=fixture_config()
         self.transport=Transport(self.config)
         self.snapshot={'repository':'fixture/repo','pr':1,'head_sha':HEAD,'base_ref':'testing',
                        'base_sha':BASE,'policy_sha':POLICY,'run_id':1,'run_attempt':1}
-        self.env=patch.dict(os.environ,ENV)
+        self.env=patch.dict(os.environ,JOB_ENV)
         self.env.start();self.addCleanup(self.env.stop)
 
     def capture_snapshot(self):
@@ -170,8 +74,9 @@ class EngineBoundaries(unittest.TestCase):
         self.config['northstar_approved'] = True
         self.config['product_checks_ready'] = False
         self.transport.task['kind'] = 'product'
-        with self.assertRaisesRegex(Blocked, 'product checks not implemented/approved'):
+        with self.assertRaisesRegex(Blocked, '^' + re.escape(issues.PRODUCT_BLOCKED) + '$'):
             self.capture_snapshot()
+        self.assertEqual(self.senior_checks(), [])
 
     def test_duplicate_input_cannot_reserve_or_push_twice(self):
         engine.reserve(self.transport,self.snapshot,self.config,'factory/senior-review',1,'same')
@@ -252,7 +157,7 @@ class EngineBoundaries(unittest.TestCase):
         self.assertNotIn('OPENAI_API_KEY',workflow)
         self.assertNotIn('name: Senior review',workflow)
         settings=json.loads((ROOT/'factory/github-settings.json').read_text())
-        self.assertNotIn('OPENAI_API_KEY',settings['environment_secrets']+settings['optional_environment_secrets'])
+        self.assertNotIn('OPENAI_API_KEY',settings['environment_secrets']+settings['promotion_environment_secrets'])
 
     def test_issue_runs_never_start_a_pr_job_and_pr_runs_never_start_an_issue_job(self):
         workflow=(ROOT/'.github/workflows/factory.yml').read_text()
@@ -280,7 +185,7 @@ class EngineBoundaries(unittest.TestCase):
         self.assertEqual(workflow.count('id-token: write'),3)
         self.assertNotIn('ANTHROPIC_API_KEY',workflow)
         settings=json.loads((ROOT/'factory/github-settings.json').read_text())
-        self.assertNotIn('ANTHROPIC_API_KEY',settings['environment_secrets']+settings['optional_environment_secrets'])
+        self.assertNotIn('ANTHROPIC_API_KEY',settings['environment_secrets']+settings['promotion_environment_secrets'])
 
     def publish(self,tests_ok=True):
         snapshot=self.capture_snapshot()
@@ -310,7 +215,7 @@ class EngineBoundaries(unittest.TestCase):
         self.assertEqual(self.transport.labels,{'needs-author-action'})
 
     def test_head_without_current_target_tip_is_not_published_as_tested_merge_state(self):
-        # GitHub moves pr.base.sha on a push that never reached the head (PRs #4/#5): base equality is not inclusion.
+        # GitHub moves pr.base.sha on a push that never reached the head: base equality is not inclusion.
         self.transport.compare={'status':'diverged','behind_by':2}
         snapshot=self.capture_snapshot()
         tests={'repository':'fixture/repo','head_sha':HEAD,'policy_sha':POLICY,'run_id':1,'ok':True,'exit_code':0,'summary':'trusted output'}
@@ -326,19 +231,28 @@ class EngineBoundaries(unittest.TestCase):
         self.assertIn('Update branch',check['output']['summary'])
         self.assertEqual(self.transport.labels,{'needs-author-action'})
         self.assertFalse(any('local_review.py' in c['body'] for c in self.transport.comments))
-        self.transport.compare={'status':'identical','behind_by':0}
-        self.assertTrue(engine.contains_base(self.transport,'fixture/repo','b'*40,'b'*40))
-        with self.assertRaisesRegex(Blocked,'invalid commit identifier'):
-            engine.contains_base(self.transport,'fixture/repo','testing','a'*40)
+        self.assertIn(engine.behind('testing'),check['output']['summary'])
+
+    def test_containment_is_asked_only_for_full_commit_identifiers(self):
+        for compare,contained in (({'status':'identical','behind_by':0},True),({'status':'ahead','behind_by':0},True),
+                                  ({'status':'behind','behind_by':1},False),({'status':'diverged','behind_by':2},False),
+                                  ({'status':'ahead'},False)):
+            self.transport.compare=compare
+            with self.subTest(compare=compare):
+                self.assertIs(github_api.contains(self.transport,'fixture/repo',BASE,HEAD),contained)
+        self.transport.calls.clear()
+        for base,head in (('testing',HEAD),(BASE,'HEAD'),(BASE.upper(),HEAD),(BASE[:39],HEAD),(BASE,HEAD+'0'),(BASE,''),
+                          (BASE,HEAD+'\n'),('../'+BASE[3:],HEAD)):
+            with self.subTest(base=base,head=head),self.assertRaisesRegex(Blocked,'invalid commit identifier'):
+                github_api.contains(self.transport,'fixture/repo',base,head)
+        self.assertEqual(self.transport.calls,[])
+        self.assertEqual(engine.behind('quick'),'PR head does not contain the current quick tip, so a merge would combine code '
+                         'that was never tested together. Use "Update branch" (or merge quick into the branch); the new head '
+                         'gets a fresh run.')
 
     def test_installation_transport_allows_only_the_exact_compare_route_with_dots(self):
-        import github_api
-        class Response:
-            def __enter__(self):return self
-            def __exit__(self,*args):return False
-            def read(self,limit):return b'{"status":"identical","behind_by":0}'
-        with patch.object(github_api.urllib.request,'urlopen',return_value=Response()) as opened:
-            self.assertTrue(engine.contains_base(github_api.GitHub('token'),'fixture/repo','b'*40,'b'*40))
+        with patch.object(github_api.urllib.request,'urlopen',return_value=Response(b'{"status":"identical","behind_by":0}')) as opened:
+            self.assertTrue(github_api.contains(github_api.GitHub('token'),'fixture/repo','b'*40,'b'*40))
         self.assertEqual(opened.call_args.args[0].full_url,'https://api.github.com/repos/fixture/repo/compare/'+'b'*40+'...'+'b'*40+'?per_page=1')
         for unsafe in ('/repos/fixture/repo/contents/../x','/repos/fixture/repo/compare/'+'b'*40+'..'+'a'*40,'//evil',
                        '/repos/../repo/compare/'+'b'*40+'...'+'a'*40+'?per_page=1'):
@@ -377,13 +291,11 @@ class EngineBoundaries(unittest.TestCase):
 
     def reviewed(self,outcome='changes_requested'):
         snapshot,tests=self.publish()
-        findings=[{'id':'F-1','kind':'defect','confidence':'high','priority':'P1','file':'example.txt','line':1,'impact':'i','evidence':'e','requirement':'r','minimal_fix':'m','verification':'v'}] if outcome=='changes_requested' else []
-        review={**{k:snapshot[k] for k in ('repository','pr','head_sha','base_sha','policy_sha','run_id','run_attempt')},'model':'gpt-6-astra','effort':'high',
-                'scope':['example.txt'],'evidence':[],'limitations':[],'complete':True,'outcome':outcome,'summary':'s','findings':findings}
         check=self.transport.checks[snapshot['check_id']]
         record=json.loads(check['output']['text'])
-        check.update(status='completed',conclusion='failure',output={'text':json.dumps({**record,'phase':'completed','review':review})})
-        self.transport.runs[2]={'triggering_actor':{'type':'User','id':1}}
+        check.update(status='completed',conclusion='failure',
+                     output={'text':json.dumps({**record,'phase':'completed','review':review_for(snapshot,outcome)})})
+        self.transport.runs[2]={'triggering_actor':dict(MAINTAINER)}
         return snapshot
 
     def correction(self,check_id):
@@ -401,11 +313,13 @@ class EngineBoundaries(unittest.TestCase):
         self.assertIn('needs-author-action', self.transport.comments[-1]['body'])
         self.assertIn('correction rounds exhausted', self.transport.comments[-1]['body'])
 
-    def test_correction_is_disabled_until_shadow_phase_ends(self):
+    def test_correction_runs_only_while_automatic_correction_is_enabled(self):
         snapshot=self.reviewed()
-        self.config['automatic_correction']=False
-        with self.assertRaisesRegex(Blocked,'shadow phase'):
-            self.correction(snapshot['check_id'])
+        for value in (False,None,'true',1):
+            self.config['automatic_correction']=value
+            with self.subTest(value=value),self.assertRaisesRegex(Blocked,
+                    r'^automatic correction is disabled \(automatic_correction in factory/config\.json\)$'):
+                self.correction(snapshot['check_id'])
 
     def test_correction_reserves_author_round_for_authentic_changes_requested(self):
         snapshot=self.reviewed()
@@ -431,14 +345,15 @@ class EngineBoundaries(unittest.TestCase):
             self.correction(snapshot['check_id'])
         self.setUp();self.config['automatic_correction']=True
         snapshot=self.reviewed()
-        self.transport.runs[2]={'triggering_actor':{'type':'Bot','id':1}}
-        with self.assertRaisesRegex(Blocked,'maintainer'):
-            self.correction(snapshot['check_id'])
+        for actor in ({**MAINTAINER,'type':'Bot'},{**MAINTAINER,'login':'impostor'},{'type':'User','id':1},STRANGER):
+            self.transport.runs[2]={'triggering_actor':actor}
+            with self.subTest(actor=actor),self.assertRaisesRegex(Blocked,'correction requires a verified human maintainer'):
+                self.correction(snapshot['check_id'])
 
     def test_newer_review_at_same_sha_revokes_old_correction_authority(self):
         self.config['automatic_correction']=True
         old=self.reviewed()
-        self.transport.runs[3]={'triggering_actor':{'type':'User','id':1}}
+        self.transport.runs[3]={'triggering_actor':dict(MAINTAINER)}
         with patch.dict(os.environ, {'GITHUB_RUN_ID':'3', 'FACTORY_RETRY':'true'}):
             newer=self.capture_snapshot()
         before=len(self.transport.checks)
@@ -451,7 +366,7 @@ class EngineBoundaries(unittest.TestCase):
         self.config['automatic_correction']=True
         old=self.reviewed()
         state=self.correction(old['check_id'])['author']
-        self.transport.runs[3]={'triggering_actor':{'type':'User','id':1}}
+        self.transport.runs[3]={'triggering_actor':dict(MAINTAINER)}
         with patch.dict(os.environ, {'GITHUB_RUN_ID':'3', 'FACTORY_RETRY':'true'}):
             self.capture_snapshot()
         env={'SNAPSHOT_JSON':json.dumps(old),'AUTHOR_JSON':json.dumps(state),'GITHUB_RUN_ID':'2'}
@@ -491,8 +406,7 @@ class EngineBoundaries(unittest.TestCase):
                 if path=='/repos/fixture/repo':return {'full_name':'fixture/repo','node_id':'fixture-node'}
                 assert path=='/graphql' and method=='POST'
                 payload=data['variables']['input']
-                # Live schema (GraphQL introspection 2026-10-28): UpdateRefsInput has clientMutationId,
-                # repositoryId and refUpdates; 'updates' does not exist (live push failed, run 40766190552).
+                # GitHub's UpdateRefsInput takes clientMutationId, repositoryId and refUpdates; it has no 'updates'.
                 assert set(payload)<={'clientMutationId','repositoryId','refUpdates'},payload
                 update=payload['refUpdates'][0]
                 assert set(update)<={'name','beforeOid','afterOid','force'},update
@@ -523,9 +437,9 @@ class EngineBoundaries(unittest.TestCase):
             (trusted/'tools/factory/tests').mkdir(parents=True)
             (candidate/'tools/factory/tests').mkdir(parents=True)
             (candidate/'factory').mkdir()
-            for name in ('test_contracts.py','branch_fixture.py'):
+            for name in ('test_contracts.py','factory_testlib.py'):
                 for tree in (trusted,candidate):shutil.copy2(ROOT/'tools/factory/tests'/name,tree/'tools/factory/tests'/name)
-            (candidate/'factory/config.json').write_text(branch_fixture.text(ROOT))
+            (candidate/'factory/config.json').write_text(candidate_config_text())
             shutil.copy2(ROOT/'factory/review.schema.json',candidate/'factory/review.schema.json')
             shutil.copy2(ROOT/'tools/factory/branches.py',candidate/'tools/factory/branches.py')
             code=(ROOT/'tools/factory/contracts.py').read_text()
@@ -538,8 +452,6 @@ class EngineBoundaries(unittest.TestCase):
             (candidate/'sitecustomize.py').write_text('raise SystemExit(0)\n')
             with self.assertRaisesRegex(ValueError,'FAILED'):
                 verify.unit_tests(candidate,trusted)
-
-    # FACTORY-008: config branch, validation gates, production mode, /review and /bypass.
 
     def test_every_stage_runs_only_on_the_config_branch(self):
         self.config['automatic_correction']=True
@@ -622,14 +534,12 @@ class EngineBoundaries(unittest.TestCase):
         self.transport.comment('Looks fine')
         engine.current(self.transport,snapshot,self.config)
         # Even an authenticated changes_requested receipt cannot start a correction.
-        review={**{k:snapshot[k] for k in ('repository','pr','head_sha','base_sha','policy_sha','run_id','run_attempt')},'model':'gpt-6-astra','effort':'high',
-                'scope':['example.txt'],'evidence':[],'limitations':[],'complete':True,'outcome':'changes_requested','summary':'s',
-                'findings':[{'id':'F-1','kind':'defect','confidence':'high','priority':'P1','file':'example.txt','line':1,'impact':'i','evidence':'e','requirement':'r','minimal_fix':'m','verification':'v'}]}
+        review=review_for(snapshot)
         forged=self.transport.request('POST','/repos/fixture/repo/check-runs',{'name':'factory/senior-review','head_sha':HEAD,'status':'completed',
             'external_id':contracts.binding(snapshot),'details_url':engine.run_url(snapshot),
             'output':{'text':json.dumps({'phase':'completed','snapshot':snapshot,'review':review})}})
         self.config['automatic_correction']=True
-        self.transport.runs[2]={'triggering_actor':{'type':'User','id':1}}
+        self.transport.runs[2]={'triggering_actor':dict(MAINTAINER)}
         with self.assertRaisesRegex(Blocked,'full validation'):
             self.correction(forged['id'])
         env={'SNAPSHOT_JSON':json.dumps(snapshot),'AUTHOR_JSON':json.dumps({'enabled':True,'run_id':2})}
@@ -652,7 +562,7 @@ class EngineBoundaries(unittest.TestCase):
         self.transport.pr['base']={'ref':'testing','sha':BASE}
         for head in ('testing','production','frozen'):
             self.transport.pr['head']['ref']=head
-            with self.subTest(head=head),self.assertRaisesRegex(Blocked,'feature branch'):
+            with self.subTest(head=head),self.assertRaisesRegex(Blocked,'^a PR into a validation branch must come from a branch of its own, not a listed branch$'):
                 self.capture_snapshot()
         self.assertEqual(self.transport.checks,{})
 
@@ -826,10 +736,11 @@ class EngineBoundaries(unittest.TestCase):
         self.assertEqual([c['name'] for c in self.bypasses()],['factory/deterministic'])
         self.assertFalse(any(c['name'].startswith('factory/production/') for c in self.transport.checks.values()))
 
-    def test_bypass_needs_a_maintainer_a_reason_and_a_non_work_order_pr(self):
+    def test_bypass_needs_a_maintainer_a_reason_and_no_config_pr(self):
         cases=[(self.transport.comment('/bypass reason',user={'type':'User','id':2,'login':'someone'}),'maintainer'),
                (self.transport.comment('/bypass'),'reason'),(self.transport.comment('/bypass   \n '),'reason'),
-               (self.transport.comment('/bypass '+'x'*501),'reason'),(self.transport.comment('/bypassing it'),'not a /bypass command'),
+               (self.transport.comment('/bypass '+'x'*501),'reason'),(self.transport.comment('/bypass forged\x1b[2Kline'),'reason'),
+               (self.transport.comment('/bypassing it'),'not a /bypass command'),
                (self.transport.comment('/review'),'not a /bypass command'),(self.transport.comment('/bypass ok',pr=2),'another PR')]
         for ident,message in cases:
             with self.subTest(message=message),self.assertRaisesRegex(Blocked,message):
@@ -845,7 +756,7 @@ class EngineBoundaries(unittest.TestCase):
             self.bypass('/bypass approvals missing')
         self.transport.files=[{'filename':'src/app.py','status':'renamed','previous_filename':'docs/work/OLD.md'},
                               {'filename':'docs/work/sub/X.md','status':'added'}]
-        self.bypass('/bypass not a work-order PR')  # type (c): its production check still fails
+        self.bypass('/bypass not a config PR')  # neither a promotion nor a config PR: its production check still fails
         self.assertEqual(len(self.bypasses()),1)
         self.transport.checks.clear()
         self.config.update(branches.with_validation(self.config,'frozen','none',[]))
@@ -858,6 +769,18 @@ class EngineBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'open PRs'):
             self.bypass('/bypass whatever')
         self.assertEqual(self.bypasses(),[])
+
+    def test_a_bypass_reason_is_one_bounded_line_without_control_characters(self):
+        refusal='^a bypass needs a comment `/bypass <reason>` with a reason of at most 500 characters$'
+        self.assertEqual(bypass.reason('  runner\toutage,\r\n see\x0bincident 12 '),'runner outage, see incident 12')
+        self.assertEqual(bypass.reason('x'*500),'x'*500)
+        for text in (None,'',' \n\t','x'*501,'a\x00b','a\x08b','a\x1b[31mred','a\x7fb'):
+            with self.subTest(text=text),self.assertRaisesRegex(Blocked,refusal):
+                bypass.reason(text)
+        self.assertEqual(bypass.bypass_reason('/bypass  release\nfreeze'),'release freeze')
+        for body in ('/bypass','/bypassed reason','please /bypass reason','/bypass a\x00b',None):
+            with self.subTest(body=body),self.assertRaisesRegex(Blocked,refusal):
+                bypass.bypass_reason(body)
 
     def test_bypass_publishes_nothing_for_a_moved_head_or_tip(self):
         original=self.transport.request
@@ -884,7 +807,7 @@ class EngineBoundaries(unittest.TestCase):
             with self.subTest(unsafe=unsafe),self.assertRaisesRegex(Blocked,'unsafe'):
                 engine.correction_branch(self.config,{'head':{'ref':unsafe}})
 
-    def test_legacy_six_field_review_binding_never_authorizes_a_correction(self):
+    def test_a_receipt_that_does_not_bind_its_target_branch_never_authorizes_a_correction(self):
         self.config['automatic_correction']=True
         snapshot=self.reviewed()
         check=self.transport.checks[snapshot['check_id']]
@@ -892,20 +815,48 @@ class EngineBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(Blocked,'binding'):
             self.correction(snapshot['check_id'])
         record=json.loads(check['output']['text'])
-        record['snapshot']={k:v for k,v in snapshot.items() if k!='base_ref'}
-        check['output']['text']=json.dumps(record)
-        with self.assertRaisesRegex(Blocked,'legacy'):
-            self.correction(snapshot['check_id'])
+        for bound in ({k:v for k,v in snapshot.items() if k!='base_ref'},{**snapshot,'pr':2},{**snapshot,'repository':'other/repo'}):
+            record['snapshot']=bound
+            check['output']['text']=json.dumps(record)
+            with self.subTest(bound={k:bound.get(k) for k in ('repository','pr','base_ref')}), \
+                    self.assertRaisesRegex(Blocked,'^review receipt does not bind this PR and its target branch$'):
+                self.correction(snapshot['check_id'])
 
     def test_verify_fails_on_any_branch_model_problem(self):
         with tempfile.TemporaryDirectory() as tmp:
-            config=branch_fixture.load(ROOT)
+            config=candidate_config()
             config['config_branch']='testing'
             config['branches']['validation'][0]['kinds']=['factory']
             (Path(tmp)/'factory').mkdir()
             (Path(tmp)/'factory/config.json').write_text(json.dumps(config))
             with self.assertRaisesRegex(ValueError,'invalid branch configuration: kind product is routed to no validation branch.*config_branch must be a production branch'):
                 verify.structural(Path(tmp),ROOT)
+
+    def test_every_repository_anchor_must_name_the_contract_repository(self):
+        verify.anchors(ROOT,json.loads((ROOT/'factory/config.json').read_text()))
+        repository=contracts.REPOSITORY
+
+        def tree(root,settings=repository,installer=f'repository="{repository}"',workflow=f"github.repository == '{repository}'"):
+            for path,text in (('factory/github-settings.json',json.dumps({'repository':settings})),
+                              ('tools/factory/cli/install-factory-cli.sh',f'#!/usr/bin/env bash\n{installer}\n'),
+                              ('.github/workflows/factory.yml',f'jobs:\n  tests:\n    if: {workflow}\n'),
+                              ('.github/workflows/other.yml','on: push\n')):  # a workflow without the guard names nothing
+                (root/path).parent.mkdir(parents=True,exist_ok=True)
+                (root/path).write_text(text)
+            return root
+        with tempfile.TemporaryDirectory() as tmp:
+            verify.anchors(tree(Path(tmp)/'good'),{'repository':repository})
+            cases=[('factory/config.json',{},{'repository':'someone/fork'}),
+                   ('factory/config.json',{},{}),
+                   ('factory/github-settings.json',{'settings':'someone/fork'},{'repository':repository}),
+                   ('factory/github-settings.json',{'settings':None},{'repository':repository}),
+                   ('tools/factory/cli/install-factory-cli.sh',{'installer':'repository="someone/fork"'},{'repository':repository}),
+                   ('tools/factory/cli/install-factory-cli.sh',{'installer':'echo no repository'},{'repository':repository}),
+                   ('.github/workflows/factory.yml',{'workflow':"github.repository == 'someone/fork'"},{'repository':repository})]
+            for number,(name,files,config) in enumerate(cases):
+                with self.subTest(name=name,files=files,config=config), \
+                        self.assertRaisesRegex(ValueError,'^'+re.escape(name)+' names another repository than contracts.REPOSITORY$'):
+                    verify.anchors(tree(Path(tmp)/str(number),**files),config)
 
     def test_owned_trusted_modules_name_no_fixed_branch(self):
         for name in ('engine','github_api','local_review','local_review_queue','verify'):
@@ -916,8 +867,6 @@ class EngineBoundaries(unittest.TestCase):
                     self.assertNotRegex(source.replace(f'def {retired}(','').replace(f'{retired}()',''),rf'\b{retired}\b')
                 self.assertNotIn("config['required_checks']",source)
                 self.assertNotIn('engine.bind(',source)
-
-    # Review fixes: commands bind their head (D3), a moved config tip is no author action (D2), a bypass survives a re-run (D4).
 
     def edit(self,ident,when='2026-11-01T10:05:00Z'):
         next(c for c in self.transport.comments if c.get('id')==ident)['updated_at']=when
@@ -966,14 +915,14 @@ class EngineBoundaries(unittest.TestCase):
     def test_bypass_run_started_by_another_account_is_refused(self):
         self.config['maintainers'].append({'id':2,'login':'other-human'})
         ident=self.transport.comment('/bypass outage')
-        for number,actor in enumerate(({'type':'User','id':2,'login':'other-human'},{'type':'User','id':3,'login':'stranger'},
+        for number,actor in enumerate(({'type':'User','id':2,'login':'other-human'},STRANGER,
                                        {'type':'User','id':1,'login':'impostor'},{'type':'Bot','id':5,'login':'factory-publisher[bot]'},
                                        {**DISPATCHER,'type':'User'}),start=20):
             self.transport.runs[number]={'id':number,'triggering_actor':actor}
             with self.subTest(actor=actor['login']),self.assertRaisesRegex(Blocked,'started by the dispatcher or by the author of the comment'):
                 self.bypass(ident=ident,run_id=number)
         self.assertEqual(self.bypasses(),[])
-        self.transport.runs[30]={'id':30,'triggering_actor':{'type':'User','id':1,'login':'test-human'}}
+        self.transport.runs[30]={'id':30,'triggering_actor':dict(MAINTAINER)}
         self.bypass(ident=ident,run_id=30)  # the comment's own author dispatched it
         self.bypass(ident=ident,run_id=31)  # the dispatcher
         self.assertEqual(len(self.bypasses()),4)
@@ -1023,7 +972,7 @@ class EngineBoundaries(unittest.TestCase):
                 self.assertIn('deterministic `failure` (not published: the `/bypass` by test-human stays for this head)',
                               self.transport.comments[-1]['body'])
                 self.assertEqual(self.transport.labels,set())
-                # An edited bypass comment no longer holds; the failure is published again.
+                # An edited bypass comment does not hold; the failure is published again.
                 self.edit(ident)
                 with patch.dict(os.environ,{'GITHUB_RUN_ID':'3'}):
                     self.publish(tests_ok=False)
@@ -1050,9 +999,6 @@ class EngineBoundaries(unittest.TestCase):
             self.publish(tests_ok=False)
         self.assertEqual(self.deterministic()[-1],('failure','Deterministic checks'))
 
-    # Round 2: a bypass voided by a config move asks for a new /bypass (R2), a hidden bypass is published again (R3),
-    # work-order/config PRs are classified like the production check does (R4, R5).
-
     def to_release(self):
         """A promotion of testing into release, a second production branch that is not the config branch."""
         self.promotion()
@@ -1066,7 +1012,7 @@ class EngineBoundaries(unittest.TestCase):
                 self.setUp()
                 self.tests_gate() if kind=='tests' else self.to_release()
                 self.bypass('/bypass known flaky runner')
-                moved='9'*40  # a work-order PR merged into the config branch
+                moved='9'*40  # a config PR merged into the config branch
                 self.transport.tips['production']=moved
                 with patch.dict(os.environ,{'GITHUB_RUN_ID':'2','GITHUB_SHA':moved}):
                     self.publish(tests_ok=False)
@@ -1167,22 +1113,22 @@ class EngineBoundaries(unittest.TestCase):
                 self.assertEqual(self.transport.labels,set())
 
     def work_orders(self):
-        """A work-order/config PR into production: a feature branch changing only work orders and factory/config.json."""
+        """A config PR into production: a branch of its own changing only docs/work files and factory/config.json."""
         self.promotion()
         self.transport.pr['head']['ref']='ftrutschnig/workorders'
         self.transport.files=[{'filename':'docs/work/FACTORY-009.md','status':'added'},{'filename':'factory/config.json','status':'modified'}]
 
-    def test_work_order_and_config_prs_get_no_ai_review(self):
+    def test_config_prs_get_no_ai_review(self):
         self.work_orders()
         snapshot,_=self.publish()
         self.assertEqual(snapshot['production_kind'],'work-order')
         body=self.transport.comments[-1]['body']
-        self.assertIn('senior review not used for work-order and config PRs: maintainer approvals decide them',body)
+        self.assertIn('senior review not used for config PRs: maintainer approvals decide them',body)
         self.assertNotIn('`/review`',body)
         comment=self.transport.comment('/review')
         for files in (self.transport.files,[{'filename':'docs/work/NEW.md','status':'renamed','previous_filename':'docs/work/OLD.md'}]):
             self.transport.files=files;self.transport.pr['changed_files']=len(files)
-            with self.subTest(files=files),self.assertRaisesRegex(Blocked,'^work-order and config PRs need no AI review: maintainer approvals decide them$'):
+            with self.subTest(files=files),self.assertRaisesRegex(Blocked,'^config PRs need no AI review: maintainer approvals decide them$'):
                 self.review_request(comment)
         self.assertEqual(self.senior_checks(),[])
         # A promotion is reviewed like every promotion, even when its diff holds only work orders and config.
@@ -1224,10 +1170,10 @@ class EngineBoundaries(unittest.TestCase):
         self.transport.files=[{'filename':'docs/work/FACTORY-009.md','status':'modified'},{'filename':'factory/config.json','status':'modified'}]
         self.bypass('/bypass runner outage')
         self.assertEqual([c['name'] for c in self.bypasses()],['factory/deterministic'])
-        # A feature branch with the same diff is a work-order/config PR: maintainer approvals decide it.
+        # A branch of its own with the same diff is a config PR: maintainer approvals decide it.
         self.transport.checks.clear()
         self.transport.pr['head']['ref']='ftrutschnig/workorders'
-        with self.assertRaisesRegex(Blocked,'cannot be bypassed; they need maintainer approvals'):
+        with self.assertRaisesRegex(Blocked,'^config PRs into a production branch cannot be bypassed; they need maintainer approvals$'):
             self.bypass('/bypass runner outage')
         self.assertEqual(self.bypasses(),[])
 

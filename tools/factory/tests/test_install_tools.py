@@ -3,15 +3,13 @@ import contextlib
 import hashlib
 import io
 import json
-import os
 from pathlib import Path
-import sys
 import tarfile
 import tempfile
 import unittest
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'factory'))
+from factory_testlib import ROOT, Response, use
+use('factory')
 import install_tools  # noqa: E402
 
 PLATFORMS = ('linux_amd64', 'linux_arm64', 'darwin_amd64', 'darwin_arm64')
@@ -30,14 +28,6 @@ def archive(*members):
                 info.size, info.mode = len(data), 0o755
                 tar.addfile(info, io.BytesIO(data))
     return buffer.getvalue()
-
-
-class Response(io.BytesIO):
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
 
 
 def locked(data, key='darwin_arm64'):

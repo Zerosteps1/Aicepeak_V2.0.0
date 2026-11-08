@@ -1,4 +1,4 @@
-"""The factory's issue reviewer and the `/accept` approval of work-order issues (FACTORY-009, ADR-0009).
+"""The factory's issue reviewer and the `/accept` approval of work-order issues (ADR-0009).
 
 Each stage runs in its own factory.yml job on the config branch, dispatched for a maintainer's command comment:
 - review (`/review`): no App key. Re-verifies issue and command, calls the configured Claude model through Workload
@@ -19,9 +19,11 @@ sys.dont_write_bytecode = True
 import urllib.error
 import urllib.request
 
+import branches
+from branches import load_config
 import issues
-from contracts import Blocked, require, safe_path, task_spec, validate
-from engine import emit, load_config, on_config_branch
+from contracts import KINDS, Blocked, require, safe_path, task_spec, validate
+from engine import emit, on_config_branch
 from github_api import GitHub, installation, tip
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,7 +83,7 @@ def output_schema(config):
     schema['properties'].update(
         status={'type': 'string', 'enum': ['reviewed']},
         text_sha256={'type': 'string', 'pattern': '[0-9a-f]{64}'},
-        kind={'type': 'string', 'enum': list(issues.KINDS)},
+        kind={'type': 'string', 'enum': list(KINDS)},
         model={'type': 'string', 'minLength': 1, 'maxLength': 100},
         usage={'type': 'object', 'additionalProperties': False, 'required': ['input_tokens', 'output_tokens'],
                'properties': {'input_tokens': count, 'output_tokens': count}})
@@ -128,7 +130,7 @@ def run_link(config):
 # --- shared checks ------------------------------------------------------------------------------------------------
 
 def trigger(gh, config, number, comment_id, word):
-    """The maintainer's unedited command comment on this issue that started the run."""
+    """Each stage re-reads the comment that started its run: the dispatch passes only its ID, which proves nothing."""
     comment = gh.request('GET', f"/repos/{config['repository']}/issues/comments/{comment_id}")
     require(issues.command(comment, config, number, word) == word,
             f'the /{word} comment is no unedited maintainer command on issue #{number}')
@@ -146,9 +148,9 @@ def require_budget(config, comments, number):
     return done
 
 
-def enabled(config):
-    require(not issues.config_problems(config) and config.get('issue_review_model'),
-            'issue work orders are not enabled in factory/config.json (issue_review_model)')
+def valid(config):
+    found = issues.config_problems(config)
+    require(not found, 'invalid issue reviewer configuration in factory/config.json: ' + '; '.join(found))
 
 
 # --- review: model call without App key ---------------------------------------------------------------------------
@@ -163,7 +165,6 @@ def review_input(gh, config, number, comment_id):
 
 def listing(gh, config, kind):
     """Files of the validation branch the work order is implemented against (trusted, from the API)."""
-    import branches
     branch = branches.parse(config).route(kind)
     sha = tip(gh, config['repository'], branch)
     tree = gh.request('GET', f"/repos/{config['repository']}/git/trees/{sha}?recursive=1")
@@ -234,7 +235,7 @@ def call_model(config, material, opener=None):
 
 
 def checked_paths(result, files):
-    """Proposed paths after the factory's own path rules, marked when they do not exist yet."""
+    """Model paths pass the same path rules as a work order before a maintainer is asked to accept them."""
     folders = {path[:index + 1] for path in files for index, char in enumerate(path) if char == '/'}
     seen, paths = set(), []
     for item in result['allowed_paths']:
@@ -250,7 +251,7 @@ def checked_paths(result, files):
 def review_stage(args, config):
     on_config_branch(config)
     require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'a re-run never repeats a command; comment /review again')
-    enabled(config)
+    valid(config)
     gh = GitHub()
     try:
         issue, spec = review_input(gh, config, args.issue, args.comment_id)
@@ -288,7 +289,7 @@ def proposal_text(config, number, review, ordinal):
     rows = '\n'.join(f"| `{item['path']}` | {prose(item['reason'], 200)}"
                      f"{'' if item['exists'] else ' · new'}{control_note(item['path'], config)} |"
                      for item in review['allowed_paths'])
-    needed = issues.approvals_needed(config)
+    needed = branches.work_order_approvals(config)
     usage = review['usage']
     return (f"### Factory review: proposed `allowed_paths`\n\n{prose(review['summary'], 600)}\n\n"
             f"| Path | Reason |\n|---|---|\n{rows}\n\n"
@@ -315,7 +316,7 @@ def findings_text(review):
 def publish_stage(args, config):
     on_config_branch(config)
     require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'a re-run never repeats a command; comment /review again')
-    enabled(config)
+    valid(config)
     number = args.issue
     gh = installation(config, 'publisher', ISSUE_PERMISSIONS)
     issue = issues.identity(gh.request('GET', f"/repos/{config['repository']}/issues/{number}"), config, number)
@@ -354,7 +355,8 @@ def publish_stage(args, config):
 # --- accept: App edit of the factory-task block -------------------------------------------------------------------
 
 def accept(gh, config, number, issue):
-    """The approval message, or Blocked with the reason; the description changes only when it approves."""
+    """The message to post when it does not approve, None once it posted the approval record, or Blocked with the
+    reason; the description changes only when it approves."""
     require(issue.get('state') == 'open', f'issue #{number} is closed; reopen it first')
     comments = comments_of(gh, config, number)
     sha = issues.text_sha256(issue)
@@ -368,15 +370,14 @@ def accept(gh, config, number, issue):
             'review: comment `/review` again, then `/accept` the new proposal')
     spec = issues.draft_spec(issue.get('body'))
     if spec['kind'] == 'product':
-        require(config.get('northstar_path') and config.get('northstar_approved') and config.get('product_checks_ready') is True,
-                'product work orders stay blocked until the north star and product checks are ready (factory/config.json)')
+        require(issues.product_allowed(config), issues.PRODUCT_BLOCKED)
     accepted = {}
     for comment in comments:
         if comment['id'] > review['id'] and issues.command(comment, config, number, 'accept') == 'accept':
             user = comment['user']
             accepted.setdefault(user['id'], {'login': user['login'], 'id': user['id'], 'comment': comment['id']})
     require(accepted, 'this `/accept` came before the newest factory proposal: comment `/accept` again')
-    needed = issues.approvals_needed(config)
+    needed = branches.work_order_approvals(config)
     logins = ', '.join(f"`{entry['login']}`" for entry in accepted.values())
     if len(accepted) < needed:
         return (f'`/accept` recorded from {logins}: {len(accepted)} of {needed} maintainer accounts. The issue is not '
@@ -407,7 +408,7 @@ def accept(gh, config, number, issue):
 def accept_stage(args, config):
     on_config_branch(config)
     require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'a re-run never repeats a command; comment /accept again')
-    enabled(config)
+    valid(config)
     number = args.issue
     gh = installation(config, 'publisher', ISSUE_PERMISSIONS)
     issue = issues.identity(gh.request('GET', f"/repos/{config['repository']}/issues/{number}"), config, number)

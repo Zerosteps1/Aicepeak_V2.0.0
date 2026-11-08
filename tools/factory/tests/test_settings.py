@@ -4,15 +4,14 @@ import base64
 import io
 import json
 import os
-import sys
-from pathlib import Path
 import unittest
 import urllib.error
 import urllib.request
 from unittest.mock import patch
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
+from factory_testlib import ROOT
+import contracts
+import github_api
 import settings
 SPEC = json.loads((ROOT / "factory/github-settings.json").read_text())
 PREFIX = "/repos/" + settings.REPOSITORY
@@ -23,7 +22,7 @@ def config(**changes):
              "branches": {"schema_version": 1,
                           "validation": [{"name": "testing", "gate": "full", "kinds": ["factory", "product", "smoke"]}],
                           "production": [{"name": "production", "review": "maintainer-manual"}]},
-             "maintainers": [{"login": "test-human", "id": 101}],
+             "maintainers": [{"login": "test-human", "id": 101}], "work_order_approvals": 1, "require_second_human_review": True,
              "publisher_app_id": 201, "writer_app_id": 202, "environment": "factory-control",
              "workflow": ".github/workflows/factory.yml",
              "anthropic_federation": {"federation_rule_id": "fdrl_fixture"}}
@@ -265,10 +264,20 @@ class SettingsTests(unittest.TestCase):
                     self.assertEqual(pr['required_approving_review_count'], 0)
                     self.assertFalse(pr['require_code_owner_review'] or pr['require_last_push_approval'])
                     self.assertTrue(pr['required_review_thread_resolution'])
-        for key in ('require_second_human_review',):
-            for value in (None, 0, 1, 'false', 'true', []):
-                with self.subTest(key=key, value=value), self.assertRaises(settings.Blocked):
-                    settings.desired_state({**config(), key: value}, SPEC)
+        unset = {k: v for k, v in config().items() if k != 'require_second_human_review'}
+        for value in (None, 0, 1, 'false', 'true', [], 'missing'):
+            with self.subTest(value=value), self.assertRaisesRegex(settings.Blocked, 'require_second_human_review must be a boolean'):
+                settings.desired_state(unset if value == 'missing' else {**config(), 'require_second_human_review': value}, SPEC)
+        for value in ({k: v for k, v in config().items() if k != 'work_order_approvals'}, config(work_order_approvals=2)):
+            with self.subTest(work_order_approvals=value.get('work_order_approvals')), \
+                    self.assertRaisesRegex(settings.Blocked, 'work_order_approvals must be a whole number'):
+                settings.desired_state(value, SPEC)
+
+    def test_the_repository_and_api_version_are_the_shared_ones(self):
+        self.assertEqual((settings.REPOSITORY, settings.API_VERSION), (contracts.REPOSITORY, github_api.API_VERSION))
+        self.assertEqual(SPEC["repository"], contracts.REPOSITORY)
+        self.assertEqual(settings.WORKFLOWS, (".github/workflows/factory-dispatch.yml", ".github/workflows/factory-promotion.yml",
+                                              ".github/workflows/factory-feedback.yml"))
 
     def test_wif_claim_names_the_config_branch(self):
         self.assertEqual(settings.wif_claim(config()), {
@@ -331,17 +340,28 @@ class SettingsTests(unittest.TestCase):
         rules(state["current"]["rulesets"][1], "pull_request")[0]["parameters"]["allowed_merge_methods"] = ["merge", "squash", "rebase"]
         self.assertEqual(len(settings.diff(state, config())), 1)
 
-    def test_retired_and_unlisted_rulesets_are_removed_after_their_replacements(self):
+    def test_unlisted_branch_rulesets_are_removed_after_their_replacements(self):
         state = report()
         state["current"]["rulesets"] = [
-            {"id": 31, "name": "Factory mandatory review and checks", "rules": []},
-            {"id": 32, "name": "Factory human PR merges only", "rules": []},
-            {"id": 33, "name": "Factory validation: retired-branch", "rules": []}]
+            {"id": 32, "name": "Factory validation: unlisted-branch", "rules": []},
+            {"id": 33, "name": "Factory production: unlisted-branch", "rules": []}]
         changes = settings.diff(state, config())
-        self.assertEqual([c["method"] for c in changes], ["POST", "POST", "POST", "DELETE", "DELETE", "DELETE"])
-        self.assertEqual([c["endpoint"] for c in changes[3:]], [PREFIX + "/rulesets/" + str(n) for n in (31, 32, 33)])
-        self.assertTrue(settings.managed(SPEC, "Factory production: anything"))
-        self.assertFalse(settings.managed(SPEC, "Someone else's ruleset"))
+        self.assertEqual([c["method"] for c in changes], ["POST", "POST", "POST", "DELETE", "DELETE"])
+        self.assertEqual([c["endpoint"] for c in changes[3:]], [PREFIX + "/rulesets/" + str(n) for n in (32, 33)])
+        for name in ("Factory production: anything", "Factory validation: anything", SPEC["ruleset_names"]["lifecycle"]):
+            self.assertTrue(settings.managed(SPEC, name), name)
+        self.assertNotIn("retired_ruleset_names", SPEC)
+        self.assertNotIn("optional_environment_secrets", SPEC)
+
+    def test_rulesets_this_tool_does_not_own_are_never_read_or_changed(self):
+        for name in ("Someone else's ruleset", "Factory mandatory review and checks", "Factory human PR merges only"):
+            self.assertFalse(settings.managed(SPEC, name), name)
+        api = live()
+        api.responses[PREFIX + "/rulesets?includes_parents=true"].append(
+            {"id": 99, "name": "Factory mandatory review and checks", "source_type": "Repository", "source": settings.REPOSITORY})
+        state = settings.inspect(config(), SPEC, api, app_apis())
+        self.assertEqual((state["blockers"], settings.diff(state, config())), ([], []))
+        self.assertNotIn(PREFIX + "/rulesets/99", {endpoint for _, endpoint, _ in api.calls})
 
     def test_environment_tag_with_branch_name_is_not_a_branch(self):
         state = report()

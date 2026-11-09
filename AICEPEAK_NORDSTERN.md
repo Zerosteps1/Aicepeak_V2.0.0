@@ -74,6 +74,8 @@ Aicepeak berechnet aus historischen Daten, Unternehmenskontext, Annahmen und rel
 
 Gleiche Daten, Annahmen und festgehaltene Berechnungseinstellungen müssen zu reproduzierbaren Ergebnissen führen. Unsicherheit, Datenlücken und Grenzen der Aussagekraft bleiben erkennbar. „Plausibel“ bedeutet fachlich begründet und überprüfbar, nicht garantiert richtig.
 
+Vorgesehen ist, jedes Line Item einzeln mit Bayesian Regression und/oder TimesFM zu prognostizieren und darauf jeweils eine Monte-Carlo-Simulation anzuwenden. So weist der Forecast Wahrscheinlichkeitsintervalle aus; auch sie sind bei gleichen Daten, Annahmen und festgehaltenen Berechnungseinstellungen reproduzierbar.
+
 ### AIC-07 – Bei neuen Informationen gezielt neu rechnen
 
 Nutzer können neue Marktinformationen recherchieren und ihren Forecast **per Knopfdruck aktualisieren**. Dabei muss sichtbar werden, welche neuen Informationen berücksichtigt wurden, welche Annahmen sich geändert haben und welche Line Items und Gesamtergebnisse dadurch beeinflusst werden.
@@ -110,6 +112,10 @@ Aicepeak darf leistungsfähige KI-Modelle verwenden, wenn sie die Qualität sinn
 
 Der Anspruch ist ein alltagstaugliches Werkzeug für Finanzteams: fachlich belastbar, verständlich bedienbar und mit vertretbarem Prüfaufwand nutzbar. Konkrete Zielwerte für Kosten, Laufzeit und Ergebnisqualität werden separat festgelegt.
 
+### AIC-12 – Anmeldung mit Microsoft Entra ID
+
+Nutzer melden sich mit ihrem Microsoft-Entra-ID-Konto an (Single Sign-on). Ob Kunden dafür ihren eigenen Entra-Mandanten nutzen und ob weitere Anmeldeverfahren hinzukommen, ist noch offen.
+
 ## 5. Durchgängiges Beispiel: Stromkosten
 
 Das folgende Beispiel ist hypothetisch und beschreibt das gewünschte Verhalten, keine feste Rechenregel:
@@ -131,8 +137,8 @@ Diese Funktion ist ausdrücklich eine mögliche Erweiterung und noch keine verbi
 
 ## 7. Was dieser Nordstern bewusst offenlässt
 
-- **Forecasting-Verfahren:** Bayesian Regression, Monte-Carlo-Simulationen und TimesFM wurden als mögliche Ansätze genannt. Keines dieser Verfahren ist hier vorgeschrieben. Entscheidend sind die fachlichen Anforderungen an Berechnung, Transparenz und Qualität.
-- **Technische Umsetzung:** Technologie-Stack, KI-Anbieter, Such- und Scraping-Verfahren, Datenbanken, Schnittstellen und Softwarearchitektur werden erst anschließend definiert.
+- **Forecasting-Verfahren:** Der Ansatz steht in AIC-06: Bayesian Regression und/oder TimesFM je Line Item, jeweils mit Monte-Carlo-Simulation. Offen ist, welches der beiden Verfahren für welche Line Items eingesetzt wird und ob und wie beide kombiniert werden, ebenso die konkrete Ausgestaltung, etwa Modellannahmen und Abhängigkeiten zwischen Line Items und Perioden. Entscheidend bleiben die fachlichen Anforderungen an Berechnung, Transparenz und Qualität.
+- **Technische Umsetzung:** Der Technologie-Stack ist in [ADR-0010](docs/decisions/0010-product-stack.md) festgelegt: Backend in C# auf .NET mit ASP.NET Core und EF Core, PostgreSQL als Datenbank, Frontend in TypeScript mit React, KI-Modelle über Amazon Bedrock, Anmeldung über Microsoft Entra ID. Falls TimesFM eingesetzt wird, läuft es in einem eigenen Python-Container. Hosting, die über Amazon Bedrock genutzten Modelle, Such- und Scraping-Verfahren, Schnittstellen und die weitere Softwarearchitektur werden anschließend definiert.
 - **Umfang des ersten Releases:** Die Reihenfolge und die Aufteilung des Zielbilds in umsetzbare Schritte sind noch festzulegen.
 - **Zusätzliche Produktbereiche:** Bilanz- oder Cashflow-Planung, feste ERP-Anbindungen, automatisches Zurückschreiben in Drittsysteme und Excel-Reimport sind durch diesen Input noch nicht als Anforderungen beschlossen.
 
@@ -156,10 +162,10 @@ Für Menschen und Coding Agents gilt:
 
 Der Produktkern ist erreicht, wenn ein Finanzteam den folgenden Ablauf durchgängig bewältigen kann:
 
-1. Ein Forecast-Projekt mit Zeitraum anlegen und interne Daten sowie Unternehmenskontext bereitstellen.
+1. Sich mit Microsoft Entra ID anmelden, ein Forecast-Projekt mit Zeitraum anlegen und interne Daten sowie Unternehmenskontext bereitstellen.
 2. Extrahierte Line Items prüfen und Ist-Daten eindeutig von früheren Planungen unterscheiden.
 3. Relevante Marktinformationen finden und deren Quellen und Unternehmensbezug verstehen.
-4. Einen quantitativ begründeten Forecast über die relevanten GuV-Positionen erstellen.
+4. Einen quantitativ begründeten Forecast mit Wahrscheinlichkeitsintervallen über die relevanten GuV-Positionen erstellen.
 5. Die wesentlichen Ergebnisse bis zu Daten, Treibern und Annahmen zurückverfolgen und fachlich korrigieren können.
 6. Mit neuen Informationen neu rechnen und die Veränderung zum vorherigen Stand verstehen.
 7. Über Dashboard, Mindmap und Chat konsistente Erklärungen zum selben Forecast erhalten.

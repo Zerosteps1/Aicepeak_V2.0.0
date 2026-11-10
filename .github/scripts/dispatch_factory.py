@@ -15,15 +15,16 @@ from urllib.parse import quote
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools/factory"))
 import branches  # noqa: E402  (stdlib-only branch model shared with the trusted pipeline)
+from contracts import REPOSITORY, maintainer  # noqa: E402
+from github_api import API_VERSION  # noqa: E402
 
-TARGET = "Zerosteps1/Aicepeak_V2.0.0"
-PREFIX = "/repos/" + TARGET
+PREFIX = "/repos/" + REPOSITORY
 PIPELINE, PROMOTION = "factory.yml", "factory-promotion.yml"
 
 
 def api(method, endpoint, body=None):
     command = ["gh", "api", "--hostname", "github.com", "--method", method,
-               "-H", "X-GitHub-Api-Version: 2026-03-10", endpoint]
+               "-H", "X-GitHub-Api-Version: " + API_VERSION, endpoint]
     if body is not None:
         command += ["--input", "-"]
     result = subprocess.run(command, input=json.dumps(body) if body is not None else None,
@@ -41,9 +42,7 @@ def number(value):
 
 
 def authorized(user, config):
-    return user.get("type") == "User" and any(
-        m.get("id") == user.get("id") and m.get("login", "").lower() == user.get("login", "").lower()
-        for m in config.get("maintainers", []) if isinstance(m, dict))
+    return maintainer(user, config) is not None
 
 
 def valid_pr(pr, repository_id):
@@ -55,7 +54,7 @@ def trusted_config():
     the config branch is followed once (branches.follow), and the configuration used names its own branch."""
     local = json.loads(Path("factory/config.json").read_text())
     name = local.get("config_branch")
-    if local.get("repository") != TARGET or not isinstance(name, str) or not branches.NAME.fullmatch(name):
+    if local.get("repository") != REPOSITORY or not isinstance(name, str) or not branches.NAME.fullmatch(name):
         raise RuntimeError("Factory configuration is blocked: repository and config branch required")
     tips = {}
 
@@ -74,14 +73,13 @@ def trusted_config():
     name, config = branches.follow(read, name)
     if config.get("config_branch") != name:
         raise RuntimeError("The config branch configuration names a different config branch; refusing to dispatch")
-    if config.get("repository") != TARGET or not config.get("maintainers"):
+    if config.get("repository") != REPOSITORY or not config.get("maintainers"):
         raise RuntimeError("Factory configuration is blocked: verified repository and maintainers required")
     # The policy is the tip whose configuration routes this event.
     return config, branches.parse(config), tips[name]
 
 
 def command(body):
-    """Maintainer command word at the very start of a comment: review, bypass or None."""
     match = re.match(r"/(review|bypass)(?=\s|$)", body or "")
     return match[1] if match else None
 
@@ -90,10 +88,6 @@ def issue_command(config, event):
     """(issue, word, comment ID) for a maintainer's new /review or /accept on a maintainer's issue, else None.
 
     Work-order issues (tools/factory/issues.py): the trusted factory.yml jobs re-verify everything again."""
-    if not config.get("issue_review_model"):
-        # The config branch's factory.yml has no issue jobs before issue work orders are enabled there.
-        print("Ignored issue comment: issue work orders are not enabled on the config branch")
-        return None
     issue_number = number(event["issue"]["number"])
     comment = api("GET", PREFIX + "/issues/comments/" + str(number(event["comment"]["id"])))
     if (not authorized(comment.get("user", {}), config) or comment.get("user", {}).get("id") != event["sender"]["id"]
@@ -139,7 +133,7 @@ def route(m, base, pr_number, kind, ident="0", head=""):
         kind = "issue_comment"  # A command where it does not apply is an ordinary comment.
     if m.gate(base) == "full":
         return [(PIPELINE, {"pr": n, "feedback_kind": kind, "feedback_id": ident})]
-    # Approving reviews decide work-order/config PRs into production.
+    # Approving reviews decide config PRs into production.
     return [check] if production and kind != "issue_comment" else []
 
 
@@ -158,8 +152,7 @@ def cancel_obsolete(config, pr_number, pr, policy):
             check=api('GET',f"{PREFIX}/check-runs/{number(pointer['check_id'])}")
             if check.get('app',{}).get('id')!=app or check.get('status')=='completed':continue
             binding=(check.get('external_id') or '').split(':')
-            if len(binding)==6:continue  # Legacy bindings never count; their runs fail as stale.
-            if len(binding)!=7 or binding[:2]!=[TARGET,str(pr_number)]:raise RuntimeError('Invalid authenticated run binding')
+            if len(binding)!=7 or binding[:2]!=[REPOSITORY,str(pr_number)]:raise RuntimeError('Invalid authenticated run binding')
             if binding[2]==pr['head']['sha'] and binding[3]==policy and binding[4]==pr['base']['ref']:continue
             run_id=number(binding[5])
             if run_id in handled:continue
@@ -168,7 +161,7 @@ def cancel_obsolete(config, pr_number, pr, policy):
             if run.get('status')=='completed':continue
             workflow=api('GET',f"{PREFIX}/actions/workflows/{number(run['workflow_id'])}")
             if (run.get('event')!='workflow_dispatch' or run.get('head_sha')!=binding[3]
-                    or run.get('repository',{}).get('full_name')!=TARGET
+                    or run.get('repository',{}).get('full_name')!=REPOSITORY
                     or workflow.get('path')!='.github/workflows/factory.yml'):
                 raise RuntimeError('Refuse to cancel an unverified workflow')
             # A run on another branch (a former config branch) cannot act for the current config: never cancelled.
@@ -190,7 +183,7 @@ def main():
     if not expected or ref != expected:
         raise RuntimeError("Dispatcher must execute on the configured default branch or the pushed branch")
     repository = api("GET", PREFIX)
-    if repository.get("full_name", "").lower() != TARGET.lower() or repository.get("default_branch") != config["default_branch"]:
+    if repository.get("full_name", "").lower() != REPOSITORY.lower() or repository.get("default_branch") != config["default_branch"]:
         raise RuntimeError("Repository/default branch identity changed")
     jobs = []  # (PR number, event kind for route(), identifier)
     pushed = None

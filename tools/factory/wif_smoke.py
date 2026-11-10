@@ -9,9 +9,12 @@ import urllib.parse
 import urllib.request
 
 import branches
+from contracts import REPOSITORY, Blocked
+import structured
 
 AUDIENCE = 'https://api.anthropic.com'
-REPOSITORY = 'Zerosteps1/Aicepeak_V2.0.0'
+STRUCTURED_SMOKE = {'type': 'object', 'additionalProperties': False, 'required': ['status'],
+                    'properties': {'status': {'type': 'string', 'enum': ['OK']}}}
 
 
 class SmokeFailure(Exception):
@@ -141,9 +144,26 @@ def smoke(config, env):
     if not isinstance(usage, dict) or any(
             type(usage.get(key)) is not int or usage[key] < 0 for key in ('input_tokens', 'output_tokens')):
         raise SmokeFailure('claude_message: missing usage evidence; exchange succeeded')
-    return {'status': 'passed', 'stages': ['github_oidc', 'token_exchange', 'claude_message'],
-            'requested_model': model, 'scope': token['scope'], 'expires_in': token['expires_in'],
-            'usage': {key: usage[key] for key in ('input_tokens', 'output_tokens')}}
+    result = {'status': 'passed', 'stages': ['github_oidc', 'token_exchange', 'claude_message'],
+              'requested_model': model, 'scope': token['scope'], 'expires_in': token['expires_in'],
+              'usage': {key: usage[key] for key in ('input_tokens', 'output_tokens')}}
+    # The issue reviewer's request shape (structured output, no tools) with its own model, so a shape the model
+    # rejects fails here and not on a maintainer's /review.
+    structured_model = config.get('issue_review_model')
+    if structured_model:
+        body = structured.messages_body(structured_model, 256, None, 'Return status OK.', STRUCTURED_SMOKE)
+        reply = request_json('claude_structured', AUDIENCE + '/v1/messages', {
+            'Authorization': 'Bearer ' + access_token, 'Content-Type': 'application/json',
+            'anthropic-version': '2023-06-01'}, body)
+        try:
+            answer, _ = structured.answer(reply, STRUCTURED_SMOKE, 'smoke answer')
+        except Blocked:
+            answer = None
+        if answer != {'status': 'OK'}:
+            raise SmokeFailure('claude_structured: structured output request failed or invalid; exchange succeeded')
+        result['stages'].append('claude_structured')
+        result['structured_model'] = structured_model
+    return result
 
 
 def main():

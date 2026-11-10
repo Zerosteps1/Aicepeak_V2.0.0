@@ -23,11 +23,11 @@ import urllib.request
 from urllib.parse import quote
 
 import branches
+from contracts import REPOSITORY
+from github_api import API_VERSION
 
-REPOSITORY = "Zerosteps1/Aicepeak_V2.0.0"
 ROOT = Path(__file__).resolve().parents[2]
-API_VERSION = "2026-03-10"
-WORKFLOWS = (".github/workflows/factory-dispatch.yml", ".github/workflows/factory-promotion.yml")
+WORKFLOWS = (".github/workflows/factory-dispatch.yml", ".github/workflows/factory-promotion.yml", ".github/workflows/factory-feedback.yml")
 
 
 class Blocked(RuntimeError):
@@ -139,7 +139,7 @@ def config_blockers(config):
     if all(isinstance(maintainer, dict) for maintainer in maintainers):
         # Names, gates, review modes, routing, default and config branch; required checks follow from them.
         errors += branches.problems(config)
-    if type(config.get("require_second_human_review", True)) is not bool:
+    if type(config.get("require_second_human_review")) is not bool:
         errors.append("require_second_human_review must be a boolean")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", str(config.get("environment", ""))):
         errors.append("environment must be an explicit simple name")
@@ -172,10 +172,9 @@ def ruleset_name(spec, level, branch=None):
 
 
 def managed(spec, name):
-    """Rulesets this tool owns: the branch-model names and the retired single-branch names."""
+    """Rulesets this tool owns: the lifecycle ruleset and every per-branch ruleset name."""
     names = spec["ruleset_names"]
-    return (name == names["lifecycle"] or name in spec.get("retired_ruleset_names", [])
-            or any(name.startswith(names[level].split("{branch}")[0]) for level in ("validation", "production")))
+    return name == names["lifecycle"] or any(name.startswith(names[level].split("{branch}")[0]) for level in ("validation", "production"))
 
 
 def environments(config, spec):
@@ -189,9 +188,7 @@ def desired_state(config, spec):
     if errors:
         raise Blocked("; ".join(errors))
     model = branches.parse(config)
-    # Existing configurations keep their second-review requirement unless the
-    # versioned policy explicitly selects the maintainer's own merge decision.
-    second_review = config.get("require_second_human_review", True)
+    second_review = config["require_second_human_review"]
     maintainers = [{"actor_type": "User", "actor_id": m["id"], "bypass_mode": "always"} for m in config["maintainers"]]
 
     def ruleset(name, refs, bypass, rules):
@@ -360,7 +357,7 @@ def inspect(config, spec, api, app_apis):
         if name == spec["promotion_environment"] and set(secret_names) - set(required):
             blockers.append(f"{name} must hold only the publisher key; remove: " + ", ".join(sorted(set(secret_names) - set(required))))
     repo_secrets = api.pages(prefix + "/actions/secrets", "secrets")
-    sensitive_names = set(spec["environment_secrets"] + spec.get("optional_environment_secrets", []) + spec["promotion_environment_secrets"])
+    sensitive_names = set(spec["environment_secrets"] + spec["promotion_environment_secrets"])
     if any(secret["name"] in sensitive_names for secret in repo_secrets):
         blockers.append("factory credentials exist as repository secrets; move them to the config-branch environments")
     current.update(actions=api.request("GET", prefix + "/actions/permissions"),
@@ -447,11 +444,11 @@ def diff(report, config):
         actual = next((r for r in current["rulesets"] if r["name"] == rule["name"]), None)
         if not same(actual, rule):
             change("PUT" if actual else "POST", prefix + "/rulesets" + ("/" + str(actual["id"]) if actual else ""), rule, "reconcile " + rule["name"])
-    # Retired and unlisted-branch rulesets go only after their replacements exist.
+    # Rulesets of unlisted branches go only after their replacements exist.
     wanted = {rule["name"] for rule in desired["rulesets"]}
     for rule in current["rulesets"]:
         if rule["name"] not in wanted:
-            change("DELETE", prefix + "/rulesets/" + str(rule["id"]), None, "remove retired or unlisted ruleset " + rule["name"])
+            change("DELETE", prefix + "/rulesets/" + str(rule["id"]), None, "remove the ruleset of an unlisted branch " + rule["name"])
     return changes
 
 

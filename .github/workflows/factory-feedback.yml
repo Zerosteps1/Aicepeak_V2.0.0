@@ -1,3 +1,10 @@
+# Why: GitHub has no trusted (`_target`) variant of the review events, and their workflow file comes from the PR
+# itself, so it may hold nothing. This workflow only exists so that a review becomes visible to the trusted side: its
+# run title carries the PR number, the event and the review or comment ID, and its completion starts
+# factory-dispatch.yml (workflow_run), which re-reads the review through the API before anything acts on it.
+# What: one step that does nothing (a job needs a step); no checkout, secret, cache, token or artifact.
+# When: a review is submitted, edited or dismissed, or an inline review comment is created or edited. Approvals and
+# dismissals decide config PRs into production; review comments are feedback for the senior review.
 name: Factory review feedback ingress
 run-name: factory-feedback:${{ github.event.pull_request.number }}:${{ github.event_name }}:${{ github.event.review.id || github.event.comment.id }}
 

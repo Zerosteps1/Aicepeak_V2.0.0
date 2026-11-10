@@ -1,27 +1,22 @@
 """Collision sweep and verified merge: real Git data; only GitHub, fetch and model edges are fake."""
 import copy
 import json
-import os
 from pathlib import Path
 import subprocess
-import sys
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+from factory_testlib import REPOSITORY, SESSION_BRANCHES, SessionGitHub, SessionRepos, git
 import branches
-import session
 import engine
+import github_api
 import local_review
 import merge_safety
-import test_session
-from test_session import REPOSITORY, git
+import session
 from contracts import Blocked, handoff
 
 
-class MergeFixture(test_session.GitHubFixture):
+class MergeFixture(SessionGitHub):
     """Adds open PRs, compare, check runs, review threads, the merge lock and the merge itself."""
     def __init__(self, case):
         super().__init__(case)
@@ -81,10 +76,7 @@ class MergeFixture(test_session.GitHubFixture):
         return super().pages(path, field)
 
 
-class MergeSafety(unittest.TestCase):
-    setUp = test_session.SessionBoundaries.setUp
-    model = test_session.SessionBoundaries.model
-
+class MergeSafety(SessionRepos, unittest.TestCase):
     def fixture(self):
         self.gh = MergeFixture(self)
         self.sources = {}
@@ -220,8 +212,8 @@ class MergeSafety(unittest.TestCase):
         self.fixture()
         self.other_pr(2, 'feature/two', {'tools/factory/example.py': 'VALUE = 5\n'})
         with patch.object(local_review, 'run_codex', side_effect=self.model), \
-                patch.object(merge_safety, 'fetch_pulls', side_effect=self.fetch):
-            result = session.submit(self.gh, self.candidate, 'docs/work/TEST.md', [], 'Update value', self.body(), 'claude', draft=True)
+                patch.object(merge_safety, 'fetch_pulls', side_effect=self.fetch), patch.object(session, 'watch', return_value=None):
+            result = session.submit(self.gh, self.candidate, 'docs/work/TEST.md', [], 'Update value', self.body(), 'claude')
         created = self.gh.creates[0]['body']
         self.assertIn('Collision check at `' + self.head[:12] + '` against testing `' + self.base[:12] + '`: contains current testing.', created)
         self.assertIn('- #2 (same work order)', created)
@@ -231,7 +223,7 @@ class MergeSafety(unittest.TestCase):
         self.gh.creates.clear()
         with patch.object(local_review, 'run_codex', side_effect=self.model), patch.object(merge_safety, 'collisions', return_value=stale):
             with self.assertRaisesRegex(Blocked, 'changed after the collision sweep'):
-                session.submit(self.gh, self.candidate, 'docs/work/TEST.md', [], 'Update value', self.body(), 'claude', draft=True)
+                session.submit(self.gh, self.candidate, 'docs/work/TEST.md', [], 'Update value', self.body(), 'claude')
         self.assertEqual(self.gh.creates, [])
 
     def test_merge_binds_both_app_gates_to_this_head_target_and_config_tip_under_the_lock(self):
@@ -260,7 +252,7 @@ class MergeSafety(unittest.TestCase):
             (moved, lambda: setattr(self.gh, 'head_checks', self.gates(external_id=f'{REPOSITORY}:1:{self.head}:{"d" * 40}:testing:5:1'))),
             (stale, lambda: setattr(self.gh, 'head_checks', self.gates(external_id=f'{REPOSITORY}:1:{self.head}:{self.base}:quick:5:1'))),
             (stale, lambda: setattr(self.gh, 'head_checks', self.gates(external_id=f'{REPOSITORY}:2:{self.head}:{self.base}:testing:5:1'))),
-            ('legacy or malformed binding', lambda: setattr(self.gh, 'head_checks', self.gates(external_id=f'{REPOSITORY}:1:{self.head}:{self.base}:5:1'))),
+            ('malformed binding; wait for a fresh run', lambda: setattr(self.gh, 'head_checks', self.gates(external_id=f'{REPOSITORY}:1:{self.head}:{self.base}:5:1'))),
             ('human feedback changed after the review', lambda: setattr(self.gh, 'head_checks', self.gates(digest='stale'))),
             # A review bound to another approved text of the work-order issue does not count.
             ('the work-order issue changed after the review', lambda: setattr(self.gh, 'head_checks', self.gates(
@@ -373,7 +365,7 @@ class MergeSafety(unittest.TestCase):
 
     def test_human_transport_allows_only_the_exact_compare_route(self):
         with patch.object(session.HumanGitHub, 'command', return_value='{"status":"ahead","behind_by":0}') as command:
-            self.assertTrue(engine.contains_base(session.HumanGitHub(), REPOSITORY, 'b' * 40, 'a' * 40))
+            self.assertTrue(github_api.contains(session.HumanGitHub(), REPOSITORY, 'b' * 40, 'a' * 40))
             self.assertIn(f'/repos/{REPOSITORY}/compare/{"b" * 40}...{"a" * 40}?per_page=1', command.call_args.args[0])
             for unsafe in (f'/repos/{REPOSITORY}/contents/../secrets', f'/repos/{REPOSITORY}/compare/testing...{"a" * 40}?per_page=1',
                            f'/repos/{REPOSITORY}/compare/{"b" * 40}...{"a" * 40}/../x?per_page=1'):
@@ -415,7 +407,7 @@ class MergeSafety(unittest.TestCase):
         self.fixture()
         self.bypass_comment()
         self.gh.threads = []
-        passed, other = self.gates(), test_session.BRANCHES['production'][0]['name']
+        passed, other = self.gates(), SESSION_BRANCHES['production'][0]['name']
         failed = [passed[0], {**passed[1], 'conclusion': 'failure'}]
         not_authentic = 'factory/senior-review: bypass without an authentic maintainer receipt'
         stale = 'factory/senior-review: bound to another head, target branch or config revision'
@@ -426,7 +418,7 @@ class MergeSafety(unittest.TestCase):
             ({'external_id': f'{REPOSITORY}:2:{self.head}:{self.base}:testing:9:1'}, stale),
             ({'external_id': f'{REPOSITORY}:1:{self.head}:{self.base}:{other}:9:1'}, stale),
             ({'external_id': f'{REPOSITORY}:1:{self.head}:{"d" * 40}:testing:9:1'}, 'factory/senior-review: the config branch moved'),
-            ({'external_id': f'{REPOSITORY}:1:{self.head}:{self.base}:9:1'}, 'factory/senior-review: legacy or malformed binding'),
+            ({'external_id': f'{REPOSITORY}:1:{self.head}:{self.base}:9:1'}, 'factory/senior-review: malformed binding; wait for a fresh run'),
             ({'conclusion': 'neutral'}, 'factory/senior-review: neutral'),
             ({'record': {'login': 'outsider', 'id': 1}}, not_authentic),
             ({'record': {'id': 345378269}}, not_authentic),  # another maintainer's id under this login

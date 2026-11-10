@@ -1,3 +1,10 @@
+# Why: a production branch takes only promotions and config PRs, and GitHub needs one required check that decides
+# which a PR is and whether it may merge; that check must be computed by trusted code with the publisher App.
+# What: classifies the PR into a production branch and publishes factory/production/<branch>: a promotion passes
+# while its head is the validation branch's tip, contains production and (by review mode) has a passed AI review;
+# a config PR passes with enough maintainer approvals; a maintainer /bypass can pass a promotion for one head.
+# When: dispatched by factory-dispatch.yml for PR events, reviews and pushes; by a maintainer device after its AI
+# review; or by hand (`gh workflow run factory-promotion.yml`) when that re-run did not happen.
 name: Factory production check
 
 on:

@@ -3,15 +3,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-ROOT=Path(os.environ.get('FACTORY_CANDIDATE',Path(__file__).resolve().parents[3]))
-sys.path.insert(0,str(ROOT/'tools/factory'))
-sys.path.insert(0,str(Path(__file__).resolve().parent))
-import branch_fixture
+from factory_testlib import ROOT, candidate_config, candidate_config_text
+import clients
 import doctor
 
 
@@ -41,7 +38,7 @@ class DoctorBoundaries(unittest.TestCase):
         secrets={'CODEX_ACCESS_TOKEN':'SENSITIVE_DO_NOT_PRINT','FACTORY_PUBLISHER_APP_PRIVATE_KEY':'SENSITIVE_DO_NOT_PRINT','CONTEXT7_API_KEY':'SENSITIVE_DO_NOT_PRINT','ANTHROPIC_API_KEY':'SENSITIVE_DO_NOT_PRINT'}
         with patch.dict(os.environ,secrets,clear=True), patch.object(doctor,'probe',return_value=False), \
              patch.object(doctor.shutil,'which',return_value='/fixture/tool'), patch.object(doctor,'repository_identity',return_value=True), \
-             patch.object(doctor,'codex_version',return_value='codex-cli 0.164.0'):
+             patch.object(doctor,'codex_version',return_value=clients.VERSIONS['codex']):
             result=doctor.inspect(ROOT,'claude')
         checks={c['check']:c['status'] for c in result['factory']['local_prerequisites']}
         for name in ('reviewer_codex','reviewer_access_token','reviewer_publisher_key'):
@@ -61,7 +58,7 @@ class DoctorBoundaries(unittest.TestCase):
         self.assertEqual(federation(ROOT)['status'],'passed')
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve();(root/'factory').mkdir()
-            config=branch_fixture.load(ROOT)
+            config=candidate_config()
             config['anthropic_federation']={k:None for k in config['anthropic_federation']}
             (root/'factory/config.json').write_text(json.dumps(config))
             blocked=federation(root)
@@ -74,11 +71,10 @@ class DoctorBoundaries(unittest.TestCase):
                  patch.object(doctor,'repository_identity',return_value=False), patch.object(doctor,'codex_version',return_value=''):
                 result=doctor.inspect(root,'claude')
             return {c['check']:c for c in result['factory']['local_prerequisites']}['repository_config']
-        # Config PRs change the candidate's branch model: the fixture repository has the fixed one.
-        config=branch_fixture.load(ROOT)
+        config=candidate_config()
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve();(root/'factory').mkdir()
-            (root/'factory/config.json').write_text(branch_fixture.text(ROOT))
+            (root/'factory/config.json').write_text(candidate_config_text())
             current=repository(root)
         self.assertEqual(current['status'],'passed')
         self.assertIn("default branch testing, config branch production",current['detail'])

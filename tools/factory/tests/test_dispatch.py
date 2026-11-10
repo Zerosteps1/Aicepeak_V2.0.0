@@ -5,15 +5,13 @@ import copy
 import importlib.util
 import io
 import json
-import os
-from pathlib import Path
 import re
-import sys
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
+from factory_testlib import REPOSITORY, ROOT, STRANGER, job
+import github_api
+
 _loader = importlib.util.spec_from_file_location('factory_dispatcher', ROOT / '.github/scripts/dispatch_factory.py')
 dispatcher = importlib.util.module_from_spec(_loader)
 _loader.loader.exec_module(dispatcher)
@@ -21,20 +19,20 @@ _loader.loader.exec_module(dispatcher)
 PREFIX = dispatcher.PREFIX
 POLICY, PUSHED, OLD, RELEASE, HEAD = 'b' * 40, 'c' * 40, 'd' * 40, 'f' * 40, 'a' * 40
 HUMAN = {'type': 'User', 'id': 101, 'login': 'test-human'}
-STRANGER = {'type': 'User', 'id': 999, 'login': 'stranger'}
 BASES = ('testing', 'quick', 'scratch', 'production', 'release', 'feature-x')
 
 
 def config():
     """testing: full, quick: tests, scratch: none; production: maintainer-manual (config), release: no review."""
-    return {'repository': dispatcher.TARGET, 'default_branch': 'testing', 'config_branch': 'production',
+    return {'repository': REPOSITORY, 'default_branch': 'testing', 'config_branch': 'production',
             'branches': {'schema_version': 1, 'validation': [
                 {'name': 'testing', 'gate': 'full', 'kinds': ['factory', 'product']},
                 {'name': 'quick', 'gate': 'tests', 'kinds': ['smoke']},
                 {'name': 'scratch', 'gate': 'none', 'kinds': []}],
                 'production': [{'name': 'production', 'review': 'maintainer-manual'},
                                {'name': 'release', 'review': 'no'}]},
-            'maintainers': [{'login': 'test-human', 'id': 101}], 'publisher_app_id': 201, 'writer_app_id': 202}
+            'maintainers': [{'login': 'test-human', 'id': 101}], 'work_order_approvals': 1, 'publisher_app_id': 201,
+            'writer_app_id': 202, 'issue_review_model': 'claude-sonnet-5-5'}
 
 
 def pr(base, sha=PUSHED, state='open', head=HEAD):
@@ -43,12 +41,6 @@ def pr(base, sha=PUSHED, state='open', head=HEAD):
 
 def contents(data):
     return {'type': 'file', 'encoding': 'base64', 'content': base64.b64encode(json.dumps(data).encode()).decode()}
-
-
-def job(workflow, name):
-    """One job's text of a workflow."""
-    rest = workflow.split(f'\n  {name}:\n', 1)[1]
-    return re.split(r'\n  (?=[a-z])', rest, maxsplit=1)[0]
 
 
 def inputs(workflow):
@@ -60,7 +52,7 @@ def inputs(workflow):
 class DispatcherTests(unittest.TestCase):
     def setUp(self):
         self.local, self.remote = config(), config()
-        self.responses = {PREFIX: {'id': 77, 'full_name': dispatcher.TARGET, 'default_branch': 'testing'},
+        self.responses = {PREFIX: {'id': 77, 'full_name': REPOSITORY, 'default_branch': 'testing'},
                           PREFIX + '/git/ref/heads/production': {'object': {'sha': POLICY}}}
         for number, base in enumerate(BASES, 1):
             self.responses[f'{PREFIX}/pulls/{number}'] = pr(base)
@@ -259,7 +251,6 @@ class DispatcherTests(unittest.TestCase):
         return {'action': 'created', 'issue': {'number': number}, 'sender': user, 'comment': {'id': ident}}
 
     def test_issue_commands_of_maintainers_on_maintainer_issues_dispatch_the_issue_jobs(self):
-        self.remote['issue_review_model'] = 'claude-sonnet-5-5'
         declared = inputs((ROOT / '.github/workflows/factory.yml').read_text())
         for body, word in (('/review', 'review'), ('/accept', 'accept'), ('/accept looks right', 'accept'),
                            ('looks good', None), ('/reviewer', None), ('/bypass now', None), (' /accept', None)):
@@ -272,7 +263,6 @@ class DispatcherTests(unittest.TestCase):
                 self.assertNotIn(body.strip(), json.dumps([data for _, data in posts]).replace('"accept"', '').replace('"review"', ''))
 
     def test_issue_commands_are_ignored_where_they_do_not_apply(self):
-        self.remote['issue_review_model'] = 'claude-sonnet-5-5'
         self.assertEqual(self.run_dispatcher('issue_comment', self.issue_comment(57, '/review', author=STRANGER)), [])
         self.assertEqual(self.run_dispatcher('issue_comment', self.issue_comment(57, '/review', author={**HUMAN, 'type': 'Bot'})), [])
         self.assertEqual(self.run_dispatcher('issue_comment', {**self.issue_comment(57, '/accept'), 'action': 'edited'}), [])
@@ -286,12 +276,6 @@ class DispatcherTests(unittest.TestCase):
         self.responses[f'{PREFIX}/issues/comments/66']['issue_url'] = f'https://api.github.com{PREFIX}/issues/58'
         with self.assertRaisesRegex(RuntimeError, 'issue association failed'):
             self.run_dispatcher('issue_comment', event)
-
-    def test_issue_commands_wait_until_the_config_branch_enables_them(self):
-        # Before the promotion that brings the issue jobs, the config branch's factory.yml would refuse the inputs.
-        self.assertNotIn('issue_review_model', self.remote)
-        self.assertEqual(self.run_dispatcher('issue_comment', self.issue_comment(57, '/review')), [])
-        self.assertFalse(any('/issues/' in endpoint for _, endpoint, _ in self.calls))
 
     def test_non_maintainer_and_bot_comments_are_ignored(self):
         for user in (STRANGER, {'type': 'Bot', 'id': 201, 'login': 'factory[bot]'}, {**HUMAN, 'login': 'impostor'}):
@@ -412,7 +396,7 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(posts, [check('11'), check('12'), pipeline('13'), pipeline('14'), pipeline('15'), check('15')])
         listings = [endpoint for _, endpoint, _ in self.calls if '/pulls?' in endpoint]
         self.assertEqual([e.split('base=')[1].split('&')[0] for e in listings], ['production', 'testing', 'quick', 'release'])
-        # Runs bound to the former config tip are cancelled before the fresh pipeline runs.
+        # Runs bound to the previous config tip are cancelled before the fresh pipeline runs.
         self.assertTrue(all(any(e == f'{PREFIX}/issues/{n}/comments?per_page=100&page=1' for _, e, _ in self.calls)
                             for n in (13, 14, 15)))
 
@@ -442,7 +426,7 @@ class DispatcherTests(unittest.TestCase):
             PREFIX + '/check-runs/8': {'app': {'id': 201}, 'status': 'in_progress', 'external_id': external_id},
             # The run executes the config tip its binding names.
             PREFIX + '/actions/runs/9': {'status': 'in_progress', 'event': 'workflow_dispatch', 'head_sha': external_id.split(':')[3],
-                                         'head_branch': head_branch, 'repository': {'full_name': dispatcher.TARGET}, 'workflow_id': 6},
+                                         'head_branch': head_branch, 'repository': {'full_name': REPOSITORY}, 'workflow_id': 6},
             PREFIX + '/actions/workflows/6': {'path': '.github/workflows/factory.yml'}})
         calls = []
         def request(method, path, data=None):
@@ -452,29 +436,31 @@ class DispatcherTests(unittest.TestCase):
 
     def test_cancel_obsolete_parses_seven_field_bindings(self):
         head = 'a' * 40
-        current = f'{dispatcher.TARGET}:4:{head}:{POLICY}:production:9:1'
+        current = f'{REPOSITORY}:4:{head}:{POLICY}:production:9:1'
         cases = [(current, pr('production', head=head), False),  # Title-only edit.
                  (current, pr('production', head='e' * 40), True),  # New head.
-                 (f'{dispatcher.TARGET}:4:{head}:{OLD}:production:9:1', pr('production', head=head), True),  # Config tip moved.
-                 (current, pr('release', head=head), True),  # Target changed.
-                 (f'{dispatcher.TARGET}:4:{head}:{OLD}:9:1', pr('production', head='e' * 40), False)]  # Legacy never counts.
+                 (f'{REPOSITORY}:4:{head}:{OLD}:production:9:1', pr('production', head=head), True),  # Config tip moved.
+                 (current, pr('release', head=head), True)]  # Target changed.
         for external_id, state, cancelled in cases:
             with self.subTest(external_id=external_id, base=state['base']['ref']):
                 calls, request = self.ledger(external_id)
                 with patch.object(dispatcher, 'api', side_effect=request):
                     dispatcher.cancel_obsolete(config(), 4, state, POLICY)
                 self.assertEqual([p for m, p in calls if m == 'POST'], [PREFIX + '/actions/runs/9/cancel'] if cancelled else [])
-        for external_id, branch in ((f'{dispatcher.TARGET}:4:{head}:{OLD}:production:9:1:extra', 'production'),
+        # A binding without the target branch, with an extra field or of another repository is refused.
+        for external_id, branch in ((f'{REPOSITORY}:4:{head}:{OLD}:production:9:1:extra', 'production'),
+                                    (f'{REPOSITORY}:4:{head}:{OLD}:9:1', 'production'),
                                     (f'other/repo:4:{head}:{OLD}:production:9:1', 'production')):
             with self.subTest(external_id=external_id, branch=branch):
                 calls, request = self.ledger(external_id, branch)
-                with patch.object(dispatcher, 'api', side_effect=request), self.assertRaises(RuntimeError):
+                with patch.object(dispatcher, 'api', side_effect=request), \
+                        self.assertRaisesRegex(RuntimeError, 'Invalid authenticated run binding'):
                     dispatcher.cancel_obsolete(config(), 4, pr('production', head='e' * 40), POLICY)
                 self.assertFalse(any(m == 'POST' for m, _ in calls))
 
     def test_cancel_obsolete_skips_runs_on_another_config_branch_but_keeps_every_other_refusal(self):
         head, current = 'a' * 40, {**config(), 'config_branch': 'release'}  # production handed over to release
-        old = f'{dispatcher.TARGET}:4:{head}:{OLD}:production:9:1'
+        old = f'{REPOSITORY}:4:{head}:{OLD}:production:9:1'
         cancelled = lambda calls: [p for m, p in calls if m == 'POST']
         for branch, expected in (('production', []), ('testing', []), ('release', [PREFIX + '/actions/runs/9/cancel'])):
             with self.subTest(branch=branch):
@@ -495,6 +481,14 @@ class DispatcherTests(unittest.TestCase):
                             self.assertRaisesRegex(RuntimeError, 'Refuse to cancel an unverified workflow'):
                         dispatcher.cancel_obsolete(current, 4, pr('production', head='e' * 40), RELEASE)
                     self.assertEqual(cancelled(calls), [])
+
+    def test_requests_use_the_contract_repository_and_the_shared_api_version(self):
+        self.assertEqual((PREFIX, dispatcher.API_VERSION), ('/repos/' + REPOSITORY, github_api.API_VERSION))
+        answer = dispatcher.subprocess.CompletedProcess([], 0, '{"id": 77}', '')
+        with patch.object(dispatcher.subprocess, 'run', return_value=answer) as run:
+            self.assertEqual(dispatcher.api('GET', PREFIX), {'id': 77})
+        self.assertEqual(run.call_args.args[0][-3:], ['-H', 'X-GitHub-Api-Version: ' + github_api.API_VERSION, PREFIX])
+        self.assertNotIn('Zerosteps1', (ROOT / '.github/scripts/dispatch_factory.py').read_text())
 
     def test_dispatcher_names_no_branch_literal(self):
         source = (ROOT / '.github/scripts/dispatch_factory.py').read_text()

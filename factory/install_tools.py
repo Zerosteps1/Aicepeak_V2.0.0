@@ -1,5 +1,7 @@
-"""Install the exact checksum-verified release binaries of factory/tools.lock.json: into the factory image on Linux,
-and on a maintainer's Mac into the folder of the `factory` command (`factory doctor` prints that command)."""
+"""Install the exact, checksum-verified release binaries pinned in factory/tools.lock.json.
+
+On Linux they go into the factory image; on a maintainer's Mac into the folder of the `factory` command,
+which `factory doctor` prints."""
 import argparse
 import hashlib
 import io
@@ -15,7 +17,6 @@ ARCH={'x86_64':'amd64','amd64':'amd64','aarch64':'arm64','arm64':'arm64'}
 
 
 def platform_key(system=sys.platform,machine=None):
-    """The lock's asset key for this host: linux_amd64, linux_arm64, darwin_amd64 or darwin_arm64."""
     machine=(machine or platform.machine()).lower()
     name='darwin' if system=='darwin' else 'linux' if system.startswith('linux') else None
     if name is None or machine not in ARCH:raise ValueError(f'no pinned tools for {system}/{machine}')
@@ -23,7 +24,6 @@ def platform_key(system=sys.platform,machine=None):
 
 
 def install(lock,destination,key,only=(),fetch=None):
-    """Download, verify and install the locked tools (all, or `only`); returns the installed paths."""
     fetch=fetch or (lambda url:urllib.request.urlopen(url,timeout=60))
     unknown=sorted(set(only)-set(lock))
     if unknown:raise ValueError('not in the lock: '+', '.join(unknown))

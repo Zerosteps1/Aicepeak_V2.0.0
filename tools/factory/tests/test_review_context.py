@@ -1,12 +1,8 @@
 import json
 import copy
-import os
-from pathlib import Path
-import sys
 import unittest
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
+from factory_testlib import ROOT
 from contracts import Blocked
 from review_context import context_sections
 

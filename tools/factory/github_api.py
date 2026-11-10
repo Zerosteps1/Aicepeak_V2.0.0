@@ -13,6 +13,7 @@ import re
 import branches
 from contracts import Blocked, require
 
+API_VERSION = "2026-03-10"
 # The compare route needs "base...head"; every other ".." stays an unsafe path.
 COMPARE_ROUTE = re.compile(r"/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}\?per_page=1")
 
@@ -31,7 +32,7 @@ class GitHub:
         req = urllib.request.Request("https://api.github.com" + path,
             data=None if data is None else json.dumps(data).encode(), method=method,
             headers={"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json",
-                     "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"})
+                     "X-GitHub-Api-Version": API_VERSION, "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=60) as response:
                 raw = response.read(8_000_001)
@@ -66,8 +67,16 @@ class GitHub:
             raise Blocked("non-UTF-8 source cannot be completely reviewed") from None
 
 
+def contains(client, repo, base, head):
+    """True when head already includes base, so merging it yields exactly the tested tree. pr.base.sha follows its
+    branch on every push, even without a merge into the head; only ancestry proves inclusion."""
+    require(all(isinstance(sha, str) and re.fullmatch('[0-9a-f]{40}', sha) for sha in (base, head)), 'invalid commit identifier')
+    compare = client.request('GET', f'/repos/{repo}/compare/{base}...{head}?per_page=1')
+    return compare.get('status') in ('ahead', 'identical') and compare.get('behind_by') == 0
+
+
 def tip(client, repo, branch):
-    """Current commit of a listed branch; the name is checked before it enters the route."""
+    """Branch names can come from PR data, so the name is validated before it becomes part of the API route."""
     require(isinstance(branch, str) and branches.NAME.fullmatch(branch) is not None, "invalid branch name")
     ref = client.request("GET", f"/repos/{repo}/git/ref/heads/{branch}")
     sha = ((ref or {}).get("object") or {}).get("sha")

@@ -1,3 +1,11 @@
+# Why: GitHub events from PRs and comments must never run PR-controlled code with write access. This dispatcher is
+# the only workflow those events start: it runs trusted code (the default branch's copy; for a push, the pushed
+# branch's own copy, which acts only for listed branches), reads metadata only and decides which config-branch
+# workflow runs.
+# What: validates the event, the actor and the target branch against the config branch's configuration, then
+# dispatches factory.yml and factory-promotion.yml on the config branch and cancels runs a newer event made obsolete.
+# When: PR opened, updated, edited or marked ready; issue and PR comments (commands, feedback); a completed
+# factory-feedback.yml run (reviews); pushes to branches (a moved config branch re-runs every open PR).
 name: Factory trusted dispatcher
 
 on:

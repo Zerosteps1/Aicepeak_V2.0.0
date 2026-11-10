@@ -3,8 +3,8 @@
 Runs only from factory-promotion.yml on the config branch tip, with the publisher App. bypass.production_kind
 classifies the PR, as the pipeline does:
 (a) promotion: the head is a validation branch of this repository;
-(b) work-order/config PR: only docs/work/*.md and factory/config.json, approved at the current head by as many
-    maintainer accounts as config.json's work_order_approvals names (default 2);
+(b) config PR: only factory/config.json and docs/work/*.md, approved at the current head by as many maintainer
+    accounts as config.json's work_order_approvals names;
 (c) anything else fails.
 A promotion into a branch with review maintainer-manual also needs a passed AI review (`/review`) of this PR's head.
 Only (a) accepts a maintainer's `/bypass <reason>`, and only for the head it was given for.
@@ -13,22 +13,16 @@ Stale data (head, target tip or config tip moved during the run) publishes nothi
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import sys
 sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CLI use.
 import branches
-from bypass import (bound_runs, bypass_reason, commanded_bypass, earlier_bypass, kept_bypass,  # noqa: F401
-                    maintainer, pr_files, production_kind, read_bypass)
-from contracts import Blocked, binding, require
-from github_api import installation, tip
+from branches import load_config
+from bypass import bound_runs, commanded_bypass, kept_bypass, pr_files, production_kind
+from contracts import Blocked, binding, maintainer, require
+from github_api import contains, installation, tip
 
-ROOT = Path(__file__).resolve().parents[2]
-REFUSED = 'only promotions and work-order/config PRs may target a production branch'
-
-
-def load_config():
-    return json.loads((ROOT / 'factory/config.json').read_text())
+REFUSED = 'only promotions and config PRs may target a production branch'
 
 
 def review_problem(gh, config, snap):
@@ -41,12 +35,6 @@ def review_problem(gh, config, snap):
     if runs[0].get('status') != 'completed':
         return 'awaiting the local AI review'
     return None if runs[0].get('conclusion') == 'success' else 'the AI review did not pass'
-
-
-def contains(gh, repo, base, head):
-    """True when head already includes base (ancestry, not pr.base.sha)."""
-    compare = gh.request('GET', f'/repos/{repo}/compare/{base}...{head}?per_page=1')
-    return compare.get('status') in ('ahead', 'identical') and compare.get('behind_by') == 0
 
 
 def promotion_problems(gh, m, snap, pr):
@@ -68,7 +56,8 @@ def promotion_problems(gh, m, snap, pr):
 
 
 def approvals(gh, config, snap):
-    """Maintainer accounts whose latest review decision approves the current head."""
+    """An approval counts only at the current head and only while it is the account's latest decision, so a push, a
+    later change request or a dismissal withdraws it."""
     latest = {}
     for review in sorted(gh.pages(f"/repos/{snap['repository']}/pulls/{snap['pr']}/reviews"), key=lambda r: r['id']):
         # Comments do not change a decision on GitHub; a later approval, change request or dismissal does.

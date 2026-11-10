@@ -5,23 +5,19 @@ import copy
 import io
 import json
 import os
-from pathlib import Path
-import sys
 import unittest
 from unittest.mock import patch
 import urllib.error
 import urllib.parse
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import branch_fixture
+from factory_testlib import REPOSITORY, candidate_config, candidate_config_text
+import structured
 import wif_smoke
 
 
 class WIFSmokeTests(unittest.TestCase):
     def setUp(self):
-        self.config = branch_fixture.load(ROOT)  # config PRs change the candidate's branch model
+        self.config = candidate_config()
         self.config['anthropic_federation'] = {
             'organization_id': '00000000-0000-4000-8000-000000000001',
             'service_account_id': 'svac_fixture', 'federation_rule_id': 'fdrl_fixture',
@@ -30,10 +26,10 @@ class WIFSmokeTests(unittest.TestCase):
         self.ref = 'refs/heads/' + self.config['config_branch']
         self.env = {
             'GITHUB_ACTIONS': 'true', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
-            'GITHUB_REPOSITORY': 'Zerosteps1/Aicepeak_V2.0.0',
+            'GITHUB_REPOSITORY': REPOSITORY,
             'GITHUB_REF': self.ref, 'GITHUB_REPOSITORY_ID': '1436114884',
             'GITHUB_REPOSITORY_OWNER_ID': '115100163',
-            'GITHUB_WORKFLOW_REF': 'Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@' + self.ref,
+            'GITHUB_WORKFLOW_REF': REPOSITORY + '/.github/workflows/factory.yml@' + self.ref,
             'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://example.actions.githubusercontent.com/oidc?api-version=2.0',
             'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'fixture-request-credential',
         }
@@ -53,6 +49,11 @@ class WIFSmokeTests(unittest.TestCase):
                         'stop_reason': 'end_turn', 'stop_sequence': None,
                         'content': [{'type': 'text', 'text': 'OK'}],
                         'usage': {'input_tokens': 12, 'output_tokens': 1}}
+        self.structured = {'type': 'message', 'role': 'assistant', 'id': 'msg_structured',
+                           'model': self.config['issue_review_model'], 'stop_reason': 'end_turn',
+                           'content': [{'type': 'thinking', 'thinking': '', 'signature': 's'},
+                                       {'type': 'text', 'text': '{"status":"OK"}'}],
+                           'usage': {'input_tokens': 40, 'output_tokens': 9}}
         self.requests = []
 
     def transport(self, req, timeout):
@@ -81,6 +82,17 @@ class WIFSmokeTests(unittest.TestCase):
             self.assertEqual(body['max_tokens'], 16)
             self.assertEqual(body['messages'], [{'role': 'user', 'content': 'Reply with exactly OK.'}])
             data = self.message
+        elif index == 4:
+            self.assertEqual(req.full_url, 'https://api.anthropic.com/v1/messages')
+            self.assertEqual(req.get_header('Authorization'), 'Bearer fixture-federated-credential')
+            body = json.loads(req.data)
+            # The issue reviewer's request shape with its model: a structured output, no tools.
+            self.assertEqual(body, structured.messages_body(self.config['issue_review_model'], 256, None,
+                                                            'Return status OK.', wif_smoke.STRUCTURED_SMOKE))
+            self.assertFalse({'tools', 'tool_choice'} & body.keys())
+            if isinstance(self.structured, Exception):
+                raise self.structured
+            data = self.structured
         else:
             self.fail('Unexpected extra call or retry')
         return io.BytesIO(json.dumps(data).encode())
@@ -92,16 +104,43 @@ class WIFSmokeTests(unittest.TestCase):
     def test_real_sequence_exchanges_token_and_confirms_inference_without_exposing_credentials(self):
         result = self.run_smoke()
         self.assertEqual(result['status'], 'passed')
-        self.assertEqual(result['stages'], ['github_oidc', 'token_exchange', 'claude_message'])
+        self.assertEqual(result['stages'], ['github_oidc', 'token_exchange', 'claude_message', 'claude_structured'])
+        self.assertEqual(result['structured_model'], self.config['issue_review_model'])
         self.assertEqual(result['usage'], {'input_tokens': 12, 'output_tokens': 1})
-        self.assertEqual(len(self.requests), 3)
+        self.assertEqual(len(self.requests), 4)
         self.assertNotIn('credential', json.dumps(result))
+
+    def test_without_an_issue_review_model_there_is_no_structured_probe(self):
+        del self.config['issue_review_model']
+        result = self.run_smoke()
+        self.assertEqual(result['stages'], ['github_oidc', 'token_exchange', 'claude_message'])
+        self.assertNotIn('structured_model', result)
+        self.assertEqual(len(self.requests), 3)
+
+    def test_a_rejected_or_invalid_structured_answer_fails_the_smoke_without_provider_text(self):
+        good = copy.deepcopy(self.structured)
+        cases = [('stop_reason', 'max_tokens'), ('stop_reason', 'refusal'),
+                 ('content', [{'type': 'text', 'text': '{"status":"NO"}'}]),
+                 ('content', [{'type': 'text', 'text': 'SECRET not json'}]), ('content', []), ('usage', {})]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                self.structured = {**copy.deepcopy(good), field: value}
+                self.requests.clear()
+                with self.assertRaisesRegex(wif_smoke.SmokeFailure, '^claude_structured: ') as caught:
+                    self.run_smoke()
+                self.assertNotIn('SECRET', str(caught.exception))
+        self.structured = urllib.error.HTTPError('https://api.anthropic.com/v1/messages', 400, 'SECRET', {},
+                                                 io.BytesIO(b'SECRET tool_choice is not supported'))
+        self.requests.clear()
+        with self.assertRaisesRegex(wif_smoke.SmokeFailure, '^claude_structured: HTTP 400') as caught:
+            self.run_smoke()
+        self.assertNotIn('SECRET', str(caught.exception))
 
     def test_other_branch_or_non_actions_context_never_requests_credentials(self):
         default = 'refs/heads/' + self.config['default_branch']
         for key, value in [('GITHUB_ACTIONS', 'false'), ('GITHUB_EVENT_NAME', 'pull_request'),
                            ('GITHUB_REF', 'refs/heads/topic'), ('GITHUB_REF', default),
-                           ('GITHUB_WORKFLOW_REF', 'Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@' + default),
+                           ('GITHUB_WORKFLOW_REF', REPOSITORY + '/.github/workflows/factory.yml@' + default),
                            ('GITHUB_REPOSITORY', 'other/repo')]:
             with self.subTest(key=key):
                 env = {**self.env, key: value}
@@ -117,7 +156,7 @@ class WIFSmokeTests(unittest.TestCase):
             with self.assertRaisesRegex(wif_smoke.SmokeFailure, 'context'):
                 wif_smoke.smoke(self.config, self.env)
         self.ref = 'refs/heads/release'
-        self.env.update(GITHUB_REF=self.ref, GITHUB_WORKFLOW_REF='Zerosteps1/Aicepeak_V2.0.0/.github/workflows/factory.yml@' + self.ref)
+        self.env.update(GITHUB_REF=self.ref, GITHUB_WORKFLOW_REF=REPOSITORY + '/.github/workflows/factory.yml@' + self.ref)
         self.claims.update(ref=self.ref, workflow_ref=self.env['GITHUB_WORKFLOW_REF'])
         self.assertEqual(self.run_smoke()['status'], 'passed')
 
@@ -186,7 +225,7 @@ class WIFSmokeTests(unittest.TestCase):
         stderr = io.StringIO()
         # main() reads the repository's config.json: give it the fixed branch model the environment names.
         with patch.dict(os.environ, self.env, clear=True), \
-                patch.object(wif_smoke.Path, 'read_text', return_value=branch_fixture.text(ROOT)), \
+                patch.object(wif_smoke.Path, 'read_text', return_value=candidate_config_text()), \
                 patch('urllib.request.OpenerDirector.open', side_effect=failing_exchange), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(stderr):
             status = wif_smoke.main()

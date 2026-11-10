@@ -2,24 +2,19 @@
 import copy
 import difflib
 import json
-import os
-from pathlib import Path
-import sys
 import unittest
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
+from factory_testlib import ROOT, candidate_config, candidate_config_text
 import branches
-import branch_fixture
 from contracts import Blocked
 
-RETIRED = branches.RESERVED[0]  # the former default branch name; never a branch again
+RETIRED = branches.RESERVED[0]  # a reserved name: never a branch
 
 
 def model_config():
     """A complete branch model with every gate and review mode."""
     return {'default_branch': 'testing', 'config_branch': 'production',
-            'maintainers': [{'login': 'Zerosteps1', 'id': 1}],
+            'maintainers': [{'login': 'Zerosteps1', 'id': 1}], 'work_order_approvals': 1,
             'branches': {'schema_version': 1,
                          'validation': [{'name': 'testing', 'gate': 'full', 'kinds': ['factory', 'product']},
                                         {'name': 'quick', 'gate': 'tests', 'kinds': ['smoke']},
@@ -71,7 +66,7 @@ class Problems(unittest.TestCase):
         for name in ('a', '9', 'a-b', 'x' * 40):
             with self.subTest(name=name):
                 self.assertEqual(self.problems(lambda c: c['branches']['validation'][2].update(name=name)), [])
-        # The retired default branch, Git's special names and maintainer logins (case-insensitive) are reserved.
+        # The reserved names and maintainer logins (case-insensitive) are never branch names.
         for name in (*branches.RESERVED, 'zerosteps1'):
             with self.subTest(name=name):
                 self.assertIn(f'branch name {name} is reserved',
@@ -107,13 +102,21 @@ class Problems(unittest.TestCase):
                        lambda c: c.pop('default_branch')):
             self.assertIn('default_branch must be a validation branch', self.problems(change))
 
-    def test_work_order_approvals_is_a_count_of_maintainers(self):
-        self.assertEqual(branches.parse(self.config).work_order_approvals, 2)  # default: the original rule
-        self.assertEqual(branches.parse({**self.config, 'work_order_approvals': 1}).work_order_approvals, 1)
-        for value in (0, 2, -1, True, '1', 1.0, None):  # model_config has one maintainer
-            with self.subTest(value=value):
-                self.assertIn('work_order_approvals must be a whole number from 1 to the number of maintainers',
-                              branches.problems({**self.config, 'work_order_approvals': value}))
+    def test_work_order_approvals_is_a_required_count_of_maintainers(self):
+        self.assertEqual(branches.parse(self.config).work_order_approvals, 1)
+        self.assertEqual(branches.work_order_approvals(self.config), 1)
+        two = {**self.config, 'maintainers': [*self.config['maintainers'], {'login': 'other', 'id': 2}], 'work_order_approvals': 2}
+        self.assertEqual(branches.work_order_approvals(two), 2)
+        message = 'work_order_approvals must be a whole number from 1 to the number of maintainers'
+        missing = {k: v for k, v in self.config.items() if k != 'work_order_approvals'}
+        for config in [missing, {**missing, 'maintainers': []}] + [{**self.config, 'work_order_approvals': value}
+                                                                  for value in (0, 2, -1, True, '1', 1.0, None)]:
+            with self.subTest(value=config.get('work_order_approvals', 'missing')):  # model_config has one maintainer
+                self.assertIn(message, branches.problems(config))
+                with self.assertRaisesRegex(Blocked, message):
+                    branches.work_order_approvals(config)
+                with self.assertRaisesRegex(Blocked, message):
+                    branches.parse(config)
 
     def test_every_violation_is_named_in_one_pass(self):
         def change(config):
@@ -184,20 +187,20 @@ class Model(unittest.TestCase):
         self.assertEqual(branches.problems(json.loads((ROOT / 'factory/config.json').read_text())), [])
 
     def test_the_fixed_test_model_is_the_delivered_one(self):
-        config = branch_fixture.load(ROOT)
+        config = candidate_config()
         self.assertEqual(branches.problems(config), [])
         m = branches.parse(config)
         self.assertEqual((m.config_branch, m.default_branch, m.gate('testing'), m.review('production')),
                          ('production', 'testing', 'full', 'maintainer-manual'))
         self.assertEqual({m.route(k) for k in branches.KINDS}, {'testing'})
-        self.assertEqual(json.loads(branch_fixture.text(ROOT)), config)
+        self.assertEqual(json.loads(candidate_config_text()), config)
 
 
 class Edits(unittest.TestCase):
     def setUp(self):
         self.config = model_config()
         # The real layout with the fixed branch model: a config PR may change the candidate's branch list.
-        self.text = branch_fixture.text(ROOT)
+        self.text = candidate_config_text()
 
     def test_helpers_change_only_the_branch_list(self):
         added = branches.with_validation(self.config, 'next', 'full', ['smoke', 'product'])

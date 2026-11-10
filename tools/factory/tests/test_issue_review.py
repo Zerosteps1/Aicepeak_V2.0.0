@@ -1,23 +1,19 @@
-"""The issue reviewer and /accept (FACTORY-009): only GitHub and the model endpoint are faked at their transport."""
+"""The issue reviewer and /accept: only GitHub and the model endpoint are faked at their transport."""
 import argparse
+import contextlib
 import copy
 import io
 import json
 import os
-from pathlib import Path
-import sys
 import unittest
 from unittest.mock import patch
 import urllib.error
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import branch_fixture  # noqa: E402
-import issue_fixture  # noqa: E402
-import issue_review  # noqa: E402
-import issues  # noqa: E402
-from contracts import Blocked  # noqa: E402
+from factory_testlib import STRANGER, IssueHub, Response, candidate_config, user
+import issue_review
+import issues
+import structured
+from contracts import Blocked
 
 POLICY, TESTING = 'b' * 40, 'e' * 40
 ENV = {'GITHUB_REF': 'refs/heads/production', 'GITHUB_RUN_ID': '7', 'GITHUB_RUN_ATTEMPT': '1',
@@ -31,7 +27,7 @@ RESULT = {'summary': 'Ready apart from the verification section.',
                         'proposal': '```sh\npython3 -m unittest\n```'}]}
 
 
-class Hub(issue_fixture.IssueHub):
+class Hub(IssueHub):
     """Issues plus the routed validation branch's tip and file tree."""
     def request(self, method, path, data=None):
         if path == f'/repos/{self.repo}/git/ref/heads/testing':
@@ -39,14 +35,6 @@ class Hub(issue_fixture.IssueHub):
         if path == f'/repos/{self.repo}/git/trees/{TESTING}?recursive=1':
             return {'truncated': False, 'tree': [{'path': p, 'type': 'blob'} for p in FILES] + [{'path': 'docs', 'type': 'tree'}]}
         return super().request(method, path, data)
-
-
-class Response(io.BytesIO):
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
 
 
 class Model:
@@ -68,15 +56,18 @@ class Model:
         raise AssertionError(url)
 
 
-def message(result=RESULT, stop='tool_use', name='issue_review'):
+def message(result=RESULT, stop='end_turn', texts=None):
+    """A structured-output answer: a thinking block, then the JSON text block(s)."""
+    texts = [json.dumps(result)] if texts is None else texts
     return {'type': 'message', 'role': 'assistant', 'stop_reason': stop,
-            'content': [{'type': 'tool_use', 'id': 't', 'name': name, 'input': result}],
+            'content': [{'type': 'thinking', 'thinking': '', 'signature': 's'}]
+            + [{'type': 'text', 'text': text} for text in texts],
             'usage': {'input_tokens': 12000, 'output_tokens': 900}}
 
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.config = branch_fixture.load(ROOT)
+        self.config = candidate_config()
         self.hub = Hub(self.config)
         self.issue = self.hub.issue()
         environment = patch.dict(os.environ, ENV)
@@ -88,7 +79,7 @@ class Base(unittest.TestCase):
 
 
 class ModelCall(Base):
-    def test_one_forced_tool_call_with_the_federated_token(self):
+    def test_one_structured_output_call_without_tools_with_the_federated_token(self):
         model = Model(message())
         result, usage = issue_review.call_model(self.config, 'MATERIAL', opener=model)
         self.assertEqual((result, usage), (RESULT, {'input_tokens': 12000, 'output_tokens': 900}))
@@ -96,17 +87,34 @@ class ModelCall(Base):
         body = json.loads(call.data)
         self.assertEqual(call.get_header('Authorization'), 'Bearer sk-ant-oat-federated')
         self.assertEqual((body['model'], body['max_tokens']), ('claude-sonnet-5-5', 8000))
-        self.assertEqual(body['tool_choice'], {'type': 'tool', 'name': 'issue_review'})
-        self.assertEqual([tool['name'] for tool in body['tools']], ['issue_review'])
+        # Claude Sonnet 5.5 rejects forced tool use with HTTP 400: no tools, no tool_choice, no thinking override.
+        self.assertFalse({'tools', 'tool_choice', 'thinking'} & body.keys())
+        self.assertEqual(body['output_config']['effort'], 'low')
+        sent = body['output_config']['format']
+        self.assertEqual(sent['type'], 'json_schema')
+        self.assertEqual(structured.api_problems(sent['schema']), [])
+        self.assertEqual(sent['schema'], structured.api_schema(issue_review.model_schema(self.config)))
         self.assertEqual(body['messages'], [{'role': 'user', 'content': 'MATERIAL'}])
         self.assertIn('untrusted data', body['system'])
+        self.assertIn(f"at most {self.config['limits']['max_changed_files']} allowed_paths", body['system'])
+
+    def test_the_full_schema_is_enforced_after_the_api_subset(self):
+        too_long = {**RESULT, 'summary': 'x' * 601}
+        too_many = {**RESULT, 'findings': RESULT['findings'] * (issue_review.MAX_FINDINGS + 1)}
+        for result in (too_long, too_many, {**RESULT, 'allowed_paths': []}):
+            with self.assertRaisesRegex(Blocked, 'length'):
+                issue_review.call_model(self.config, 'MATERIAL', opener=Model(message(result=result)))
 
     def test_incomplete_invalid_or_failed_answers_block_without_provider_text(self):
         long_path = {**RESULT, 'allowed_paths': [{'path': 'has space/', 'reason': 'x'}]}
         extra = {**RESULT, 'note': 'extra'}
-        cases = [(message(stop='max_tokens'), 'did not complete the review'), (message(name='other'), 'no single review'),
+        cases = [(message(stop='max_tokens'), 'did not complete the review'), (message(stop='refusal'), 'refused'),
+                 (message(texts=[]), 'no single review'), (message(texts=['{}', '{}']), 'no single review'),
+                 (message(texts=['SECRET not json']), 'review is not JSON'),
                  (message(result=long_path), 'pattern'), (message(result=extra), 'extra keys'),
                  ({**message(), 'usage': {}}, 'no usage'),
+                 (urllib.error.HTTPError(issue_review.MESSAGES, 400, 'SECRET provider text', {}, io.BytesIO(b'SECRET')),
+                  r'model request failed \(HTTP 400\)'),
                  (urllib.error.HTTPError(issue_review.MESSAGES, 529, 'SECRET provider text', {}, io.BytesIO(b'SECRET')),
                   r'model request failed \(HTTP 529\)')]
         for answer, reason in cases:
@@ -164,18 +172,28 @@ class Review(Base):
                 self.assertEqual(materials, [])
 
     def test_only_an_unedited_maintainer_review_command_counts(self):
-        for comment in (self.hub.comment(57, '/review', edited=True), self.hub.comment(57, '/review', issue_fixture.STRANGER),
+        for comment in (self.hub.comment(57, '/review', edited=True), self.hub.comment(57, '/review', STRANGER),
                         self.hub.comment(57, '/accept')):
             with self.subTest(body=comment['body']):
                 review, materials = self.run_review(comment)
                 self.assertEqual((review['status'], materials), ('refused', []))
 
-    def test_a_rerun_or_a_disabled_configuration_never_reviews(self):
+    def test_a_rerun_or_an_invalid_configuration_never_reviews(self):
         with patch.dict(os.environ, {'GITHUB_RUN_ATTEMPT': '2'}), self.assertRaisesRegex(Blocked, 're-run'):
             issue_review.review_stage(self.args(self.hub.comment(57, '/review')), self.config)
-        disabled = {k: v for k, v in self.config.items() if k != 'issue_review_model'}
-        with self.assertRaisesRegex(Blocked, 'not enabled'):
-            issue_review.review_stage(self.args(self.hub.comment(57, '/review')), disabled)
+        invalid = {**self.config, 'issue_review_model': 'gpt-6', 'limits': {**self.config['limits'], 'max_issue_reviews': 0}}
+        with self.assertRaisesRegex(Blocked, '^invalid issue reviewer configuration in factory/config.json: issue_review_model must '
+                                    'name a Claude model; limits.max_issue_reviews must be a whole number from 1 to 20$'):
+            issue_review.review_stage(self.args(self.hub.comment(57, '/review')), invalid)
+        missing = {k: v for k, v in self.config.items() if k != 'issue_review_model'}
+        with self.assertRaisesRegex(Blocked, 'issue_review_model must name a Claude model'):
+            issue_review.review_stage(self.args(self.hub.comment(57, '/review')), missing)
+        stderr = io.StringIO()
+        with patch.object(issue_review, 'load_config', return_value=missing), patch.object(issue_review, 'GitHub', return_value=self.hub), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(issue_review.main(['review', '--issue', '57', '--comment-id', str(self.hub.comment(57, '/review')['id'])]), 1)
+        self.assertIn('BLOCKED: invalid issue reviewer configuration in factory/config.json: issue_review_model must name a '
+                      'Claude model', stderr.getvalue())
         with patch.dict(os.environ, {'GITHUB_REF': 'refs/heads/testing'}), self.assertRaisesRegex(Blocked, 'config branch'):
             issue_review.review_stage(self.args(self.hub.comment(57, '/review')), self.config)
 
@@ -230,7 +248,7 @@ class Publish(Base):
         self.assertEqual(issues.records(self.hub.comments, self.config, 57, issues.REVIEW), [])
 
     def test_nothing_is_posted_without_an_authentic_command_or_for_invalid_output(self):
-        for comment in (self.hub.comment(57, '/review', issue_fixture.STRANGER), self.hub.comment(57, '/review', edited=True)):
+        for comment in (self.hub.comment(57, '/review', STRANGER), self.hub.comment(57, '/review', edited=True)):
             with self.subTest(user=comment['user']['login']), self.assertRaisesRegex(Blocked, 'no unedited maintainer command'):
                 self.publish(comment, self.reviewed())
         with self.assertRaisesRegex(Blocked, 'extra keys'):
@@ -275,7 +293,7 @@ class Accept(Base):
         self.accept(self.hub.comment(57, '/accept'), config)  # the same account twice still counts once
         self.assertEqual(self.issue['body'], before)
         self.assertIn('1 of 2 maintainer accounts', self.hub.posts[-1])
-        second = issue_fixture.user(config['maintainers'][1])
+        second = user(config['maintainers'][1])
         self.accept(self.hub.comment(57, '/accept', second), config)
         self.assertEqual(issues.approved(self.hub, config, 57)['spec']['status'], 'approved')
 
@@ -302,7 +320,7 @@ class Accept(Base):
         self.hub.review()
         with self.assertRaisesRegex(Blocked, 'came before the newest factory proposal'):
             self.accept(early)
-        for comment in (self.hub.comment(57, '/accept', issue_fixture.STRANGER), self.hub.comment(57, '/accept', edited=True)):
+        for comment in (self.hub.comment(57, '/accept', STRANGER), self.hub.comment(57, '/accept', edited=True)):
             with self.subTest(user=comment['user']['login']), self.assertRaisesRegex(Blocked, 'no unedited maintainer command'):
                 self.accept(comment)
         self.assertEqual(issues.draft_spec(self.issue['body'])['status'], 'draft')

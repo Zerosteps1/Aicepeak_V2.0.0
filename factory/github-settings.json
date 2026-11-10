@@ -6,10 +6,6 @@
     "production": "Factory production: {branch}",
     "lifecycle": "Factory branch lifecycle"
   },
-  "retired_ruleset_names": [
-    "Factory mandatory review and checks",
-    "Factory human PR merges only"
-  ],
   "production_merge_methods": [
     "merge"
   ],
@@ -32,7 +28,6 @@
     "FACTORY_WRITER_APP_PRIVATE_KEY",
     "CONTEXT7_API_KEY"
   ],
-  "optional_environment_secrets": [],
   "promotion_environment": "factory-promotion",
   "promotion_environment_secrets": [
     "FACTORY_PUBLISHER_APP_PRIVATE_KEY"

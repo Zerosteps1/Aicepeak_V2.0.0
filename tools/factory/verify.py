@@ -12,7 +12,8 @@ import tempfile
 import tomllib
 
 import branches  # Trusted: imported from this file's directory, never from the candidate.
-import issues  # Trusted as well (issue work-order configuration).
+import contracts
+import issues
 
 
 def run(command, **kwargs):
@@ -41,12 +42,26 @@ def structural(root, trusted):
     if found:raise ValueError('invalid branch configuration: '+'; '.join(found))
     found=issues.config_problems(config)
     if found:raise ValueError('invalid issue work-order configuration: '+'; '.join(found))
-    if config['review_model']!='gpt-6-astra' or config['review_effort']!='high':raise ValueError('review model policy drift')
+    reviewer=json.loads((root/'factory/review.schema.json').read_text())['properties']
+    if {key:reviewer[key].get('const') for key in contracts.REVIEWER}!=contracts.REVIEWER:raise ValueError('review schema names another reviewer than contracts.REVIEWER')
+    anchors(root, config)
     if config['limits']['max_rounds']>3 or config['limits']['max_rounds']<1:raise ValueError('invalid correction limit')
     if (root/'CLAUDE.md').read_text().splitlines().count('@AGENTS.md')!=1:raise ValueError('Claude must import AGENTS.md')
     run([sys.executable,str(trusted/'tools/factory/clients.py'),'check','--root',str(root)])
     fixture=json.loads((root/'factory-smoke.json').read_text())
     if fixture['quantity']*fixture['unit_price']!=fixture['total']:raise ValueError('controlled smoke fixture has incorrect total')
+
+
+def anchors(root, config):
+    """Places that cannot import contracts.REPOSITORY carry the repository as a literal; each must equal it."""
+    found={'factory/config.json':[config.get('repository')],
+           'factory/github-settings.json':[json.loads((root/'factory/github-settings.json').read_text()).get('repository')],
+           'tools/factory/cli/install-factory-cli.sh':re.findall(r'^repository="([^"]+)"',(root/'tools/factory/cli/install-factory-cli.sh').read_text(),re.M)}
+    for workflow in sorted((root/'.github/workflows').glob('*.yml')):
+        found[str(workflow.relative_to(root))]=re.findall(r"github\.repository == '([^']+)'",workflow.read_text())
+    for name,values in found.items():
+        if any(value!=contracts.REPOSITORY for value in values) or (not values and not name.startswith('.github/')):
+            raise ValueError(f'{name} names another repository than contracts.REPOSITORY')
 
 
 def workflow_checks(root, actionlint):

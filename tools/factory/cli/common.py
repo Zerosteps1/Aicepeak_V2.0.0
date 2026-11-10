@@ -191,15 +191,6 @@ def checked_target(root, relative):
     return target
 
 
-def write_new(root, relative, data):
-    target = checked_target(root, relative)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(descriptor, 'wb') as handle:
-        handle.write(data)
-    return target
-
-
 def replace_file(root, relative, data):
     target = checked_target(root, relative)
     require(not os.path.lexists(target) or target.is_file(), f'not a regular file: {target}')
@@ -208,19 +199,6 @@ def replace_file(root, relative, data):
         handle.write(data)
     os.chmod(temp, 0o644)
     os.replace(temp, target)
-
-
-def read_regular(root, relative, limit=2_000_000):
-    target = checked_target(root, relative)
-    require(target.is_file(), f'not a regular file: {target}')
-    require(target.stat().st_size <= limit, f'file too large: {target}')
-    return target.read_bytes()
-
-
-def remove_file(root, relative):
-    target = checked_target(root, relative)
-    require(target.is_file(), f'not a regular file: {target}')
-    target.unlink()
 
 
 def ask(question):
@@ -236,6 +214,25 @@ def countdown(message, seconds=5):
         say(f'  continuing in {left} s (Ctrl-C to abort)', end='\r')
         time.sleep(1)
     say(' ' * 40, end='\r')
+
+
+GENERATED = ('docs/factory-branches.md',)  # written by `factory branches`; a changed copy never blocks a command
+
+
+def changes(root, *, untracked=True):
+    """`git status --porcelain` lines of a checkout, without the generated docs/factory-branches.md. Git itself still
+    refuses any switch or merge that would overwrite that file."""
+    raw = git(root, 'status', '--porcelain', *([] if untracked else ['--untracked-files=no'])).stdout.decode('utf-8', 'replace')
+    return [line for line in raw.splitlines() if line[3:] not in GENERATED]  # `XY path`: two status columns, a space
+
+
+def keep_awake(pid=None):
+    """macOS: keep the Mac from idle-sleeping while process `pid` (default: this one) lives; `caffeinate` ends with it.
+    Closing the lid or a system sleep still pauses everything."""
+    caffeinate = tool('caffeinate', required=False)
+    if caffeinate:
+        subprocess.Popen([caffeinate, '-i', '-w', str(pid or os.getpid())], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def feed(stream, data):
@@ -305,7 +302,6 @@ def wait_for_docker(image, timeout=DOCKER_WAIT, interval=2, clock=time.monotonic
 
 
 def docker_host():
-    """The Docker endpoint for factory containers: FACTORY_DOCKER_HOST, else the active Docker context."""
     if os.environ.get('FACTORY_DOCKER_HOST'):
         return os.environ['FACTORY_DOCKER_HOST']
     docker = tool('docker', required=False)

@@ -35,11 +35,24 @@ SKILLS = ("factory-start", "factory-change", "factory-review", "factory-fix-revi
 CONTROL_PATHS = (".agents", ".claude", ".codex", ".mcp.json", "AGENTS.md", "CLAUDE.md", "factory", "tools/factory")
 IGNORED_DIRS = {".git", ".agents", ".claude", ".codex", ".ssh", ".aws", ".azure", ".kube", "node_modules", ".venv", "__pycache__"}
 IGNORED_FILES = {".git", "AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", ".mcp.json", ".npmrc", ".netrc", ".pypirc"}
-IMAGE = "aicepeak-factory-clients:codex-0.164.0-claude-2.1.311"
-VERSIONS = {"codex": "codex-cli 0.164.0", "claude": "2.1.311 (Claude Code)"}
 AUTHOR_TOOLS = "Bash,Read,Write,Edit,Glob,Grep,Agent,Skill"
 # --allowedTools only pre-approves; --tools removes every other built-in tool (Agent, Bash, Edit, Write, ...).
 REVIEW_TOOLS = "Read,Glob,Grep,Skill"
+# The schema of an unattended run's final report (trusted copies under factory/), by run kind: a read-only run
+# returns review findings, every other run an author report. The launcher renders the validated JSON to Markdown.
+REPORT_SCHEMAS = {"author": "factory/author-report.schema.json", "review": "factory/review-findings.schema.json"}
+CODEX_REPORT_SCHEMA = "/tmp/factory/report.schema.json"
+STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
+REPORT_INSTRUCTIONS = {
+    "author": "Final response: return the author report through the structured output: a summary, every changed file, "
+              "each verification command with its actual outcome and evidence, the status of each acceptance criterion, "
+              "an evidence-based response to each review item (addressed, disputed or blocked), proposals for read-only "
+              "control paths and the open issues. If you dispute feedback or make no patch, say why in the summary. Keep it "
+              "under 6000 bytes. Do not include private reasoning or raw transcripts.",
+    "review": "Final response: return the findings through the structured output, each with file, line (0 when it has "
+              "no single line), the problem, the evidence and a minimal fix. No findings means no problems; then say why "
+              "in the summary. Keep it under 6000 bytes. Do not include private reasoning or raw transcripts.",
+}
 DOC_TOOLS = "mcp__context7__resolve-library-id,mcp__context7__query-docs,mcp__openai_docs__search_openai_docs,mcp__openai_docs__list_openai_docs,mcp__openai_docs__fetch_openai_doc"
 LABEL = re.compile(r"[a-z0-9][a-z0-9.-]{0,62}=[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 STREAM_LINE_LIMIT = 4 * 1024 * 1024
@@ -52,8 +65,7 @@ class ClientError(ValueError):
 
 
 class CommandFailed(ClientError):
-    """A captured command exited non-zero. Its stdout stays with the error for the caller's own
-    diagnosis (the worker's final events); it is never shown raw."""
+    """Carries stdout for the caller's own diagnosis (the worker's final events); it is never shown raw."""
     def __init__(self, tool: str, returncode: int, detail: str, stdout: bytes = b""):
         super().__init__(f"{tool} failed ({returncode}): {detail}")
         self.tool, self.returncode, self.detail, self.stdout = tool, returncode, detail, stdout
@@ -75,11 +87,31 @@ def regular_read(path: Path, limit=2 * 1024 * 1024) -> bytes:
     return path.read_bytes()
 
 
+def pinned_clients() -> tuple[str, dict[str, str]]:
+    """(image tag, `--version` output per runner) from the npm manifest that installs both CLIs, so a version bump in
+    that one file changes the image, the worker check and every reviewer check. The worker container mounts only this
+    file and proxy.py, so it reads the manifest's copy in the image."""
+    for path in (Path(__file__).resolve().parents[2] / "factory/package.json", Path("/opt/factory-clients/package.json")):
+        if path.is_file():
+            pins = json.loads(regular_read(path, 100000))["dependencies"]
+            codex, claude = pins["@openai/codex"], pins["@anthropic-ai/claude-code"]
+            return (f"aicepeak-factory-clients:codex-{codex}-claude-{claude}",
+                    {"codex": f"codex-cli {codex}", "claude": f"{claude} (Claude Code)"})
+    raise ClientError("factory/package.json not found")
+
+
+IMAGE, VERSIONS = pinned_clients()
+
+
 def configuration(root: Path) -> dict:
     return json.loads(regular_read(root / "factory/config.json"))
 
 
 def render_adapters(root: Path) -> dict[str, bytes]:
+    try:  # host only: the worker container mounts no contracts.py, and it never renders adapters
+        from .contracts import REVIEWER
+    except ImportError:
+        from contracts import REVIEWER
     config = configuration(root)
     result = {"CLAUDE.md": b"@AGENTS.md\n"}
     for name in SKILLS:
@@ -96,9 +128,9 @@ def render_adapters(root: Path) -> dict[str, bytes]:
             raise ClientError("role references an unknown skill")
         codex_name = "factory_author" if name == "author" else "factory_senior_reviewer"
         claude_name = "factory-author" if name == "author" else "factory-local-reviewer"
-        model = config["author_models"]["codex"] if name == "author" else config["review_model"]
+        model, effort = (config["author_models"]["codex"], "high") if name == "author" else (REVIEWER["model"], REVIEWER["effort"])
         # Codex roles cannot set sandbox_mode; the local reviewer inherits the session sandbox.
-        codex = f'model = {json.dumps(model)}\nmodel_reasoning_effort = "high"\ndeveloper_instructions = {json.dumps(data["instructions"])}\n'
+        codex = f'model = {json.dumps(model)}\nmodel_reasoning_effort = {json.dumps(effort)}\ndeveloper_instructions = {json.dumps(data["instructions"])}\n'
         result[f".codex/agents/{codex_name}.toml"] = codex.encode()
         tools = "Read, Glob, Grep, Bash, Edit, Write, Skill" if name == "author" else "Read, Glob, Grep, Skill"
         tools += ", mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__openai_docs__search_openai_docs, mcp__openai_docs__list_openai_docs, mcp__openai_docs__fetch_openai_doc"
@@ -359,7 +391,7 @@ def printable(text: str, limit: int) -> str:
 
 
 def tool_summaries(event) -> list[str]:
-    """One line per tool call: tool name and its target. No model text or reasoning."""
+    """Only the tool name and its target: model text and reasoning never reach the event log."""
     message = event.get("message") if isinstance(event, dict) and event.get("type") == "assistant" else None
     content = message.get("content") if isinstance(message, dict) else None
     lines = []
@@ -375,7 +407,6 @@ def tool_summaries(event) -> list[str]:
 
 
 class EventSink:
-    """Keeps the final result line and appends bounded tool summaries to a 0600 file."""
     def __init__(self, path: Path, secrets: tuple[str, ...]):
         self.descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         self.secrets, self.result, self.written = secrets, None, 0
@@ -486,15 +517,24 @@ def codex_provider_arguments() -> list[str]:
     return [argument for override in overrides for argument in ("-c", override)]
 
 
-def worker_arguments(runner: str, model: str, interactive=False, max_turns: int | None = None, max_budget_usd: float | None = None, *, read_only=False, stream=False) -> list[str]:
+def worker_arguments(runner: str, model: str, interactive=False, max_turns: int | None = None, max_budget_usd: float | None = None, *, read_only=False, stream=False, report_schema: str | None = None) -> list[str]:
+    """The native CLI command line. An unattended run with report_schema returns its final report as JSON matching
+    that schema: Claude through --json-schema (the result's structured_output), Codex through --output-schema
+    (the final agent message; _worker writes the schema to CODEX_REPORT_SCHEMA first)."""
+    structured = report_schema is not None and not interactive
     if runner == "codex":
         args = ["codex"] + ([] if interactive else ["exec", "--ephemeral", "--strict-config", "--json"])
         args += ["--model", model, "--sandbox", "read-only" if read_only else "danger-full-access", "-c", 'approval_policy="never"']
+        if structured:
+            args += ["--output-schema", CODEX_REPORT_SCHEMA]
         return args + codex_provider_arguments() + ([] if interactive else ["-"])
     args = ["claude", "--model", model, "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", "/work/.mcp.json", "--no-chrome", "--permission-mode", "dontAsk"]
+    # --json-schema adds Claude Code's read-only StructuredOutput tool; name it so neither the tool restriction nor
+    # dontAsk can withhold it.
+    output_tool = "," + STRUCTURED_OUTPUT_TOOL if structured else ""
     if read_only:
-        args += ["--tools", REVIEW_TOOLS]
-    args += ["--allowedTools", (REVIEW_TOOLS if read_only else AUTHOR_TOOLS) + "," + DOC_TOOLS]
+        args += ["--tools", REVIEW_TOOLS + output_tool]
+    args += ["--allowedTools", (REVIEW_TOOLS if read_only else AUTHOR_TOOLS) + output_tool + "," + DOC_TOOLS]
     if not interactive:
         args += ["-p", "--no-session-persistence", "--permission-prompts", "none", "--output-format", "stream-json" if stream else "json"]
         if stream:
@@ -504,11 +544,14 @@ def worker_arguments(runner: str, model: str, interactive=False, max_turns: int 
             args += ["--max-turns", str(max_turns)]
         if max_budget_usd:
             args += ["--max-budget-usd", str(max_budget_usd)]
+        if structured:
+            args += ["--json-schema", report_schema]
     return args
 
 
 STOP_HINTS = {"error_max_turns": "turn limit limits.author_max_turns reached",
-              "error_max_budget_usd": "USD budget limits.max_run_cost_usd reached"}
+              "error_max_budget_usd": "USD budget limits.max_run_cost_usd reached",
+              "error_max_structured_output_retries": "no schema-valid final report"}
 
 
 def native_failure(runner: str, output: bytes | None, secrets: tuple[str, ...] = ()) -> str | None:
@@ -562,30 +605,88 @@ def native_failure(runner: str, output: bytes | None, secrets: tuple[str, ...] =
     return f"{name} stopped" + (f" ({', '.join(parts)})" if parts else "") + (f": {text}" if text else "")
 
 
-def final_report(runner: str, output: bytes) -> tuple[str, bool]:
-    """Select only final user-facing text, never reasoning or a raw transcript."""
+def bullet(text) -> str:
+    """One Markdown list item: the text on one line, so a model's line breaks cannot start new list items."""
+    return " ".join(str(text).split())
+
+
+def render_author_report(report: dict) -> str:
+    """The validated author report as the Markdown its consumers read; empty sections are left out."""
+    sections = [bullet(report["summary"])]
+    for title, items, line in (
+            ("Changed files", report["changes"], lambda i: f"`{bullet(i['path'])}`: {bullet(i['what'])}"),
+            ("Verification", report["verification"],
+             lambda i: f"`{bullet(i['command'])}`: {i['outcome']} — {bullet(i['evidence'])}"),
+            ("Acceptance criteria", report["acceptance"],
+             lambda i: f"{bullet(i['criterion'])}: {i['status']} — {bullet(i['evidence'])}"),
+            ("Review items", report["review_items"],
+             lambda i: f"{bullet(i['item'])}: {i['response']} — {bullet(i['explanation'])}"),
+            ("Control-path proposals", report["control_proposals"],
+             lambda i: f"`{bullet(i['path'])}`: {bullet(i['change'])}"),
+            ("Open issues", report["open_issues"], bullet)):
+        if items:
+            sections.append(title + ":\n" + "\n".join("- " + line(item) for item in items))
+    return "\n\n".join(sections)
+
+
+def render_review_findings(review: dict) -> str:
+    """The validated findings as a numbered Markdown list, or "No problems found" with the reason."""
+    if not review["findings"]:
+        return "No problems found: " + bullet(review["summary"])
+    lines = [bullet(review["summary"]), ""]
+    for number, item in enumerate(review["findings"], 1):
+        where = bullet(item["file"]) + (f":{item['line']}" if item["line"] > 0 else "")
+        lines += [f"{number}. `{where}`: {bullet(item['problem'])}", f"   Evidence: {bullet(item['evidence'])}",
+                  f"   Fix: {bullet(item['fix'])}"]
+    return "\n".join(lines)
+
+
+RENDERERS = {"author": render_author_report, "review": render_review_findings}
+
+
+def structured_report(runner: str, output: bytes) -> object:
+    """The JSON final report of an unattended run: Claude's structured_output, or Codex's final agent message."""
     if runner == "claude":
         data = json.loads(output)
-        if not isinstance(data, dict) or data.get("is_error"):
+        if not isinstance(data, dict) or data.get("is_error") or data.get("subtype", "success") != "success":
             raise ClientError("Claude did not return a successful result")
-        text = data.get("result")
-    else:
-        text = None
-        completed = False
-        for line in output.decode("utf-8").splitlines():
-            if not line.strip():
-                continue
-            event = json.loads(line)
-            if event.get("type") in ("turn.failed", "error"):
-                raise ClientError("Codex reported a failed turn")
-            if event.get("type") == "turn.completed":
-                completed = True
-            item = event.get("item", {})
-            if event.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "agent_message":
-                text = item.get("text")
-        if not completed:
-            raise ClientError("Codex returned no completed turn")
-    if not isinstance(text, str) or not text.strip():
+        return data.get("structured_output")
+    text, completed = None, False
+    for line in output.decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if event.get("type") in ("turn.failed", "error"):
+            raise ClientError("Codex reported a failed turn")
+        if event.get("type") == "turn.completed":
+            completed = True
+        item = event.get("item", {})
+        if event.get("type") == "item.completed" and isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+    if not completed:
+        raise ClientError("Codex returned no completed turn")
+    try:
+        return json.loads(text) if isinstance(text, str) else None
+    except ValueError:
+        return None
+
+
+def final_report(runner: str, output: bytes, kind: str, schema: dict) -> tuple[str, bool]:
+    """The run's schema-bound final report rendered to Markdown; never reasoning or a raw transcript."""
+    report = structured_report(runner, output)
+    if not isinstance(report, dict):
+        raise ClientError("author returned no structured report")
+    # Host only: the worker container mounts no contracts.py and never calls this.
+    try:
+        from .contracts import Blocked, validate
+    except ImportError:
+        from contracts import Blocked, validate
+    try:
+        validate(report, schema, "report")
+    except Blocked:
+        raise ClientError("author report does not match its schema") from None
+    text = RENDERERS[kind](report)
+    if not text.strip():
         raise ClientError("author returned no final report")
     if any(ord(c) < 32 and c not in "\n\r\t" for c in text):
         raise ClientError("author report contains control characters")
@@ -832,6 +933,9 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
     config = configuration(trusted)
     policy = author_policy(config, runner)
     check(trusted)
+    # An unattended run returns a schema-bound final report; the trusted root supplies the schema.
+    kind = None if interactive else ("review" if read_only else "author")
+    schema = json.loads(regular_read(trusted / REPORT_SCHEMAS[kind], 100000)) if kind else None
     # In the pipeline the Claude author uses Workload Identity Federation: only the job's OIDC
     # request credential reaches the broker, which mints short-lived Anthropic tokens itself.
     federated = runner == "claude" and bool(os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"))
@@ -917,8 +1021,10 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
                 args += ["--read-only"]
             if stream:
                 args += ["--events"]
+            if schema is not None:
+                args += ["--report-schema", json.dumps(schema, separators=(",", ":"))]
             if prompt is not None:
-                prompt += b"\n\nFinal response: give a concise author report under 6000 bytes. Explain what changed, actual verification, and an evidence-based response to each review item. If you dispute feedback or make no patch, explain why. Do not include private reasoning or raw transcripts."
+                prompt += b"\n\n" + REPORT_INSTRUCTIONS[kind].encode()
             credentials = (token, *(proxy_env[name] for name in (*provider_keys, "CONTEXT7_API_KEY")))
             sink = EventSink(events, credentials) if stream else None
             try:
@@ -938,7 +1044,7 @@ def run(candidate: Path, trusted: Path, runner: str, prompt: bytes | None, outpu
                 if sink.result is None:
                     raise ClientError("author returned no final report")
                 native_output = sink.result
-            report, report_truncated = ("Interactive session completed; inspect the patch and verify it before use.\n", False) if interactive else final_report(runner, native_output)
+            report, report_truncated = ("Interactive session completed; inspect the patch and verify it before use.\n", False) if interactive else final_report(runner, native_output, kind, schema)
             cost = None if interactive else reported_cost(runner, native_output)
             for secret in credentials:
                 report = report.replace(secret, "[credential redacted]")
@@ -976,6 +1082,7 @@ def _cancelled(_signum, _frame):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("image", help="print the author image tag that factory/package.json pins")
     for name in ("check", "sync", "smoke", "launch", "run"):
         item = sub.add_parser(name)
         item.add_argument("--root", type=Path, required=True)
@@ -996,11 +1103,15 @@ def main():
     item.add_argument("--max-budget-usd", type=float)
     item.add_argument("--read-only", action="store_true")
     item.add_argument("--events", action="store_true")
+    item.add_argument("--report-schema", help="JSON Schema of the final report (unattended runs)")
     item = sub.add_parser("_extract")
     item.add_argument("--max-bytes", type=int, required=True)
     item = sub.add_parser("_smoke")
     item.add_argument("--host-canary", type=Path, required=True)
     args = parser.parse_args()
+    if args.command == "image":
+        print(IMAGE)
+        return 0
     try:
         if args.command == "_smoke":
             print(json.dumps(smoke_inside(args.host_canary)))
@@ -1022,8 +1133,12 @@ def main():
                 raise ClientError("worker CLI version mismatch")
             egress_self_test()
             probe_documentation(os.environ["FACTORY_PROXY_TOKEN"])
+            if args.report_schema is not None and args.runner == "codex" and not args.interactive:
+                schema_file = Path(CODEX_REPORT_SCHEMA)
+                schema_file.parent.mkdir(parents=True, exist_ok=True)
+                schema_file.write_text(args.report_schema, encoding="utf-8")
             native = worker_arguments(args.runner, args.model, args.interactive, args.max_turns, args.max_budget_usd,
-                                      read_only=args.read_only, stream=args.events)
+                                      read_only=args.read_only, stream=args.events, report_schema=args.report_schema)
             os.execvpe(native[0], native, os.environ)
         # A cancelling controller sends SIGTERM: unwind so `finally` removes containers, network and volume.
         signal.signal(signal.SIGTERM, _cancelled)

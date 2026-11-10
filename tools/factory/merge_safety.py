@@ -15,7 +15,8 @@ import branches
 import bypass
 import engine
 import session  # attributes are read at call time, so either module may be imported first
-from contracts import Blocked, handoff, require
+from contracts import REPOSITORY, Blocked, handoff, maintainer, require
+from github_api import contains
 
 
 def object_store(root):
@@ -61,7 +62,7 @@ def collisions(gh, candidate, task=None, base=None):
     sha = session.identity(candidate, config)
     branch = session.feature_branch(candidate, config)
     if task is not None:
-        session.task_order(config, policy, task, gh)
+        session.work_order(config, policy, task, gh)
     tip = session.tip(gh, base)
     limitations, others = [], []
     with tempfile.TemporaryDirectory(prefix='factory-collisions-') as directory:
@@ -172,7 +173,6 @@ def gh_merge(pr, head):
 
 
 def bypass_record(check):
-    """The receipt of a `/bypass` check, or None for a normally published check."""
     try:
         data = json.loads((check.get('output') or {}).get('text') or '')
     except (TypeError, ValueError):
@@ -183,11 +183,13 @@ def bypass_record(check):
 def authentic_bypass(gh, check, record, config, snapshot):
     """None when a bypass names a configured maintainer (id and login), its comment and a bounded reason, and that
     comment is still the maintainer's unedited `/bypass` on this PR; otherwise why the bypass does not count."""
-    maintainers = {(m['id'], m['login']) for m in config['maintainers']}
-    reason = record.get('reason') if isinstance(record, dict) else None
-    if not (isinstance(record, dict) and (record.get('id'), record.get('login')) in maintainers
+    record = record if isinstance(record, dict) else {}
+    try:
+        authentic = bypass.reason(record.get('reason')) == record.get('reason')
+    except Blocked:
+        authentic = False
+    if not (authentic and maintainer({'type': 'User', 'id': record.get('id'), 'login': record.get('login')}, config)
             and type(record.get('comment_id')) is int and record['comment_id'] > 0
-            and isinstance(reason, str) and 0 < len(reason.strip()) and len(reason) <= 500
             and (check.get('output') or {}).get('title') == f"Bypassed by {record['login']}"):
         return 'bypass without an authentic maintainer receipt'
     # The receipt only names the comment: anyone with write access may edit it later, and a deletion withdraws it.
@@ -211,7 +213,7 @@ def check_problem(gh, runs, name, snapshot, config):
         return f"{name}: {latest.get('conclusion') or latest.get('status')}"
     bound = (latest.get('external_id') or '').split(':')
     if len(bound) != 7 or not all(re.fullmatch('[0-9]+', field) for field in bound[5:]):
-        return name + ': legacy or malformed binding without a target branch; wait for a fresh run'
+        return name + ': malformed binding; wait for a fresh run'
     expected = [snapshot['repository'], str(snapshot['pr']), snapshot['head_sha'], snapshot['policy_sha'], snapshot['base_ref']]
     if latest.get('head_sha') == snapshot['head_sha'] and bound[:5] != expected and bound[:3] + bound[4:5] == expected[:3] + expected[4:]:
         # The dispatcher re-runs every open PR when the config tip moves.
@@ -234,18 +236,13 @@ def check_problem(gh, runs, name, snapshot, config):
     return None
 
 
-def behind(base):
-    return (f'PR head does not contain the current {base} tip, so a merge would combine code that was never tested '
-            f'together. Use "Update branch" (or merge {base} into the branch); the new head gets a fresh run.')
-
-
 def verify(gh, pr, config, policy, base):
-    """The PR's state and every reason not to merge it onto the current tip of `base` now."""
+    """The PR's state and every reason not to merge it onto the current tip of `base`."""
     snapshot, _, _ = session.pr_state(gh, pr, config, policy, base)
     head = snapshot['head_sha']
     problems = ['PR is a draft'] if snapshot['draft'] else []
-    if not engine.contains_base(gh, session.REPOSITORY, snapshot['base_sha'], head):
-        problems.append(behind(base))
+    if not contains(gh, REPOSITORY, snapshot['base_sha'], head):
+        problems.append(engine.behind(base))
     runs = gh.pages(f'/repos/{session.REPOSITORY}/commits/{head}/check-runs?filter=all', 'check_runs')
     problems += [p for p in (check_problem(gh, runs, name, snapshot, config)
                              for name in branches.parse(config).required_checks(base)) if p]

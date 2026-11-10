@@ -8,7 +8,6 @@ branch tip and acts on the configured candidate checkout, whatever the current d
 from __future__ import annotations
 
 import argparse
-import fcntl
 import os
 from pathlib import Path
 import subprocess
@@ -21,12 +20,11 @@ sys.path[:0] = [str(HERE), str(HERE.parent)]
 import branches  # noqa: E402  standard library only
 import helptext  # noqa: E402  standard library only
 
-VERSION = '0.4.0'
+VERSION = '0.5.0'
 LOCAL = ('status', 'continue', 'stop', 'cancel')  # no network, no policy
 REEXEC = 'FACTORY_CLI_REEXEC'
-SYNC_REPLACED = ('`factory sync` was replaced by `factory update [<target-branch>]`, which brings the config branch '
-                 '(work orders and factory/config.json) into a branch of the candidate: docs/factory-cli.md#factory-update')
 REEXECS = int(os.environ.pop(REEXEC, '0') or 0)  # never inherited by editors or other children
+ISSUE_HELP = 'the work order: its GitHub issue number, 57 or "#57"'
 
 
 def build_parser():
@@ -41,34 +39,29 @@ def build_parser():
         return commands.add_parser(name, help=helptext.COMMANDS[key]['summary'], description=helptext.description(key),
                                    epilog=helptext.epilog(key), formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    item = command('issue')
-    item.add_argument('--title', help='issue title (you can also write it in the editor)')
-    item.add_argument('--kind', choices=('factory', 'product', 'smoke'), default='factory', help='work order kind (default: factory)')
-    item.add_argument('--noedit', action='store_true', help='create the issue from the template without the editor (needs --title)')
+    def work_order(item):
+        item.add_argument('noun', choices=('workorder',), metavar='workorder')
+        item.add_argument('workorder', metavar='<issue>', help=ISSUE_HELP)
+
     item = command('submit')
-    item.add_argument('target', nargs='?', choices=('workorders',), help='`workorders`: submit work orders instead')
-    item.description = helptext.description('submit') + '\n\n`factory submit workorders`: ' + helptext.COMMANDS['submit workorders']['what']
-    item.epilog = helptext.epilog('submit') + '\n\n' + helptext.epilog('submit workorders')
-    item.add_argument('--title', help='commit title (default: "<ID>: <work order title>"); with --finished also the PR title')
+    item.add_argument('--title', help='commit title (default: "<issue title> #57"); with --finished also the PR title')
     item.add_argument('--desc', help='commit description; with --finished also the PR description')
     item.add_argument('--finished', action='store_true', help='open the pull request for the work order (or watch the open one)')
-    item.add_argument('--draft', action='store_true', help='with --finished: open the PR as a draft')
-    item.add_argument('--workorder', help='work order when the branch name does not name one (7, 007 or FACTORY-007)')
-    item.add_argument('--context', action='append', default=[], help='extra repository file for the preflight (repeatable)')
-    for name in ('start', 'stop', 'cancel'):
+    work_order(command('start'))
+    for name in ('continue', 'stop', 'cancel'):
         item = command(name)
-        item.add_argument('noun', choices=('workorder',), metavar='workorder')
-        item.add_argument('workorder', help='7, 007 or FACTORY-007')
-    item = command('continue')
-    item.add_argument('workorder', nargs='?', help='work order of the run (default: the only active run)')
-    for name in ('fix', 'hotfix'):
-        item = command(name)
-        item.add_argument('workorder', help='7, 007 or FACTORY-007')
-        item.add_argument('prompt', nargs='?', help='the problem, or #N / a GitHub URL of a maintainer-written issue or comment')
-        item.add_argument('--pr', type=int, help='the open PR to fix when several implement the work order')
+        item.add_argument('noun', choices=('workorder', 'hotfix'), metavar='workorder <issue> | hotfix',
+                          help='`workorder <issue>` names the run of a work order; `hotfix` the hotfix without one')
+        item.add_argument('workorder', nargs='?', metavar='<issue>', help=ISSUE_HELP)
+    item = command('fix')
+    work_order(item)
+    item.add_argument('prompt', nargs='?', help='the problem, or "#N" / a GitHub URL of a maintainer-written issue or comment')
+    item = command('hotfix')
+    item.add_argument('words', nargs='+', metavar='[workorder <issue>] ["prompt"]',
+                      help=f'`workorder <issue>` ({ISSUE_HELP}) and an optional prompt, or only the prompt (the problem)')
     item = command('review')
+    work_order(item)
     item.add_argument('prompt', help='what the reviewer should look for')
-    item.add_argument('--workorder', help='add this work order as context')
     item = command('watch')
     item.add_argument('pr', nargs='?', type=int, help='pull request number')
     item.add_argument('--all', action='store_true', help='every PR labelled awaiting-senior-review, until Ctrl-C')
@@ -81,9 +74,6 @@ def build_parser():
     item = command('update')
     item.add_argument('target', nargs='?', metavar='<target-branch>',
                       help='the branch to bring the config branch into (default: the branch checked out in the candidate)')
-    # Replaced by update: not listed in the help; every use names the replacement and exits 2 (misuse).
-    item = commands.add_parser('sync', description=SYNC_REPLACED)
-    item.add_argument('words', nargs='*', help=argparse.SUPPRESS)
     item = command('branches')
     item.add_argument('--show', action='store_true', help='also write and open a self-contained HTML page')
     item = command('use', 'use branch')
@@ -132,8 +122,24 @@ def misuse(args):
         if not set(kinds) <= set(branches.KINDS) or len(set(kinds)) != len(kinds):
             return '--kinds takes distinct values of ' + ', '.join(branches.KINDS)
         args.kinds = kinds
-    if args.command == 'sync':
-        return SYNC_REPLACED
+    if args.command in ('continue', 'stop', 'cancel'):
+        if args.noun == 'workorder' and args.workorder is None:
+            return f'`factory {args.command} workorder <issue>` needs the issue number, e.g. 57'
+        if args.noun == 'hotfix' and args.workorder is not None:
+            return f'`factory {args.command} hotfix` names the hotfix without a work order and takes no issue number'
+    if args.command == 'hotfix':
+        words = args.words
+        if words[0] == 'workorder':
+            if len(words) not in (2, 3):
+                return '`factory hotfix workorder <issue> ["prompt"]` takes the issue number and at most one prompt'
+            args.workorder, args.prompt = words[1], (words[2] if len(words) == 3 else None)
+        elif len(words) == 1:
+            args.workorder, args.prompt = None, words[0]
+        else:
+            return ('`factory hotfix` takes `workorder <issue>` and an optional prompt, or only a prompt in quotes: '
+                    '`factory hotfix "<problem>"`')
+        if args.prompt is not None and not args.prompt.strip():
+            return 'the prompt is empty'
     return None
 
 
@@ -194,7 +200,7 @@ class Context:
         return self.common.Lock(self.common.STATE_DIR / 'locks/candidate.lock', 'the candidate checkout')
 
     def tips(self, *names):
-        """Fetch branches into the candidate; missing ones are left out."""
+        """Branches missing on GitHub are left out of the result."""
         with self.candidate_lock():
             return self.checkouts.fetch(self.candidate, self.config, *names)
 
@@ -204,7 +210,8 @@ class Context:
         return found[name]
 
     def config_tip(self):
-        """The newest config branch tip in the candidate: work orders are read from here."""
+        """The newest config branch tip in the candidate: rules and the device smoke's work-order file come from
+        here."""
         return self.tip(self.model.config_branch)
 
     def identity_values(self):
@@ -259,13 +266,10 @@ def bootstrap(command):
     return Context(device, config, sha, policy)
 
 
-def run_reference(reference):
+def run_reference(args):
     import runs
     import workorders
-    if reference is None:
-        return None
-    orders = sorted({runs.state(path).get('order') for path in runs.every()} - {None})
-    return workorders.resolve(reference, orders)
+    return runs.HOTFIX if args.noun == 'hotfix' else workorders.resolve(args.workorder)
 
 
 def dispatch(args):
@@ -288,25 +292,19 @@ def dispatch(args):
     here = Path.cwd().resolve()
     if args.command not in LOCAL + ('use',) and not (here == candidate or candidate in here.parents):
         ctx.common.say(f'(working on the candidate checkout {ctx.candidate})')
-    if args.command == 'issue':
-        return commands.issue(ctx, args.title, args.kind, args.noedit)
     if args.command == 'submit':
-        if args.target == 'workorders':
-            ctx.common.require(not (args.title or args.desc or args.finished or args.draft or args.workorder or args.context),
-                               '`factory submit workorders` takes no further options')
-            return commands.submit_workorders(ctx)
-        return commands.submit(ctx, args.title, args.desc, args.finished, args.draft, args.workorder, args.context)
+        return commands.submit(ctx, args.title, args.desc, args.finished)
     if args.command == 'start':
         return pipeline.launch(ctx, 'start', args.workorder)
     if args.command in ('fix', 'hotfix'):
-        return pipeline.launch(ctx, args.command, args.workorder, args.prompt, args.pr)
+        return pipeline.launch(ctx, args.command, args.workorder, args.prompt)
     if args.command == 'continue':
-        path = runs.find(run_reference(args.workorder))
+        path = runs.find(run_reference(args))
         return runs.follow(path, runs.state(path).get('order'))
     if args.command == 'stop':
-        return runs.stop(runs.find(run_reference(args.workorder))) or 0
+        return runs.stop(runs.find(run_reference(args))) or 0
     if args.command == 'cancel':
-        return runs.cancel(runs.find(run_reference(args.workorder))) or 0
+        return runs.cancel(runs.find(run_reference(args))) or 0
     if args.command == 'review':
         return pipeline.review_now(ctx, args.prompt, args.workorder)
     if args.command == 'watch':

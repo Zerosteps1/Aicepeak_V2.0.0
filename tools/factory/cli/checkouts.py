@@ -56,7 +56,7 @@ def device():
 
 
 def record_branch(name):
-    """The device's control branch in cli.json; callers hold the control lock."""
+    """Callers hold the control lock."""
     data = json.loads(common.CONFIG_FILE.read_text())
     data['branch'] = name
     common.atomic_json(common.CONFIG_FILE, data)
@@ -80,7 +80,6 @@ def _inside(inner, outer):
 
 
 def separate(control, candidate):
-    """Control and candidate must be two different repositories, neither inside the other."""
     require(not _inside(candidate, control) and not _inside(control, candidate),
             f'control checkout {control} and candidate checkout {candidate} must be separate folders')
     require(common_dir(control) != common_dir(candidate),
@@ -200,7 +199,7 @@ def update_control(control, config, *, branch=None, online=True, listed=True):
 
 
 def fetch(repo, config, *branches):
-    """Fetch named branches from GitHub over https into refs/remotes/origin/*; missing branches are skipped."""
+    """Branches missing on GitHub are skipped and left out of the returned tips."""
     url, branches = github_url(config), list(dict.fromkeys(branches))
     present = set()
     listing = out(repo, 'ls-remote', '--heads', url, *[f'refs/heads/{name}' for name in branches], network=True)
@@ -227,7 +226,8 @@ def tree_files(repo, sha):
 
 
 def export_tree(repo, sha, dest):
-    """Write every file of a commit byte-exact from Git objects: no filters, hooks or checkout."""
+    """Byte-exact from Git objects instead of a checkout, so no filter, hook or attribute conversion can run or change
+    a file."""
     dest = Path(dest)
     entries = tree_files(repo, sha)
     process = subprocess.Popen([common.tool('git'), '--no-pager', '--no-replace-objects', '-C', str(repo), *common.GIT_SAFETY,
@@ -307,7 +307,6 @@ def tool_env():
 
 
 def run_tool(checkout, script, *args, capture=False, timeout=None):
-    """Run a trusted factory script from a checkout. Interactive by default; captured output is parsed by callers."""
     command = tool_command(checkout, script, *args)
     process = subprocess.Popen(command, cwd=checkout, env=tool_env(), text=True,
                                stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE if capture else None)

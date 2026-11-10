@@ -14,12 +14,13 @@ import time
 import unittest
 from unittest import mock
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path[:0] = [str(ROOT / 'tools/factory/cli'), str(ROOT / 'tools/factory'), str(Path(__file__).resolve().parent)]
-import branch_fixture  # noqa: E402  fixtures never take the candidate's branch model (config PRs change it)
+from factory_testlib import (GIT_ENV, HTTPS, REPOSITORY, ROOT, IssueHub, candidate_config, candidate_config_text, git, use,
+                             user)
+use('tools/factory/cli', 'tools/factory')
 import branches  # noqa: E402
 import branching  # noqa: E402
 import checkouts  # noqa: E402
+import clients  # noqa: E402
 import commands  # noqa: E402
 import common  # noqa: E402
 import factory  # noqa: E402  the CLI entry (tools/factory/cli/factory.py)
@@ -29,21 +30,9 @@ import pipeline  # noqa: E402
 import runs  # noqa: E402
 import workorders  # noqa: E402
 import engine  # noqa: E402
-import issue_fixture  # noqa: E402
 import issues  # noqa: E402
 import session  # noqa: E402
 from contracts import Blocked  # noqa: E402
-
-REPOSITORY = 'Zerosteps1/Aicepeak_V2.0.0'
-HTTPS = f'https://github.com/{REPOSITORY}.git'
-ENV = {'PATH': os.environ['PATH'], 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1',
-       'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.invalid',
-       'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.invalid'}
-
-
-def git(root, *args):
-    return subprocess.run(['git', '-C', str(root), '-c', 'core.hooksPath=/dev/null', *args], env=ENV,
-                          capture_output=True, text=True, check=True).stdout.strip()
 
 
 def order(name, kind='factory', status='approved', paths=('docs/',)):
@@ -53,7 +42,7 @@ def order(name, kind='factory', status='approved', paths=('docs/',)):
 
 class GitHub:
     def __init__(self):
-        self.pulls, self.created, self.issues = [], [], []
+        self.pulls, self.created = [], []
 
     def pages(self, path, field=None):
         return self.pulls if '/pulls?state=open' in path else []
@@ -62,13 +51,10 @@ class GitHub:
         if method == 'POST' and path == f'/repos/{REPOSITORY}/pulls':
             self.created.append(data)
             return {'number': 77, 'html_url': f'https://github.com/{REPOSITORY}/pull/77'}
-        if method == 'POST' and path == f'/repos/{REPOSITORY}/issues':
-            self.issues.append(data)
-            return {'number': 58, 'html_url': f'https://github.com/{REPOSITORY}/issues/58'}
         raise AssertionError((method, path))
 
 
-class IssuesAndPulls(issue_fixture.IssueHub):
+class IssuesAndPulls(IssueHub):
     """Work-order issues plus the open pull requests of the repository."""
     def __init__(self, config, pulls=()):
         super().__init__(config)
@@ -90,16 +76,12 @@ class Repos(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.tmp = Path(temp.name).resolve()
         self.origin = self.tmp / 'origin.git'
-        subprocess.run(['git', 'init', '--quiet', '--bare', '-b', 'testing', str(self.origin)], env=ENV, check=True)
+        subprocess.run(['git', 'init', '--quiet', '--bare', '-b', 'testing', str(self.origin)], env=GIT_ENV, check=True)
         self.seed = self.tmp / 'seed'
         self.seed.mkdir()
         git(self.seed, 'init', '--quiet', '-b', 'testing')
-        files = {'factory/config.json': branch_fixture.text(ROOT),
-                 'docs/work/TEMPLATE.md': (ROOT / 'docs/work/TEMPLATE.md').read_text(),
-                 'docs/work/FACTORY-001.md': order('FACTORY-001', paths=('docs/work/',)),
-                 'docs/work/ARCH-001.md': order('ARCH-001'),
+        files = {'factory/config.json': candidate_config_text(),
                  'docs/work/FACTORY-003.md': order('FACTORY-003', paths=('docs/', 'tools/factory/')),
-                 'docs/work/FACTORY-006.md': order('FACTORY-006'),
                  'docs/guide.md': 'guide\n', 'tools/factory/b.py': 'VALUE = 1\n', 'tool.sh': '#!/bin/sh\n'}
         for name, content in files.items():
             path = self.seed / name
@@ -108,8 +90,6 @@ class Repos(unittest.TestCase):
         (self.seed / 'tool.sh').chmod(0o755)
         git(self.seed, 'add', '.')
         git(self.seed, 'commit', '--quiet', '-m', 'seed')
-        git(self.seed, 'rm', '--quiet', 'docs/work/FACTORY-006.md')
-        git(self.seed, 'commit', '--quiet', '-m', 'withdraw FACTORY-006')
         git(self.seed, 'branch', 'production')
         git(self.seed, 'push', '--quiet', str(self.origin), 'testing', 'production')
         self.control, self.candidate = self.clone('control', 'production'), self.clone('candidate')
@@ -124,6 +104,9 @@ class Repos(unittest.TestCase):
                                     '/fake/gh' if name == 'gh' else real_tool(name, required))
         patcher.start()
         self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(common, 'keep_awake')  # never a real caffeinate
+        self.awake = patcher.start()
+        self.addCleanup(patcher.stop)
         for target, name, value in ((common, 'GITHUB', str(self.origin)), (common, 'NETWORK_PROTOCOLS', 'file'),
                                     (common, 'STATE_DIR', self.tmp / 'state'), (common, 'CONFIG_FILE', self.tmp / 'cli.json')):
             patcher = mock.patch.object(target, name, value)
@@ -133,7 +116,7 @@ class Repos(unittest.TestCase):
     def clone(self, name, branch=None):
         path = self.tmp / name
         subprocess.run(['git', 'clone', '--quiet', *(['--branch', branch] if branch else []), str(self.origin), str(path)],
-                       env=ENV, check=True)
+                       env=GIT_ENV, check=True)
         git(path, 'remote', 'set-url', 'origin', HTTPS)
         return path
 
@@ -183,79 +166,48 @@ class Repos(unittest.TestCase):
 
 
 class WorkOrderTests(Repos):
-    def test_numbers_never_reuse_withdrawn_orders(self):
-        used = workorders.numbers_ever_added(self.control, self.tip)
-        self.assertEqual(used, {1, 3, 6})
-        self.assertEqual(workorders.next_name('factory', used), 'FACTORY-007')
-        self.assertEqual(workorders.next_name('product', used | {12}), 'PRODUCT-013')
-        self.assertEqual(workorders.names_on(self.control, self.tip), ['ARCH-001', 'FACTORY-001', 'FACTORY-003'])
+    def test_references_are_github_issue_numbers(self):
+        for reference in ('57', '#57', '#057', ' 57 ', 'issue-57'):
+            self.assertEqual(workorders.resolve(reference), 'issue-57')
+        for reference in ('FACTORY-003', '3a', '#', '0', 'issue-x', '-1'):
+            with self.assertRaisesRegex(Blocked, 'no GitHub issue number'):
+                workorders.resolve(reference)
 
-    def test_references_resolve_only_when_unique(self):
-        names = workorders.names_on(self.control, self.tip)
-        self.assertEqual(workorders.resolve('3', names), 'FACTORY-003')
-        self.assertEqual(workorders.resolve('003', names), 'FACTORY-003')
-        self.assertEqual(workorders.resolve('factory-003', names), 'FACTORY-003')
-        with self.assertRaisesRegex(Blocked, 'ARCH-001, FACTORY-001'):
-            workorders.resolve('1', names)
-        # A number no file has names the work-order issue with that number; files only (sync) refuses it.
-        self.assertEqual(workorders.resolve('9', names), 'issue-9')
-        for reference in ('#57', 'issue-57', '#057', 'ISSUE-57'):
-            self.assertEqual(workorders.resolve(reference, names), 'issue-57')
-        with self.assertRaisesRegex(Blocked, 'no work order 9'):
-            workorders.resolve('9', names, allow_issues=False)
-        with self.assertRaisesRegex(Blocked, 'no work order #3'):
-            workorders.resolve('#3', names, allow_issues=False)
-
-    def test_template_fill_names_every_placeholder_until_completed(self):
-        template = (ROOT / workorders.TEMPLATE).read_text()
-        text = workorders.fill_template(template, 'FACTORY-007', None, 'factory', 'ftrutschnig', 'claude')
-        path = 'docs/work/FACTORY-007.md'
-        found = '\n'.join(workorders.problems(path, text, new=True, used_numbers={1, 3, 6}))
-        for token in ('REPLACE-WITH-EXACT-PATHS', 'Short outcome-oriented title', 'When ..., the ... shall ....'):
-            self.assertIn(token, found)
-        spec = workorders.task_block(text)
-        self.assertEqual((spec['status'], spec['kind']), ('draft', 'factory'))
-        transfer = json.loads(workorders.HANDOFF_BLOCK.findall(text)[0])
-        self.assertEqual(transfer, {'runner': 'claude', 'task': path, 'owner': 'ftrutschnig'})
-        done = (text.replace('Short outcome-oriented title', 'CSV export').replace('REPLACE-WITH-EXACT-PATHS/', 'docs/')
-                .replace('When ..., the ... shall ....', 'When asked, the export shall list rows.')
-                .replace('If ..., then the ... shall ....', 'If empty, then the export shall say so.'))
-        self.assertEqual(workorders.problems(path, done, new=True, used_numbers={1, 3, 6}), [])
-        engine.task_spec(workorders.set_status(done, 'approved'))
-        self.assertIn('already used', ' '.join(workorders.problems('docs/work/FACTORY-006.md', done.replace('FACTORY-007', 'FACTORY-006'),
-                                                                    new=True, used_numbers={6})))
-        smoke = workorders.set_status(done, 'draft').replace('"kind":"factory"', '"kind":"smoke"')
-        self.assertIn('prefix FACTORY does not match kind smoke', ' '.join(workorders.problems(path, smoke, new=True, used_numbers=set())))
-
-    def test_task_block_rejects_the_activation_typo(self):
-        typo = '```factory-task\n{"status":"draft","approved":"factory","allowed_paths":["docs/"]}\n```\n'
-        with self.assertRaisesRegex(Blocked, 'exactly the keys'):
-            workorders.task_block(typo)
-        with self.assertRaisesRegex(Blocked, 'factory-task block'):
-            workorders.task_block(order('X-001', paths=('../outside/',)))
-        self.assertEqual(workorders.task_block(order('X-001', status='draft'))['status'], 'draft')
-
-    def test_branches_map_to_work_orders(self):
+    def test_issue_branches_are_named_as_github_names_them(self):
+        self.assertEqual(workorders.branch_name('issue-57', 'Export energy costs as CSV'), '57-export-energy-costs-as-csv')
+        self.assertEqual(workorders.branch_name('issue-52', 'Kühlräume – "Übersicht" & 12 Zonen!'),
+                         '52-kuhlraume-ubersicht-12-zonen')
+        self.assertEqual(workorders.branch_name('issue-9', '🐛 !!!'), '9')
+        long = workorders.branch_name('issue-7', 'word ' * 40)
+        self.assertLessEqual(len(long), 1 + workorders.BRANCH_LENGTH)
+        self.assertTrue(long.startswith('7-word-') and long.endswith('-word'))
+        for branch in ('57-export-energy-costs-as-csv', '57', '57-anything-else'):
+            self.assertEqual(workorders.branch_order(branch, []), 'issue-57')
+            self.assertTrue(workorders.is_issue_branch(branch, 'issue-57'))
+        self.assertFalse(workorders.is_issue_branch('570-other', 'issue-57'))
         names = ['FACTORY-003', 'FACTORY-SMOKE']
-        self.assertEqual(workorders.branch_order('ftrutschnig/FACTORY-003', names), 'FACTORY-003')
-        self.assertEqual(workorders.branch_order('ftrutschnig/FACTORY-003-2', names), 'FACTORY-003')
-        self.assertEqual(workorders.branch_order('zerosteps1/FACTORY-003-fix-4', names), 'FACTORY-003')
-        self.assertEqual(workorders.branch_order('ftrutschnig/FACTORY-SMOKE', names), 'FACTORY-SMOKE')
-        self.assertIsNone(workorders.branch_order('feature/csv', names))
-        self.assertIsNone(workorders.branch_order('testing', names))
-        for branch in ('ftrutschnig/issue-57', 'ftrutschnig/issue-57-2', 'zerosteps1/issue-57-fix-3'):
-            self.assertEqual(workorders.branch_order(branch, names), 'issue-57')
-        self.assertIsNone(workorders.branch_order('ftrutschnig/issue-x', names))
+        # The device smoke keeps its file work order and its own branches.
+        for branch in ('ftrutschnig/FACTORY-SMOKE', 'ftrutschnig/FACTORY-SMOKE-20261108101500'):
+            self.assertEqual(workorders.branch_order(branch, names), 'FACTORY-SMOKE')
+        for branch in ('feature/csv', 'testing', 'ftrutschnig/issue-57', 'ftrutschnig/57-csv', 'hotfix/20261108-vat',
+                       '057-csv', None):
+            self.assertIsNone(workorders.branch_order(branch, names), branch)
 
-    def test_issue_work_orders_have_their_own_task_and_label(self):
-        self.assertEqual((workorders.task_of('issue-57'), workorders.label('issue-57')), ('#57', '#57'))
-        self.assertEqual((workorders.task_of('FACTORY-003'), workorders.label('FACTORY-003')),
-                         ('docs/work/FACTORY-003.md', 'FACTORY-003'))
-        self.assertEqual(workorders.title_of(f'# #57 – CSV export\n\nbody'), 'CSV export')
+    def test_work_orders_have_their_own_task_label_title_and_pr_lines(self):
+        self.assertEqual((workorders.task_of('issue-57'), workorders.label('issue-57'),
+                          workorders.command_reference('issue-57')), ('#57', '#57', '57'))
+        self.assertEqual((workorders.task_of('FACTORY-SMOKE'), workorders.label('FACTORY-SMOKE')),
+                         ('docs/work/FACTORY-SMOKE.md', 'FACTORY-SMOKE'))
+        text = '# #57 – CSV export\n\nbody'
+        self.assertEqual((workorders.title_of(text), workorders.heading('issue-57', text)), ('CSV export', 'CSV export #57'))
+        self.assertEqual(workorders.heading('FACTORY-SMOKE', order('FACTORY-SMOKE', kind='smoke')),
+                         'Fixture order (FACTORY-SMOKE)')
+        self.assertEqual(workorders.work_order_line('issue-57'), 'Work order: #57\n\nCloses #57')
+        self.assertEqual(workorders.work_order_line('FACTORY-SMOKE'), 'Work order: `docs/work/FACTORY-SMOKE.md`')
 
-    def test_issue_work_orders_are_read_through_github_and_legacy_files_at_the_config_tip(self):
-        config = branch_fixture.load(ROOT)
-        hub = issue_fixture.IssueHub(config)
+    def test_issue_work_orders_are_read_through_github_and_files_at_the_config_tip(self):
+        config = candidate_config()
+        hub = IssueHub(config)
         hub.issue()
         with self.assertRaisesRegex(Blocked, 'not an approved work order'):
             workorders.read(hub, self.control, config, self.tip, 'issue-57')
@@ -265,14 +217,24 @@ class WorkOrderTests(Repos):
         text, spec = workorders.read(None, self.control, config, self.tip, 'FACTORY-003')
         self.assertEqual(spec['allowed_paths'], ['docs/', 'tools/factory/'])
 
-    def test_the_issue_template_is_a_draft_work_order_body(self):
-        template = (ROOT / workorders.ISSUE_TEMPLATE).read_text()
-        for kind in ('factory', 'product', 'smoke'):
-            body = workorders.issue_body(template, kind)
-            self.assertFalse(body.startswith('---'))
-            self.assertEqual(issues.draft_spec(body), {'status': 'draft', 'kind': kind, 'allowed_paths': []})
-            for section in ('## Goal', '## Non-goals', '## Acceptance criteria', '## Verification', '## Open questions'):
-                self.assertIn(section, body)
+    def test_the_issue_template_is_a_draft_work_order(self):
+        template = (ROOT / '.github/ISSUE_TEMPLATE/factory-task.md').read_text()
+        spec = issues.draft_spec(template)
+        self.assertEqual((spec['status'], spec['allowed_paths']), ('draft', []))
+        for section in ('## Goal', '## Non-goals', '## Acceptance criteria', '## Verification', '## Open questions'):
+            self.assertIn(section, template)
+
+    def test_a_generated_branch_diagram_never_counts_as_a_change(self):
+        (self.candidate / 'docs/factory-branches.md').write_text('generated\n')
+        self.assertEqual(common.changes(self.candidate), [])
+        git(self.candidate, 'add', 'docs/factory-branches.md')
+        git(self.candidate, 'commit', '--quiet', '-m', 'diagram')
+        (self.candidate / 'docs/factory-branches.md').write_text('regenerated\n')
+        (self.candidate / 'docs/other.md').write_text('mine\n')
+        self.assertEqual(common.changes(self.candidate), ['?? docs/other.md'])
+        self.assertEqual(common.changes(self.candidate, untracked=False), [])
+        (self.candidate / 'docs/guide.md').write_text('edited\n')
+        self.assertEqual(common.changes(self.candidate, untracked=False), [' M docs/guide.md'])
 
 
 class CheckoutTests(Repos):
@@ -438,113 +400,41 @@ class CheckoutTests(Repos):
             checkouts.verify_candidate(self.candidate, self.config)
 
     def test_fetch_skips_missing_branches_and_imports_become_context(self):
-        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/FACTORY-003')
+        git(self.candidate, 'switch', '--quiet', '-c', '57-csv-export')
         (self.candidate / 'tools/factory/a.py').write_text('import b\nimport json\n')
         git(self.candidate, 'add', '.')
         git(self.candidate, 'commit', '--quiet', '-m', 'a')
         git(self.candidate, 'push', '--quiet', str(self.origin), 'HEAD')
-        tips = checkouts.fetch(self.candidate, self.config, 'testing', 'ftrutschnig/FACTORY-003', 'missing', 'testing')
-        self.assertEqual(set(tips), {'testing', 'ftrutschnig/FACTORY-003'})
+        tips = checkouts.fetch(self.candidate, self.config, 'testing', '57-csv-export', 'missing', 'testing')
+        self.assertEqual(set(tips), {'testing', '57-csv-export'})
         head = git(self.candidate, 'rev-parse', 'HEAD')
         self.assertEqual(checkouts.direct_imports(self.candidate, self.tip, head), ['tools/factory/b.py'])
 
 
 class CommandTests(Repos):
-    def test_collect_orders_and_move_out_only_identical_files(self):
-        work = self.candidate / 'docs/work'
-        (work / 'FACTORY-007.md').write_text(order('FACTORY-007', status='draft'))
-        (work / 'FACTORY-003.md').write_text(order('FACTORY-003', status='draft'))
-        (work / 'ARCH-001.md').unlink()
-        (work / 'TEMPLATE.md').write_text('changed template\n')
-        (self.candidate / 'docs/guide.md').write_text('unrelated\n')
-        changes = commands.collect_orders(self.candidate)
-        self.assertEqual(set(changes), {'docs/work/FACTORY-007.md', 'docs/work/FACTORY-003.md', 'docs/work/ARCH-001.md'})
-        self.assertIsNone(changes['docs/work/ARCH-001.md'])
-        (work / 'FACTORY-003.md').write_text('edited again after the submission\n')
-        commands.move_out(self.candidate, self.tip, changes)
-        self.assertFalse((work / 'FACTORY-007.md').exists())
-        self.assertEqual((work / 'FACTORY-003.md').read_text(), 'edited again after the submission\n')
-        self.assertTrue((work / 'ARCH-001.md').exists())
-        self.assertEqual((self.candidate / 'docs/guide.md').read_text(), 'unrelated\n')
-
-    def test_submit_workorders_pushes_only_orders_into_the_config_branch_then_moves_them(self):
-        self.advance_origin('docs/testing-only.md')  # testing moves on: the work-order branch starts from production
-        (self.candidate / 'docs/work/FACTORY-007.md').write_text(order('FACTORY-007', status='draft'))
-        (self.candidate / 'docs/guide.md').write_text('unrelated\n')
-        calls = []
-        with mock.patch.object(common, 'ask', return_value=True), \
-                mock.patch.object(commands, 'session_submit', side_effect=lambda *a, **k: calls.append((a, k)) or k['on_created'](12) or 12), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(commands.submit_workorders(self.ctx()), 0)
-        self.assertEqual((calls[0][0][2], calls[0][1]['base']), (None, 'production'))  # no advisory preflight
-        self.assertEqual(git(self.origin, 'rev-parse', 'ftrutschnig/new-workorders^'), git(self.origin, 'rev-parse', 'production'))
-        pushed = git(self.origin, 'show', 'refs/heads/ftrutschnig/new-workorders:docs/work/FACTORY-007.md')
-        self.assertEqual(workorders.task_block(pushed)['status'], 'approved')
-        self.assertEqual(git(self.origin, 'show', 'refs/heads/ftrutschnig/new-workorders:docs/guide.md'), 'guide')
-        self.assertFalse((self.candidate / 'docs/work/FACTORY-007.md').exists())
-        self.assertEqual((self.candidate / 'docs/guide.md').read_text(), 'unrelated\n')
-
-    def test_submit_workorders_names_every_problem_and_pushes_nothing(self):
-        template = (ROOT / workorders.TEMPLATE).read_text()
-        text = workorders.fill_template(template, 'FACTORY-007', None, 'factory', 'ftrutschnig', 'claude')
-        (self.candidate / 'docs/work/FACTORY-007.md').write_text(text)
-        with self.assertRaisesRegex(Blocked, '(?s)REPLACE-WITH-EXACT-PATHS.*Short outcome-oriented title'):
-            commands.submit_workorders(self.ctx())
-        self.assertNotIn('new-workorders', git(self.origin, 'branch', '--list'))
-
-    def test_issue_creates_a_github_issue_under_the_maintainer_login_and_no_file(self):
-        ctx = self.ctx()
-        with contextlib.redirect_stdout(io.StringIO()) as shown:
-            self.assertEqual(commands.issue(ctx, 'CSV export', kind='smoke', noedit=True), 0)
-        [created] = ctx.gh.issues
-        self.assertEqual(created['title'], 'CSV export')
-        self.assertEqual(issues.draft_spec(created['body']), {'status': 'draft', 'kind': 'smoke', 'allowed_paths': []})
-        self.assertIn(f'Created work-order issue #58: https://github.com/{REPOSITORY}/issues/58', shown.getvalue())
-        self.assertIn('`factory start workorder 58`', shown.getvalue())
-        self.assertEqual(git(self.candidate, 'status', '--porcelain'), '')
-        with self.assertRaisesRegex(Blocked, '--noedit needs --title'):
-            commands.issue(ctx, None, noedit=True)
-        self.assertEqual(len(ctx.gh.issues), 1)
-
-    def test_issue_draft_is_written_in_the_editor_and_created_only_after_confirmation(self):
-        ctx = self.ctx()
-        def editor(command, check=False):
-            draft = Path(command[-1])
-            draft.write_text(draft.read_text().replace('# Short outcome-oriented title', '# Edited title', 1))
-        with mock.patch.dict(os.environ, {'VISUAL': 'fake-editor --wait'}), \
-                mock.patch.object(commands.subprocess, 'run', side_effect=editor) as run, \
-                mock.patch.object(common, 'ask', return_value=False), contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaisesRegex(Blocked, 'nothing created; your draft stays in'):
-                commands.issue(ctx)
-        self.assertEqual(run.call_args[0][0][:2], ['fake-editor', '--wait'])
-        self.assertEqual(ctx.gh.issues, [])
-        with mock.patch.dict(os.environ, {'VISUAL': 'fake-editor'}), \
-                mock.patch.object(commands.subprocess, 'run', side_effect=editor), \
-                mock.patch.object(common, 'ask', return_value=True), contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(commands.issue(ctx), 0)
-        self.assertEqual(ctx.gh.issues[0]['title'], 'Edited title')
-        self.assertFalse(ctx.gh.issues[0]['body'].startswith('# '))
-        with mock.patch.dict(os.environ, {'VISUAL': 'fake-editor'}), \
-                mock.patch.object(commands.subprocess, 'run'), mock.patch.object(common, 'ask', return_value=True), \
-                contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaisesRegex(Blocked, 'the issue needs a title'):
-                commands.issue(ctx)  # the placeholder title was left unchanged
-        self.assertEqual(len(ctx.gh.issues), 1)
+    def hub(self):
+        hub = IssuesAndPulls(self.config)
+        hub.issue(57)
+        hub.approve(57)
+        return hub
 
     def test_submit_commits_only_staged_files_and_refuses_listed_branches(self):
-        with self.assertRaisesRegex(Blocked, 'never on testing, a listed validation branch'):
+        with self.assertRaisesRegex(Blocked, 'never on testing, a listed validation branch.*`factory start workorder <issue>`'):
             commands.submit(self.ctx())
         git(self.candidate, 'switch', '--quiet', '--no-track', '-c', 'production', 'origin/production')
         with self.assertRaisesRegex(Blocked, 'never on production, a listed production branch'):
             commands.submit(self.ctx())
-        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/FACTORY-003')
+        git(self.candidate, 'switch', '--quiet', '-c', '57-csv-export')
         (self.candidate / 'docs/guide.md').write_text('staged\n')
         (self.candidate / 'tools/factory/b.py').write_text('VALUE = 2\n')
         git(self.candidate, 'add', 'docs/guide.md')
+        ctx = self.ctx()
+        ctx._gh = self.hub()
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(commands.submit(self.ctx()), 0)
-        self.assertEqual(git(self.origin, 'log', '-1', '--format=%s', 'ftrutschnig/FACTORY-003'), 'FACTORY-003: Fixture order')
-        self.assertEqual(git(self.origin, 'show', 'ftrutschnig/FACTORY-003:tools/factory/b.py'), 'VALUE = 1')
+            self.assertEqual(commands.submit(ctx), 0)
+        # The default title names the issue last: a leading `#57` would be a comment line in an editor-based commit.
+        self.assertEqual(git(self.origin, 'log', '-1', '--format=%s', '57-csv-export'), 'CSV export #57')
+        self.assertEqual(git(self.origin, 'show', '57-csv-export:tools/factory/b.py'), 'VALUE = 1')
         self.assertEqual((self.candidate / 'tools/factory/b.py').read_text(), 'VALUE = 2\n')
 
     def test_branch_without_work_order_warns_and_finished_needs_one(self):
@@ -554,77 +444,104 @@ class CommandTests(Repos):
         with mock.patch.object(common, 'countdown') as countdown, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(commands.submit(self.ctx(), title='docs: guide'), 0)
         countdown.assert_called_once()
+        self.assertIn('57-export-energy-costs-as-csv', countdown.call_args[0][0])
         self.assertEqual(git(self.origin, 'log', '-1', '--format=%s', 'feature/csv'), 'docs: guide')
-        with self.assertRaisesRegex(Blocked, 'belongs to no work order'):
+        with self.assertRaisesRegex(Blocked, 'belongs to no work order, so --finished opens no PR'):
+            commands.submit(self.ctx(), finished=True)
+
+    def test_a_hotfix_branch_is_committed_and_pushed_without_a_work_order_or_a_pr(self):
+        branch = f'{workorders.HOTFIX}{time.strftime("%Y%m%d")}-totals-use-the-wrong-vat-rate'
+        self.assertTrue(workorders.is_hotfix_branch(branch))
+        for other in ('hotfix', 'feature/hotfix/x', '57-hotfix', None):
+            self.assertFalse(workorders.is_hotfix_branch(other), other)
+        git(self.candidate, 'switch', '--quiet', '-c', branch)
+        (self.candidate / 'docs/guide.md').write_text('fixed\n')
+        git(self.candidate, 'add', 'docs/guide.md')
+        next_step = f'{branch} is a hotfix without a work order: the maintainer in charge merges it or opens a PR as they see fit'
+        with mock.patch.object(common, 'countdown', side_effect=AssertionError('a hotfix branch gets no countdown')), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(commands.submit(self.ctx(), title='Totals use the right VAT rate'), 0)
+        self.assertEqual(git(self.origin, 'log', '-1', '--format=%s', branch), 'Totals use the right VAT rate')
+        self.assertIn(f'Pushed {branch}', output.getvalue())
+        self.assertIn(next_step, output.getvalue())
+        self.assertNotIn('--finished', output.getvalue())
+        with mock.patch.object(commands, 'session_submit', side_effect=AssertionError('no PR from a hotfix branch')), \
+                self.assertRaisesRegex(Blocked, '^' + re.escape(f'{branch} is a hotfix without a work order, so --finished '
+                                                                 'opens no PR from it: the maintainer in charge merges it or '
+                                                                 'opens a PR as they see fit') + '$'):
             commands.submit(self.ctx(), finished=True)
 
     def test_submit_finished_targets_the_branch_routed_for_the_kind(self):
         self.advance_origin('docs/work/SMOKE-004.md', 'production', order('SMOKE-004', kind='smoke'))
         git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
         ctx = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['smoke']))
+        ctx._gh = self.hub()
         calls = []
-        for branch in ('ftrutschnig/SMOKE-004', 'ftrutschnig/FACTORY-003'):
+        for branch in ('ftrutschnig/SMOKE-004', '57-csv-export'):
             git(self.candidate, 'switch', '--quiet', '-c', branch, self.tip)
             (self.candidate / 'docs/guide.md').write_text(branch + '\n')
             git(self.candidate, 'add', 'docs/guide.md')
             with mock.patch.object(commands, 'session_submit', side_effect=lambda *a, **k: calls.append((a[2], k['base'])) or 3), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(commands.submit(ctx, finished=True), 0)
-        self.assertEqual(calls, [('docs/work/SMOKE-004.md', 'staging'), ('docs/work/FACTORY-003.md', 'testing')])
+        self.assertEqual(calls, [('docs/work/SMOKE-004.md', 'staging'), ('#57', 'testing')])
         self.advance_origin('docs/staging-only.md', 'testing')
         with self.assertRaisesRegex(Blocked, 'does not contain current testing.*merge origin/testing'), \
                 contextlib.redirect_stdout(io.StringIO()):
             commands.submit(ctx, finished=True)
+        # Apart from the device smoke every work order is an issue: any other work-order file is refused.
+        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/FACTORY-003', self.tip)
+        with self.assertRaisesRegex(Blocked, 'FACTORY-003 is a work-order file'), contextlib.redirect_stdout(io.StringIO()):
+            commands.submit(ctx, finished=True)
 
-    def submit_finished(self, ctx, branch, hub, created=3, **options):
-        """`factory submit --finished` on a new `branch` with one staged file: (exit code, [(task, base, body)], output).
-        session.py opens PR `created` (None: no PR, as after a preflight that does not pass)."""
+    def submit_finished(self, ctx, branch, hub, created=3):
+        """`factory submit --finished` on a new `branch` with one staged file: (exit code, [(task, base, title, body)],
+        output). session.py opens PR `created` (None: no PR, as after a preflight that does not pass)."""
         git(self.candidate, 'switch', '--quiet', '-c', branch, self.tip)
         (self.candidate / 'docs/guide.md').write_text(branch + '\n')
         git(self.candidate, 'add', 'docs/guide.md')
         ctx._gh, opened = hub, []
 
         def fake(context, snapshot, task, title, body, *args, **kwargs):
-            opened.append((task, kwargs['base'], Path(body).read_text()))
+            opened.append((task, kwargs['base'], title, Path(body).read_text()))
             if created and kwargs.get('on_created'):
                 kwargs['on_created'](created)
             return created
         with mock.patch.object(commands, 'session_submit', side_effect=fake), \
                 mock.patch.object(commands, 'watch', return_value=0), \
                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
-            code = commands.submit(ctx, finished=True, **options)
+            code = commands.submit(ctx, finished=True)
         return code, opened, out.getvalue() + err.getvalue()
 
     def test_submit_finished_links_the_work_order_issue_with_a_closing_keyword(self):
-        hub = IssuesAndPulls(self.config)
-        hub.issue()
-        hub.approve()
-        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/issue-57', hub)
-        self.assertEqual((code, [entry[:2] for entry in opened]), (0, [('#57', 'testing')]))
-        self.assertIn('Work order: #57\n\nCloses #57\n\nCommits:', opened[0][2])
-        self.assertRegex(opened[0][2], CLOSES_57)
+        hub = self.hub()
+        code, opened, output = self.submit_finished(self.ctx(), '57-csv-export', hub)
+        self.assertEqual((code, [entry[:3] for entry in opened]), (0, [('#57', 'testing', 'CSV export #57')]))
+        self.assertIn('Work order: #57\n\nCloses #57\n\nCommits:', opened[0][3])
         self.assertIn('PR #3 says `Closes #57`: GitHub closes the issue when it merges into its default branch.', output)
+        self.awake.assert_called()  # session.py submit watches the new PR's review
         # Said only once the PR exists: after a preflight that does not pass there is none.
-        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/issue-57-3', hub, created=None)
+        code, opened, output = self.submit_finished(self.ctx(), '57-csv-export-again', hub, created=None)
         self.assertEqual((code, len(opened)), (1, 1))
         self.assertNotIn('says `Closes', output)
         # GitHub decides when to close: the keyword is written for any target (GitHub ignores it outside its default branch).
         git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
         ctx = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['factory']))
-        code, opened, _ = self.submit_finished(ctx, 'ftrutschnig/issue-57-2', hub)
+        code, opened, _ = self.submit_finished(ctx, '57', hub)
         self.assertEqual((code, [entry[:2] for entry in opened]), (0, [('#57', 'staging')]))
-        self.assertRegex(opened[0][2], CLOSES_57)
-        # A legacy file is named by its path; there is no issue to close.
-        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/FACTORY-003', hub)
+        self.assertRegex(opened[0][3], CLOSES_57)
+        # The device smoke's file work order is named by its path; there is no issue to close.
+        self.advance_origin('docs/work/FACTORY-SMOKE.md', 'production', order('FACTORY-SMOKE', kind='smoke'))
+        code, opened, output = self.submit_finished(self.ctx(), 'ftrutschnig/FACTORY-SMOKE-1', hub)
         self.assertEqual(code, 0)
-        self.assertIn('Work order: `docs/work/FACTORY-003.md`\n\nCommits:', opened[0][2])
-        self.assertNotIn('Closes', opened[0][2] + output)
+        self.assertIn('Work order: `docs/work/FACTORY-SMOKE.md`\n\nCommits:', opened[0][3])
+        self.assertNotIn('Closes', opened[0][3] + output)
 
     def test_submit_refuses_a_branch_behind_github(self):
-        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/FACTORY-003')
+        git(self.candidate, 'switch', '--quiet', '-c', '57-csv-export')
         git(self.candidate, 'push', '--quiet', str(self.origin), 'HEAD')
         other = self.clone('other')
-        git(other, 'switch', '--quiet', 'ftrutschnig/FACTORY-003')
+        git(other, 'switch', '--quiet', '57-csv-export')
         (other / 'docs/guide.md').write_text('pushed elsewhere\n')
         git(other, 'commit', '--quiet', '-am', 'elsewhere')
         git(other, 'push', '--quiet', str(self.origin), 'HEAD')
@@ -653,6 +570,7 @@ class CommandTests(Repos):
         self.assertIn('PR #13: b', output.getvalue())
         self.assertIn('"status": "polled"', output.getvalue())  # the other PR is still watched
         self.assertIn('reviewer output', output.getvalue())
+        self.assertEqual(self.awake.call_count, 2)  # the Mac stays awake while this device watches
 
 
 class RunTests(unittest.TestCase):
@@ -676,34 +594,62 @@ class RunTests(unittest.TestCase):
         return process
 
     def test_liveness_comes_from_the_runner_lock_and_stale_runs_fail(self):
-        path = runs.create('FACTORY-003', 'start')
-        runs.update(path, order='FACTORY-003', status='running', pid=None)
+        path = runs.create('issue-57', 'start')
+        runs.update(path, order='issue-57', status='running', pid=None)
         process = self.holder(path)
         self.assertTrue(runs.alive(path))
-        self.assertEqual(runs.find('FACTORY-003'), path)
+        self.assertEqual(runs.find('issue-57'), path)
         process.kill()
         process.wait()
         self.assertFalse(runs.alive(path))
-        with self.assertRaisesRegex(Blocked, 'ended failed'):
-            runs.find('FACTORY-003')
+        with self.assertRaisesRegex(Blocked, 'no active run for #57; the last run .* ended failed'):
+            runs.find('issue-57')
         self.assertEqual(runs.state(path)['reason'], 'the runner ended unexpectedly')
 
+    def test_runs_are_named_by_their_work_order_or_as_the_hotfix(self):
+        self.assertEqual((runs.shown('issue-57'), runs.shown(runs.HOTFIX), runs.shown(None)), ('#57', 'hotfix', '?'))
+        self.assertEqual((runs.address('issue-57'), runs.address(runs.HOTFIX)), ('workorder 57', 'hotfix'))
+        for order in ('issue-57', runs.HOTFIX):
+            with self.subTest(order=order), self.assertRaisesRegex(Blocked, f'^no run for {re.escape(runs.shown(order))} '
+                                                                            'found on this device$'):
+                runs.find(order)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(runs.listing(), 0)
+        self.assertEqual(output.getvalue(), 'No factory runs on this device yet. Start one with `factory start workorder <issue>`.\n')
+        started = '2026-11-08 10:15:00'
+        runs.update(runs.create('issue-57', 'start'), order='issue-57', kind='start', status='completed', started=started,
+                    branch='57-csv-export', pr=42)
+        runs.update(runs.create(runs.HOTFIX, 'hotfix'), order=runs.HOTFIX, kind='hotfix', status='failed', started=started,
+                    branch='hotfix/20261108-vat')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(runs.listing(), 0)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[0], '  work order   run     step/status      started             branch')
+        self.assertEqual(sorted(lines[1:]), sorted([
+            f'  {"#57":<12} {"start":<7} {"completed":<16} {started:<19} 57-csv-export  PR #42',
+            f'  {"hotfix":<12} {"hotfix":<7} {"failed":<16} {started:<19} hotfix/20261108-vat']))
+
     def test_ctrl_c_only_detaches(self):
-        path = runs.create('FACTORY-003', 'start')
-        runs.update(path, order='FACTORY-003', status='running')
+        path = runs.create('issue-57', 'start')
+        runs.update(path, order='issue-57', status='running')
         self.holder(path)
         (path / 'log').write_text('[10:00:00] — author\n')
         output = io.StringIO()
         with mock.patch.object(runs.time, 'sleep', side_effect=KeyboardInterrupt), contextlib.redirect_stdout(output):
-            self.assertEqual(runs.follow(path, 'FACTORY-003'), 0)
+            self.assertEqual(runs.follow(path, 'issue-57'), 0)
         self.assertIn('— author', output.getvalue())
+        self.assertIn('Run ' + path.name + ' of #57', output.getvalue())
+        self.assertIn('Reattach: factory continue workorder 57 · stop after this step: factory stop workorder 57', output.getvalue())
+        self.assertEqual(runs.address(runs.HOTFIX), 'hotfix')
         self.assertIn('Detached; the run continues', output.getvalue())
         self.assertTrue(runs.alive(path))
 
     def test_cancel_terminates_the_runner_and_sweeps_its_labels(self):
-        path = runs.create('FACTORY-003', 'start')
+        path = runs.create('issue-57', 'start')
         process = self.holder(path)
-        runs.update(path, order='FACTORY-003', status='running', pid=process.pid, pr=42, config_branch='production')
+        runs.update(path, order='issue-57', status='running', pid=process.pid, pr=42, config_branch='production')
         docker = []
 
         def fake_run(args, **kwargs):
@@ -725,16 +671,18 @@ class PipelineTests(Repos):
     def runner(self, **data):
         runner = pipeline.Runner.__new__(pipeline.Runner)
         runner.path = self.tmp / 'run'
-        runner.path.mkdir(exist_ok=True)
+        shutil.rmtree(runner.path, ignore_errors=True)  # every runner starts from a fresh run folder
+        runner.path.mkdir()
         runner.work = checkouts.materialize(runner.path / 'work', self.tip, objects=[checkouts.objects_dir(self.control)],
                                             origin=HTTPS, branch='factory-run/test')
-        runner.data = {'base': self.tip, 'branch': 'ftrutschnig/FACTORY-003', 'branch_exists': False, 'kind': 'start',
+        runner.data = {'base': self.tip, 'branch': '57-csv-export', 'branch_exists': False, 'kind': 'start',
                        'allowed_paths': ['docs/', 'tools/factory/'], 'request': None, 'pr': None, 'runner': 'claude',
                        'identity': {'name': 'Fixture', 'email': 'fixture@example.invalid'}, 'target': 'testing',
                        'config_branch': 'production', 'listed': ['testing', 'production'], **data}
-        runner.kind, runner.order, runner.task = runner.data['kind'], 'FACTORY-003', 'docs/work/FACTORY-003.md'
+        runner.kind, runner.order, runner.task, runner.free = runner.data['kind'], 'issue-57', '#57', False
         runner.config, runner.control, runner.candidate = self.config, self.control, self.candidate
         runner.merged_base, runner.last_review, runner.spend, runner.url = None, None, 0.0, str(self.origin)
+        runner.runner = 'claude'
         runner.target = runner.data['target']
         return runner
 
@@ -746,24 +694,204 @@ class PipelineTests(Repos):
         git(runner.work, 'add', '.')
         git(runner.work, 'commit', '--quiet', '-m', 'run')
 
+    def launching(self):
+        """launch() up to the background runner: Docker, keys, the spawn and the attach are faked."""
+        stack = contextlib.ExitStack()
+        for target, name, kwargs in ((pipeline, 'docker_ready', {'return_value': ''}),
+                                     (pipeline, 'author_keys', {'return_value': {}}),
+                                     (runs, 'spawn', {'side_effect': lambda *args: args[-1].close()}),
+                                     (runs, 'follow', {'return_value': 0})):
+            stack.enter_context(mock.patch.object(target, name, **kwargs))
+        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        return stack
+
     def test_start_targets_the_validation_branch_routed_for_the_kind(self):
-        self.advance_origin('docs/work/SMOKE-004.md', 'production', order('SMOKE-004', kind='smoke'))
         git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/staging')
         staging = self.advance_origin('docs/staging.md', 'testing')
         git(self.seed, 'push', '--quiet', str(self.origin), 'testing:staging')
         ctx = self.ctx(branches.with_validation(self.config, 'staging', 'tests', ['smoke']))
-        with mock.patch.object(pipeline, 'docker_ready', return_value=''), mock.patch.object(pipeline, 'author_keys', return_value={}), \
-                mock.patch.object(runs, 'spawn', side_effect=lambda *args: args[-1].close()), \
-                mock.patch.object(runs, 'follow', return_value=0), \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(pipeline.launch(ctx, 'start', 'SMOKE-004'), 0)
-            self.assertEqual(pipeline.launch(ctx, 'start', '3'), 0)
+        ctx._gh = hub = IssuesAndPulls(self.config)
+        hub.issue(57)
+        hub.approve(57)
+        hub.issue(58, title='Reviewer device smoke')
+        hub.approve(58, kind='smoke')
+        with self.launching():
+            self.assertEqual(pipeline.launch(ctx, 'start', '#58'), 0)
+            self.assertEqual(pipeline.launch(ctx, 'start', '57'), 0)
+            with self.assertRaisesRegex(Blocked, 'no GitHub issue number'):
+                pipeline.launch(ctx, 'start', 'FACTORY-003')
         states = {runs.state(path)['order']: runs.state(path) for path in runs.every()}
-        smoke, factory_run = states['SMOKE-004'], states['FACTORY-003']
-        self.assertEqual((smoke['target'], smoke['base'], smoke['branch']), ('staging', staging, 'ftrutschnig/SMOKE-004'))
-        self.assertEqual((factory_run['target'], factory_run['base']), ('testing', staging))
+        smoke, factory_run = states['issue-58'], states['issue-57']
+        self.assertEqual((smoke['target'], smoke['base'], smoke['branch']), ('staging', staging, '58-reviewer-device-smoke'))
+        self.assertEqual((factory_run['target'], factory_run['base'], factory_run['branch']), ('testing', staging, '57-csv-export'))
         self.assertEqual((smoke['config_branch'], smoke['listed']), ('production', ['testing', 'staging', 'production']))
         self.assertEqual(smoke['policy_config']['config_branch'], 'production')
+
+    def test_start_continues_the_issue_branch_and_never_opens_a_second_one(self):
+        ctx = self.ctx()
+        self.assertEqual(pipeline.start_target(ctx, 'issue-57', self.tip, 'CSV export'), ('57-csv-export', self.tip, False))
+        # A branch created on GitHub ("Create a branch" on the issue) that has nothing of its own starts at the new tip.
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/57-csv-export-from-github')
+        newer = self.advance_origin()
+        checkouts.fetch(self.candidate, self.config, 'testing')  # as ctx.tip(target) does before
+        self.assertEqual(pipeline.start_target(ctx, 'issue-57', newer, 'CSV export'), ('57-csv-export-from-github', newer, False))
+        # A branch with commits of its own is continued.
+        git(self.candidate, 'switch', '--quiet', '-c', '57-csv-export-from-github', 'origin/57-csv-export-from-github')
+        (self.candidate / 'docs/mine.md').write_text('mine\n')
+        git(self.candidate, 'add', '.')
+        git(self.candidate, 'commit', '--quiet', '-m', 'mine')
+        mine = git(self.candidate, 'rev-parse', 'HEAD')
+        self.assertEqual(pipeline.start_target(ctx, 'issue-57', newer, 'CSV export'), ('57-csv-export-from-github', mine, True))
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/57-second')
+        with self.assertRaisesRegex(Blocked, r'#57 has several branches \(57-csv-export-from-github, 57-second\)'):
+            pipeline.start_target(ctx, 'issue-57', newer, 'CSV export')
+        self.assertEqual(pipeline.start_target(ctx, 'issue-570', newer, 'Other')[0], '570-other')
+
+    def pull(self, number, branch, task='#57'):
+        return {'number': number, 'draft': False, 'base': {'ref': 'testing'},
+                'head': {'ref': branch, 'sha': self.tip, 'repo': {'full_name': REPOSITORY}},
+                'user': user(self.config['maintainers'][0]),
+                'body': '```factory-handoff\n' + json.dumps({'runner': 'claude', 'task': task,
+                                                              'owner': 'ftrutschnig'}) + '\n```\n'}
+
+    def test_a_fix_lands_on_the_open_pr_or_the_issue_branch_never_on_a_new_one(self):
+        ctx = self.ctx()
+        ctx._gh = hub = IssuesAndPulls(self.config)
+        with self.assertRaisesRegex(Blocked, '#57 has no implementation yet.*`factory start workorder 57`.*factory hotfix'):
+            pipeline.fix_target(ctx, 'issue-57')
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/57-csv-export')
+        self.assertEqual(pipeline.fix_target(ctx, 'issue-57'), ('57-csv-export', self.tip, True, None))
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/ftrutschnig/csv')
+        hub.pulls = [self.pull(41, 'ftrutschnig/csv'), self.pull(40, 'other', task='#58')]
+        with mock.patch.object(engine, 'pr_checks', return_value=[]):
+            branch, base, exists, pull = pipeline.fix_target(ctx, 'issue-57')
+        self.assertEqual((branch, base, exists, pull['number']), ('ftrutschnig/csv', self.tip, True, 41))
+        hub.pulls.append(self.pull(42, '57-csv-export'))
+        with self.assertRaisesRegex(Blocked, 'several open pull requests implement #57: #41, #42; one work order is one PR'):
+            pipeline.fix_target(ctx, 'issue-57')
+
+    def test_a_hotfix_without_a_work_order_pushes_its_own_branch_and_opens_no_pr(self):
+        ctx = self.ctx()
+        name, base, exists = pipeline.hotfix_target(ctx, 'Totals use the wrong VAT rate\n\nIn the CSV export.', self.tip)
+        self.assertEqual((name, base, exists), (f'hotfix/{time.strftime("%Y%m%d")}-totals-use-the-wrong-vat-rate', self.tip, False))
+        runner = self.runner(kind='hotfix', request='Totals use the wrong VAT rate', branch=name, allowed_paths=None)
+        runner.order, runner.task, runner.free = runs.HOTFIX, None, True
+        self.commit(runner, {'docs/fix.md': 'fixed\n', 'outside.txt': 'no allowed paths without a work order\n'})
+        with mock.patch.object(runner, 'fetch_tips', return_value=(self.tip, self.tip)), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            runner.publish()
+        self.assertIn('No work order, so no PR', output.getvalue())
+        self.assertEqual(git(self.origin, 'log', '-1', '--format=%s', name), 'Totals use the wrong VAT rate')
+        self.assertEqual(git(self.origin, 'show', f'{name}:outside.txt'), 'no allowed paths without a work order')
+        with self.assertRaisesRegex(Blocked, 'already exists'):
+            pipeline.hotfix_target(ctx, 'Totals use the wrong VAT rate', self.tip)
+        # Its run has no preflight: the author fixes the problem, then the push gate decides.
+        runner = self.runner(kind='hotfix', request='x', allowed_paths=None, text=pipeline.NO_ORDER)
+        runner.order, runner.task, runner.free = runs.HOTFIX, None, True
+        shutil.rmtree(runner.work)
+        prompts = []
+        with mock.patch.object(runner, 'author', side_effect=lambda prompt, step: prompts.append(prompt) or True), \
+                mock.patch.object(runner, 'review', return_value='the problem'), \
+                mock.patch.object(runner, 'preflight') as preflight, mock.patch.object(runner, 'publish') as publish, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            runner.execute()
+        preflight.assert_not_called()
+        publish.assert_called_once_with()
+        self.assertIn('There is no work order', prompts[0])
+        self.assertIn('no work order, so no advisory preflight', output.getvalue())
+
+    def test_a_hotfix_without_a_work_order_starts_on_its_own_branch_from_the_default_branch(self):
+        ctx = self.ctx()
+        ctx._gh = mock.Mock(request=mock.Mock(side_effect=AssertionError('a plain prompt is read from no issue')))
+        with self.launching():
+            self.assertEqual(pipeline.launch(ctx, 'hotfix', None, 'Totals use the wrong VAT rate\n\nIn the CSV export.'), 0)
+        [path] = runs.every()
+        state = runs.state(path)
+        self.assertTrue(path.name.startswith(runs.HOTFIX + '-'))
+        self.assertEqual((state['kind'], state['order'], state['target'], state['base'], state['allowed_paths'], state['text']),
+                         ('hotfix', runs.HOTFIX, 'testing', self.tip, None, pipeline.NO_ORDER))
+        self.assertEqual((state['branch'], state['branch_exists'], state['pr']),
+                         (f'hotfix/{time.strftime("%Y%m%d")}-totals-use-the-wrong-vat-rate', False, None))
+        self.assertEqual(state['request'], 'Totals use the wrong VAT rate\n\nIn the CSV export.')
+
+    def test_a_fix_without_a_prompt_or_an_open_pr_checks_the_work_order_on_its_branch(self):
+        git(self.seed, 'push', '--quiet', str(self.origin), f'{self.tip}:refs/heads/57-csv-export')
+        ctx = self.ctx()
+        ctx._gh = hub = IssuesAndPulls(self.config)
+        hub.issue(57)
+        hub.approve(57)
+        with self.launching():
+            self.assertEqual(pipeline.launch(ctx, 'fix', '57'), 0)
+        [path] = runs.every()
+        state = runs.state(path)
+        self.assertEqual((state['kind'], state['order'], state['branch'], state['branch_exists'], state['target'], state['pr'],
+                          state['findings']), ('fix', 'issue-57', '57-csv-export', True, 'testing', None, None))
+        self.assertEqual(state['request'], 'the implementation of work order #57 against its acceptance criteria')
+
+    def test_continue_stop_and_cancel_address_the_hotfix_by_its_noun(self):
+        parser = factory.build_parser()
+        self.assertEqual(factory.run_reference(parser.parse_args(['stop', 'hotfix'])), runs.HOTFIX)
+        self.assertEqual(factory.run_reference(parser.parse_args(['cancel', 'workorder', '#57'])), 'issue-57')
+        path = runs.create(runs.HOTFIX, 'hotfix')
+        runs.update(path, order=runs.HOTFIX, kind='hotfix', status='running')
+        found = []
+        with mock.patch.object(factory, 'bootstrap', return_value=self.ctx()), \
+                mock.patch.object(runs, 'find', side_effect=lambda order: found.append(order) or path), \
+                mock.patch.object(runs, 'follow', return_value=0) as follow, \
+                mock.patch.object(runs, 'stop', return_value=None) as stop, mock.patch.object(runs, 'cancel', return_value=None) as cancel:
+            for command in ('continue', 'stop', 'cancel'):
+                args = parser.parse_args([command, 'hotfix'])
+                self.assertIsNone(factory.misuse(args))
+                self.assertEqual(factory.dispatch(args), 0, command)
+        self.assertEqual(found, [runs.HOTFIX] * 3)
+        follow.assert_called_once_with(path, runs.HOTFIX)
+        stop.assert_called_once_with(path)
+        cancel.assert_called_once_with(path)
+
+    def test_a_review_needs_an_approved_work_order_issue(self):
+        ctx = self.ctx()
+        ctx._gh = hub = IssuesAndPulls(self.config)
+        hub.issue(57)  # a draft: never approved
+        with mock.patch.object(pipeline, 'docker_ready', return_value=''), mock.patch.object(pipeline, 'author_keys', return_value={}), \
+                mock.patch.object(pipeline, 'Worker', side_effect=AssertionError('no model call')):
+            with self.assertRaisesRegex(Blocked, '#57 is not an approved work order'):
+                pipeline.review_now(ctx, 'check the totals', '57')
+            with self.assertRaisesRegex(Blocked, 'no GitHub issue number'):
+                pipeline.review_now(ctx, 'check the totals', 'FACTORY-003')
+        self.assertFalse((common.STATE_DIR / 'reviews').exists())
+
+    def test_next_steps_name_the_submit_that_finishes_each_kind_of_run(self):
+        hotfix = f'hotfix/{time.strftime("%Y%m%d")}-vat'
+        for kind, data, expected in (
+                ('start', {}, '`factory submit` to commit and push; when the work order is done, `factory submit --finished`.'),
+                ('fix', {'request': 'Totals are wrong\nIn the CSV export.'}, "  factory submit --finished --title 'Totals are wrong #57'"),
+                ('fix', {'request': None, 'pr': 41}, "  factory submit --finished --title 'Address the review findings of PR #41 #57'"),
+                ('hotfix', {'request': 'VAT', 'branch': hotfix}, f'then `factory submit` commits and pushes {hotfix}. It has no '
+                                                                  'work order: the maintainer in charge merges it or opens a PR')):
+            with self.subTest(kind=kind, data=data):
+                runner = self.runner(kind=kind, **data)
+                if kind == 'hotfix':
+                    runner.order, runner.task, runner.free = runs.HOTFIX, None, True
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    runner.next_steps(applied=True)
+                self.assertIn(expected, output.getvalue())
+                self.assertIn(f'stage what you accept (`git -C {shlex.quote(str(self.candidate))} add -p`)', output.getvalue())
+
+    def test_a_regenerated_branch_diagram_never_blocks_applying_a_run(self):
+        self.tip = self.advance_origin('docs/factory-branches.md', 'testing', 'generated\n')
+        checkouts.fetch(self.control, self.config, 'testing')
+        checkouts.fetch(self.candidate, self.config, 'testing')
+        git(self.candidate, 'merge', '--ff-only', '--quiet', 'origin/testing')
+        runner = self.runner()
+        self.commit(runner, {'docs/new.md': 'new\n'})
+        (self.candidate / 'docs/factory-branches.md').write_text('regenerated\n')
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            runner.apply()
+        self.assertIn('Applied to 57-csv-export', output.getvalue())
+        self.assertEqual(checkouts.current_branch(self.candidate), '57-csv-export')
+        self.assertEqual(((self.candidate / 'docs/new.md').read_text(), (self.candidate / 'docs/factory-branches.md').read_text()),
+                         ('new\n', 'regenerated\n'))
 
     def test_author_scope_refuses_control_only_orders(self):
         with self.assertRaisesRegex(Blocked, 'protected factory change'):
@@ -777,7 +905,7 @@ class PipelineTests(Repos):
         self.commit(runner, {'docs/new.md': 'new\n'})
         with contextlib.redirect_stdout(io.StringIO()):
             runner.apply()
-        self.assertEqual(checkouts.current_branch(self.candidate), 'ftrutschnig/FACTORY-003')
+        self.assertEqual(checkouts.current_branch(self.candidate), '57-csv-export')
         self.assertEqual((self.candidate / 'docs/new.md').read_text(), 'new\n')
         self.assertIn('?? docs/new.md', git(self.candidate, 'status', '--porcelain'))
 
@@ -863,7 +991,7 @@ class PipelineTests(Repos):
             runner.publish()
         self.assertEqual(applied, [True])
         self.assertIn('the last preflight did not pass on exactly this result', output.getvalue())
-        self.assertNotIn('ftrutschnig/FACTORY-003', git(self.origin, 'branch', '--list'))
+        self.assertNotIn('57-csv-export', git(self.origin, 'branch', '--list'))
         head = git(runner.work, 'rev-parse', 'HEAD')
         runner.last_review = ({'outcome': 'pass'}, head, self.tip)
         self.commit(runner, {'README.md': 'protected\n'})
@@ -873,12 +1001,34 @@ class PipelineTests(Repos):
                 mock.patch.object(runner, 'fetch_tips', return_value=(self.tip, self.tip)), contextlib.redirect_stdout(io.StringIO()) as output:
             runner.publish()
         self.assertIn('protected paths are never pushed automatically: README.md', output.getvalue())
-        self.assertNotIn('ftrutschnig/FACTORY-003', git(self.origin, 'branch', '--list'))
+        self.assertNotIn('57-csv-export', git(self.origin, 'branch', '--list'))
+
+    def test_a_hotfix_pr_of_a_work_order_links_its_issue(self):
+        runner = self.runner(kind='hotfix', request='Totals are wrong')
+        self.commit(runner, {'docs/fix.md': 'fixed\n'})
+        runner.last_review = ({'outcome': 'pass'}, git(runner.work, 'rev-parse', 'HEAD'), self.tip)
+        submitted = []
+
+        def child(args, env, **kwargs):
+            submitted.append((args, (runner.path / 'body.md').read_text()))
+            runs.update(runner.path, pr=9)
+            return 0, '', ''
+        with mock.patch.object(runner, 'fetch_tips', return_value=(self.tip, self.tip)), \
+                mock.patch.object(runner, 'child', side_effect=child), \
+                mock.patch.object(checkouts, 'candidate_snapshot', lambda *args: contextlib.nullcontext(self.tmp)), \
+                mock.patch.object(checkouts, 'policy_checkout', lambda *args: contextlib.nullcontext(self.tmp)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            runner.publish()
+        args, body = submitted[0]
+        self.assertIn('Work order: #57\n\nCloses #57', body)
+        self.assertEqual(args[args.index('--title') + 1], 'Totals are wrong #57')
+        self.assertEqual(git(self.origin, 'log', '-1', '--format=%s', '57-csv-export'), 'Totals are wrong #57')
 
 
 class BranchTests(Repos):
     def outside_spans(self, text):
-        """config.json text without the values of branches and config_branch."""
+        """What a config PR must leave byte-identical: the config.json text without the values of branches and
+        config_branch."""
         for start, end in sorted((branches._span(text, key) for key in ('branches', 'config_branch')), reverse=True):
             text = text[:start] + text[end:]
         return text
@@ -947,8 +1097,8 @@ class BranchTests(Repos):
             self.assertEqual(git(self.origin, 'diff', '--name-only', tips[base], branch), 'factory/config.json')
             self.assertEqual(json.loads(git(self.origin, 'show', f'{branch}:factory/config.json')),
                              branches.with_config_branch(published, 'release'))
-        self.assertIn('work-order/config PR into the production branch `release`', calls[0]['body'])
-        self.assertIn('work-order/config PR into the config branch `production`', calls[1]['body'])
+        self.assertIn('This is a config PR into the production branch `release`', calls[0]['body'])
+        self.assertIn('This is a config PR into the config branch `production`', calls[1]['body'])
         rerun = (f"`gh pr list --repo {REPOSITORY} --state open --limit 1000 --json number --jq '.[].number' | xargs -I{{}} gh "
                  f"workflow run factory.yml --repo {REPOSITORY} --ref release -f pr={{}} -f retry=true`")
         checks = [f"`gh pr list --repo {REPOSITORY} --state open --base {p} --limit 1000 --json number --jq '.[].number' | "
@@ -984,7 +1134,8 @@ class BranchTests(Repos):
             branching.set_config(self.ctx(), 'release')
         for expected in ('release cannot become the config branch yet',
                          'factory/config.json on release differs from production in branches, limits;',
-                         'release lacks the work orders FACTORY-009;', 'work orders on release differ from production: FACTORY-003.',
+                         'release lacks docs/work/FACTORY-009.md;',
+                         'files on release differ from production: docs/work/FACTORY-003.md.',
                          'Bring production into a validation branch and promote it into release: if <V> does not contain '
                          'production yet, `factory promote <V> --to production` merges production into <V> (push it); then '
                          '`factory promote <V> --to release`'):
@@ -1031,7 +1182,7 @@ class BranchTests(Repos):
         self.assertIn(f'Reusing {branch} ({pushed[:12]})', output.getvalue())
         self.assertEqual((git(self.origin, 'rev-parse', branch), calls[-1]['head'], calls[-1]['branch'], calls[-1]['task']),
                          (pushed, pushed, branch, None))  # the rerun opens the PR, again without a preflight
-        moved = self.advance_origin('docs/later.md', 'production')  # the old proposal no longer sits on the config tip
+        moved = self.advance_origin('docs/later.md', 'production')  # the config tip moves past the pushed proposal
         with self.submitted(calls)[1], mock.patch.object(common, 'ask', return_value=False), \
                 contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(Blocked, 'nothing proposed'):
             branching.add_validation(self.ctx(), 'qa', 'none', [])
@@ -1042,11 +1193,10 @@ class BranchTests(Repos):
         ask.assert_called_once_with(f'Replace {branch} with this proposal?')
         replaced = git(self.origin, 'rev-parse', branch)
         self.assertEqual((git(self.origin, 'rev-parse', f'{branch}^'), calls[-1]['head']), (moved, replaced))
-        maintainer = self.config['maintainers'][0]
         ctx = self.ctx()
         ctx.gh.pulls = [{'number': 9, 'html_url': 'https://github.com/x/pull/9', 'base': {'ref': 'production'},
                          'head': {'ref': branch, 'repo': {'full_name': REPOSITORY}},
-                         'user': {'id': maintainer['id'], 'login': maintainer['login']}}]
+                         'user': user(self.config['maintainers'][0])}]
         with self.submitted(calls)[1], contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(branching.add_validation(ctx, 'qa', 'none', []), 0)
         self.assertIn(f'Pull request #9 of {branch} into production is already open', output.getvalue())
@@ -1058,24 +1208,64 @@ class BranchTests(Repos):
         self.assertIn(f'`gh pr ready 9 --repo {REPOSITORY}`', output.getvalue())
         self.assertEqual((git(self.origin, 'rev-parse', branch), len(calls)), (replaced, 2))
 
-    def test_work_order_and_config_prs_skip_the_advisory_preflight(self):
+    def test_config_prs_skip_the_advisory_preflight_and_a_paused_pr_needs_a_passing_one(self):
         captured, ctx = [], self.ctx()
         with mock.patch.object(commands, 'run_session_submit', side_effect=lambda ctx, snapshot, args, on_created=None:
                                captured.append(args) or 5):
-            for task in (None, 'docs/work/FACTORY-SMOKE.md'):
+            for task in (None, '#57'):
                 self.assertEqual(commands.session_submit(ctx, self.tmp, task, 'title', self.tmp / 'body.md',
                                                          base='production' if task is None else 'testing'), 5)
         self.assertNotIn('--task', captured[0])
-        self.assertEqual(captured[1][:4], ['--task', 'docs/work/FACTORY-SMOKE.md', '--base', 'testing'])
-        # An open draft work-order PR becomes ready without any model call.
-        gh = mock.Mock()
+        self.assertEqual(captured[1][:4], ['--task', '#57', '--base', 'testing'])
+        # A PR a maintainer paused as a draft becomes ready again only after a passing preflight, then it is watched.
+        gh, review = mock.Mock(), {'outcome': 'changes_requested', 'summary': 'P1 left', 'findings': [], 'limitations': []}
+        paused = {'number': 7, 'draft': True, 'base': {'ref': 'testing'}}
         with mock.patch.object(type(ctx), 'gh', new_callable=mock.PropertyMock, return_value=gh), \
-                mock.patch.object(commands, 'preflight') as preflight, contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(commands.finish_open_pr(ctx, {'number': 7, 'draft': True, 'base': {'ref': 'production'}},
-                                                     'a' * 40, 'ftrutschnig/new-workorders', None, []), 0)
-        preflight.assert_not_called()
+                mock.patch.object(checkouts, 'candidate_snapshot', lambda *args: contextlib.nullcontext(self.tmp)), \
+                mock.patch.object(commands, 'preflight', return_value=review), \
+                mock.patch.object(commands, 'watch', return_value=0) as watch, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(commands.finish_open_pr(ctx, paused, 'a' * 40, '57-csv-export', '#57', []), 1)
+            gh.command.assert_not_called()
+            review['outcome'] = 'pass'
+            self.assertEqual(commands.finish_open_pr(ctx, paused, 'a' * 40, '57-csv-export', '#57', []), 0)
         gh.command.assert_called_once_with(['pr', 'ready', '7', '--repo', REPOSITORY])
+        watch.assert_called_once_with(ctx, 7)
+        self.assertIn('Pull request #7 stays a draft', output.getvalue())
         self.assertIn('Pull request #7 is ready for review.', output.getvalue())
+
+    def test_an_open_config_pr_waits_for_maintainer_approvals_and_is_not_watched(self):
+        ctx = self.ctx()
+        pull = {'number': 9, 'draft': False, 'base': {'ref': 'production'}}
+        with mock.patch.object(commands, 'watch', side_effect=AssertionError('nothing to watch: no senior review')), \
+                mock.patch.object(commands, 'preflight', side_effect=AssertionError('a ready PR needs no preflight')), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(commands.finish_open_pr(ctx, pull, 'a' * 40, 'ftrutschnig/config-add-qa', None, []), 0)
+        self.assertEqual(output.getvalue(), commands.approvals(ctx.model) + '\n')
+        self.assertEqual(commands.approvals(ctx.model), 'Next: 1 maintainer other than its author approves the pull request '
+                         'at its current head; a maintainer merges it on GitHub (`factory merge` never merges into a '
+                         'production branch).')
+        two = branches.parse({**self.config, 'work_order_approvals': 2})
+        self.assertTrue(commands.approvals(two).startswith('Next: 2 maintainers other than its author approve the pull request'))
+
+    def test_a_regenerated_branch_diagram_never_blocks_an_update(self):
+        (self.candidate / 'docs/factory-branches.md').write_text('regenerated\n')
+        production = self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009'))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(branching.update(self.ctx()), 0)
+        self.assertEqual(checkouts.head(self.candidate), production)
+        self.assertEqual((self.candidate / 'docs/factory-branches.md').read_text(), 'regenerated\n')
+        (self.candidate / 'docs/notes.md').write_text('mine\n')  # any other file still counts
+        with self.assertRaisesRegex(Blocked, 'uncommitted or untracked files'):
+            branching.update(self.ctx())
+
+    def test_a_regenerated_branch_diagram_never_blocks_a_promotion(self):
+        production = self.advance_origin('docs/production-only.md', 'production')
+        (self.candidate / 'docs/factory-branches.md').write_text('regenerated\n')
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(branching.promote(self.ctx(), 'testing'), 0)
+        self.assertIn('Fast-forwarded testing to production', output.getvalue())
+        self.assertEqual((checkouts.current_branch(self.candidate), checkouts.head(self.candidate)), ('testing', production))
+        self.assertEqual((self.candidate / 'docs/factory-branches.md').read_text(), 'regenerated\n')
 
     def test_use_branch_switches_a_clean_control_to_listed_branches_only(self):
         common.CONFIG_FILE.write_text(json.dumps({'control': str(self.control), 'candidate': str(self.candidate),
@@ -1093,7 +1283,7 @@ class BranchTests(Repos):
         newer = self.advance_origin()
         with contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(branching.use(ctx, 'testing'), 0)
-        self.assertIn('rules, policy and work orders still come from the config branch production', output.getvalue())
+        self.assertIn('rules and policy still come from the config branch production', output.getvalue())
         self.assertEqual((checkouts.current_branch(self.control), git(self.control, 'rev-parse', 'HEAD')), ('testing', newer))
         self.assertEqual(checkouts.device()['branch'], 'testing')
         self.assertEqual(checkouts.update_control(self.control, self.config, branch='testing'), (newer, False))
@@ -1318,20 +1508,20 @@ class BranchTests(Repos):
             branching.update(ctx)
         self.assertEqual(checkouts.head(self.candidate), merged)
 
-    def test_update_of_a_feature_branch_goes_up_with_the_next_submit(self):
+    def test_update_of_an_issue_branch_goes_up_with_the_next_submit(self):
         production = self.advance_origin('docs/work/FACTORY-009.md', 'production', order('FACTORY-009'))
-        git(self.candidate, 'switch', '--quiet', '-c', 'ftrutschnig/issue-57')
+        git(self.candidate, 'switch', '--quiet', '-c', '57-csv-export')
         (self.candidate / 'docs/feature.md').write_text('feature\n')
         git(self.candidate, 'add', 'docs/feature.md')
         git(self.candidate, 'commit', '--quiet', '-m', 'feature')
         feature = checkouts.head(self.candidate)
         with contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(branching.update(self.ctx()), 0)
-        self.assertEqual(checkouts.current_branch(self.candidate), 'ftrutschnig/issue-57')
+        self.assertEqual(checkouts.current_branch(self.candidate), '57-csv-export')
         self.assertEqual(git(self.candidate, 'rev-list', '--parents', '-n', '1', 'HEAD').split()[1:], [feature, production])
         self.assertIn('it goes up with your next `factory submit`', output.getvalue())
         self.assertNotIn('push origin', output.getvalue())
-        self.assertEqual(git(self.origin, 'branch', '--list', 'ftrutschnig/*'), '')
+        self.assertEqual(git(self.origin, 'branch', '--list', '57-*'), '')
 
     def test_branches_write_the_mermaid_document_and_a_self_contained_page(self):
         ctx = self.ctx(branches.with_validation(self.config, 'staging', 'none', ['smoke']))
@@ -1343,12 +1533,13 @@ class BranchTests(Repos):
         for expected in ('```mermaid\nflowchart LR\n', 'v0["testing<br/>gate: full<br/>kinds: factory, product<br/>default branch"]',
                          'v1["staging<br/>gate: none<br/>kinds: smoke"]', 'p0["production<br/>review: maintainer-manual<br/>config branch"]',
                          'feature -->|PR| v0', 'feature -->|PR, not gated| v1', 'v1 -->|promotion PR| p0',
-                         'p0 -. sync work orders .-> v0', '| `production` | production, config branch |'):
+                         'p0 -. factory update .-> v0', '| `production` | production, config branch |',
+                         'feature["issue branches<br/>e.g. 57-csv-export"]'):
             self.assertIn(expected, text)
         self.assertIn('staging', output.getvalue())
         page = opened[0].read_text()
         self.assertTrue(opened[0].is_relative_to(common.STATE_DIR))
-        for expected in ('<svg', 'class="sync"', 'flowchart LR', 'review: maintainer-manual'):
+        for expected in ('<svg', 'class="back"', 'flowchart LR', 'review: maintainer-manual'):
             self.assertIn(expected, page)
         for remote in ('http', '<script', '<link', '<img', '@import', 'url(http'):
             self.assertNotIn(remote, page)
@@ -1393,9 +1584,9 @@ class BranchTests(Repos):
                 for area in areas + rects:
                     self.assertFalse(inside(point, area), (kind, point, area))
         drawn = {(start, end): arrow for (start, end, _, _), arrow in zip(branching.edges(model), arrows)}
-        for key in [key for key in boxes if key.startswith('v')]:  # promotion and sync arrows of a pair run apart
+        for key in [key for key in boxes if key.startswith('v')]:  # promotion and update arrows of a pair run apart
             (_, _, leave, _, enter, _), (kind, _, back, _, arrive, _) = drawn[key, 'p0'], drawn['p0', key]
-            self.assertEqual(kind, 'sync')
+            self.assertEqual(kind, 'back')
             self.assertGreaterEqual(min(abs(leave - arrive), abs(enter - back)), 15)
         page = branching.page(model)
         self.assertEqual(page.count('class="muted">not gated</text>'), 2)
@@ -1434,10 +1625,11 @@ class HelpAndInstallTests(unittest.TestCase):
             tree = Path(temp) / 'repo'
             shutil.copytree(ROOT / 'tools/factory', tree / 'tools/factory', ignore=shutil.ignore_patterns('tests', '__pycache__'))
             (tree / 'factory').mkdir()
-            (tree / 'factory/config.json').write_text(branch_fixture.text(ROOT))
+            (tree / 'factory/config.json').write_text(candidate_config_text())
             env = {'PATH': os.environ['PATH'], 'HOME': temp}
-            for argv in (['--help'], ['issue', '--help'], ['fix', '--help'], ['submit', '--help'], ['promote', '--help'],
-                         ['add', '--help'], ['update', '--help'], ['use', '--help'], ['branches', '--help']):
+            for argv in (['--help'], ['start', '--help'], ['fix', '--help'], ['hotfix', '--help'], ['stop', '--help'],
+                         ['review', '--help'], ['submit', '--help'], ['promote', '--help'], ['add', '--help'],
+                         ['update', '--help'], ['use', '--help'], ['branches', '--help']):
                 result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), *argv],
                                         env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -1445,16 +1637,12 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertIn('When to use it', result.stdout)
             result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), '--version'],
                                     env=env, capture_output=True, text=True, timeout=30)
-            self.assertEqual((result.returncode, result.stdout), (0, 'factory 0.4.0\n'), result.stderr)
+            self.assertEqual((result.returncode, result.stdout), (0, 'factory 0.5.0\n'), result.stderr)
             result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), 'add',
                                      'validation', 'branch', 'staging', '--review', 'no'],
                                     env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 2)
             self.assertIn('needs --gate', result.stderr)
-            result = subprocess.run([sys.executable, '-I', '-S', '-B', str(tree / 'tools/factory/cli/factory.py'), 'sync',
-                                     'workorders'], env=env, capture_output=True, text=True, timeout=30)
-            self.assertEqual(result.returncode, 2)
-            self.assertIn('`factory update [<target-branch>]`', result.stderr)
             self.assertEqual(list(tree.rglob('*.pyc')), [])
             self.assertFalse((Path(temp) / '.config').exists())
 
@@ -1502,8 +1690,9 @@ class HelpAndInstallTests(unittest.TestCase):
     def wait(self, daemon_from=None, inspect_from=None, listed=True, hang=False, timeout=120, asleep=False,
              desktop=False, environ=None):
         """common.wait_for_docker against a fake docker on a simulated clock: the daemon answers from `daemon_from` s
-        (None: never; `desktop`: once `docker desktop start` ran), the image inspects from `inspect_from` s (None: never;
-        `asleep`: once a container ran, as Docker Desktop's resource saver wakes only then) and is `listed` meanwhile."""
+        (None: never; `desktop`: once `docker desktop start` ran), the image inspects from `inspect_from` s (None:
+        never; `asleep`: once a container ran, as Docker Desktop's resource saver wakes only then) and is `listed`
+        meanwhile."""
         now, said, calls, state = [0.0], [], [], {'started': False, 'woken': False}
 
         def run(command, **kwargs):
@@ -1613,7 +1802,7 @@ class HelpAndInstallTests(unittest.TestCase):
         text = (ROOT / 'tools/factory/cli/install-factory-cli.sh').read_text()
         start = text.index('config_branch="$("$python" -I -c \'\n') + len('config_branch="$("$python" -I -c \'\n')
         code = text[start:text.index('\n\' "$named_config" "$target_config" "$named" "$branch" "$repository" "$not_yet")"', start)]
-        config = branch_fixture.load(ROOT)
+        config = candidate_config()
         listed = branches.with_production(config, 'release', 'no')
         moved = branches.with_config_branch(listed, 'release')
 
@@ -1650,19 +1839,19 @@ class HelpAndInstallTests(unittest.TestCase):
             canned[f'repos/{REPOSITORY}/rulesets/{n}'] = {'id': n, 'enforcement': state, 'target': 'branch',
                                                           'conditions': {'ref_name': {'include': [f'refs/heads/{target}'], 'exclude': []}}}
         responses.write_text(json.dumps(canned if rulesets is not None else {}))
-        env = {**ENV, 'HOME': str(temp), 'PATH': f"{tools}{os.pathsep}{ENV['PATH']}", 'FAKE_GH_RESPONSES': str(responses),
+        env = {**GIT_ENV, 'HOME': str(temp), 'PATH': f"{tools}{os.pathsep}{GIT_ENV['PATH']}", 'FAKE_GH_RESPONSES': str(responses),
                'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': f'url.{origin.as_uri()}.insteadOf', 'GIT_CONFIG_VALUE_0': HTTPS}
-        subprocess.run(['git', 'init', '-q', '--bare', str(origin)], env=ENV, check=True)
-        subprocess.run(['git', 'init', '-q', str(device)], env=ENV, check=True)  # the checkout the installer runs from
+        subprocess.run(['git', 'init', '-q', '--bare', str(origin)], env=GIT_ENV, check=True)
+        subprocess.run(['git', 'init', '-q', str(device)], env=GIT_ENV, check=True)  # the checkout the installer runs from
         for path in ('tools/factory/cli/install-factory-cli.sh', 'factory/github-settings.json'):
             (device / path).parent.mkdir(parents=True, exist_ok=True)
             (device / path).write_bytes((ROOT / path).read_bytes())
-        (device / 'factory/config.json').write_text(json.dumps(branch_fixture.load(ROOT)))
+        (device / 'factory/config.json').write_text(json.dumps(candidate_config()))
 
         def publish(name, files):
             """Branch `name` on the stand-in with exactly these files (bytes or JSON-able data; None leaves it out)."""
             shutil.rmtree(seed, ignore_errors=True)
-            subprocess.run(['git', 'init', '-q', '-b', name, str(seed)], env=ENV, check=True)
+            subprocess.run(['git', 'init', '-q', '-b', name, str(seed)], env=GIT_ENV, check=True)
             for path, data in files.items():
                 if data is not None:
                     (seed / path).parent.mkdir(parents=True, exist_ok=True)
@@ -1703,22 +1892,22 @@ class HelpAndInstallTests(unittest.TestCase):
         def dirty_control():
             """A control directory that passes nothing: reaching its refusal proves every configuration check passed."""
             shutil.rmtree(temp / 'dirty', ignore_errors=True)
-            subprocess.run(['git', 'clone', '-q', str(origin), str(temp / 'dirty')], env=ENV, check=True)
+            subprocess.run(['git', 'clone', '-q', str(origin), str(temp / 'dirty')], env=GIT_ENV, check=True)
             (temp / 'dirty/own.txt').write_text('own\n')
             return temp / 'dirty'
         return script, publish, install, dirty_control
 
     def test_installer_stage_one_explains_every_configuration_problem(self):
-        config = branch_fixture.load(ROOT)
-        legacy = {k: v for k, v in config.items() if k not in ('config_branch', 'branches')}  # before the branch model
-        legacy['default_branch'] = branches.RESERVED[0]
+        config = candidate_config()
+        unmodelled = {k: v for k, v in config.items() if k not in ('config_branch', 'branches')}  # no branch model
+        unmodelled['default_branch'] = branches.RESERVED[0]
         installer = 'tools/factory/cli/install-factory-cli.sh'
         hint = 'GitHub does not carry the branch model of FACTORY-008 yet'
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
             script, publish, install, dirty_control = self.stand_in(temp)  # no production ruleset readable yet
             cases = [  # (published branches, default branch, expected message)
-                ({'old': {'factory/config.json': legacy}}, 'old',
+                ({'old': {'factory/config.json': unmodelled}}, 'old',
                  'factory/config.json on old names no config branch (config_branch): ' + hint),
                 ({'old': {'factory/config.json': None, 'README.md': b'x\n'}}, 'old', 'origin/old has no factory/config.json: ' + hint),
                 ({'old': {'factory/config.json': b'{not json\n'}}, 'old', 'factory/config.json on old is not valid JSON'),
@@ -1746,9 +1935,9 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertIn(f"control checkout {temp / 'dirty'} is not a clean clone of production", result.stderr)
 
     def test_installer_starts_from_the_production_branches_github_protects(self):
-        config = branch_fixture.load(ROOT)
+        config = candidate_config()
         listed = branches.with_production(config, 'release', 'no')
-        legacy = {k: v for k, v in config.items() if k not in ('config_branch', 'branches')}
+        unmodelled = {k: v for k, v in config.items() if k not in ('config_branch', 'branches')}
         installer = 'tools/factory/cli/install-factory-cli.sh'
         for rulesets, options, expected in (
                 # One protected production branch: taken, whatever the default branch carries.
@@ -1767,7 +1956,7 @@ class HelpAndInstallTests(unittest.TestCase):
             with self.subTest(rulesets=rulesets, options=options), tempfile.TemporaryDirectory() as temp:
                 temp = Path(temp)
                 script, publish, install, dirty_control = self.stand_in(temp, rulesets)
-                publish('old', {'factory/config.json': legacy})  # the default branch before the branch model
+                publish('old', {'factory/config.json': unmodelled})  # a default branch without a branch model
                 for name in ('production', 'release'):
                     publish(name, {'factory/config.json': listed, installer: script})
                 result = install('old', *options, control=dirty_control())
@@ -1781,7 +1970,7 @@ class HelpAndInstallTests(unittest.TestCase):
             with self.subTest(answer=answer), tempfile.TemporaryDirectory() as temp:
                 temp = Path(temp)
                 script, publish, install, dirty_control = self.stand_in(temp, ['production', 'release'])
-                publish('old', {'factory/config.json': legacy})
+                publish('old', {'factory/config.json': unmodelled})
                 for name in ('production', 'release'):
                     publish(name, {'factory/config.json': listed, installer: script})
                 result = install('old', control=dirty_control(), answer=answer)
@@ -1805,14 +1994,45 @@ class HelpAndInstallTests(unittest.TestCase):
         self.assertIsNone(factory.misuse(args))
         self.assertEqual(args.kinds, ['smoke', 'factory'])
         self.assertIsNone(factory.misuse(parser.parse_args(['update', 'testing'])))
-        # The replaced sync names factory update and exits 2, before any configuration, lock or network.
-        for argv in (['sync', 'workorders'], ['sync', 'workorder', '9'], ['sync']):
-            with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()) as stderr, \
-                    mock.patch.object(factory, 'dispatch', side_effect=AssertionError('dispatched')):
-                factory.entry(argv)
-            self.assertEqual(raised.exception.code, 2, argv)
-            self.assertIn('was replaced by `factory update [<target-branch>]`', stderr.getvalue())
-        self.assertNotIn('sync', helptext.overview())
+        # Every command that takes a work order names it `workorder <issue>`; only a hotfix may go without one.
+        args = parser.parse_args(['hotfix', 'workorder', '57', 'Totals are wrong'])
+        self.assertIsNone(factory.misuse(args))
+        self.assertEqual((args.workorder, args.prompt), ('57', 'Totals are wrong'))
+        args = parser.parse_args(['hotfix', 'workorder', '"#57"'])
+        self.assertIsNone(factory.misuse(args))
+        self.assertEqual((args.workorder, args.prompt), ('"#57"', None))
+        args = parser.parse_args(['hotfix', 'Totals are wrong'])
+        self.assertIsNone(factory.misuse(args))
+        self.assertEqual((args.workorder, args.prompt), (None, 'Totals are wrong'))
+        for argv, problem in ((['hotfix', 'workorder'], 'takes the issue number'), (['hotfix', 'a', 'b'], 'only a prompt in quotes'),
+                              (['hotfix', ' '], 'the prompt is empty'), (['stop', 'workorder'], 'needs the issue number'),
+                              (['cancel', 'hotfix', '57'], 'takes no issue number')):
+            self.assertIn(problem, factory.misuse(parser.parse_args(argv)), argv)
+        for argv in (['continue', 'workorder', '57'], ['stop', 'hotfix'], ['review', 'workorder', '57', 'check it'],
+                     ['fix', 'workorder', '#57'], ['submit', '--finished']):
+            self.assertIsNone(factory.misuse(parser.parse_args(argv)), argv)
+        for argv in (['start', '57'], ['fix', '57'], ['continue'], ['review', 'check it'], ['submit', '--workorder', '57'],
+                     ['submit', 'workorders'], ['submit', '--draft'], ['submit', '--context', 'a.py'],
+                     ['fix', 'workorder', '57', '--pr', '3'], ['review', 'check it', '--workorder', '57'], ['issue'], ['sync']):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                parser.parse_args(argv)
+        for removed in ('factory issue', 'submit workorders', 'sync', 'FACTORY-', 'legacy'):
+            self.assertNotIn(removed, helptext.overview())
+        for name, entry in helptext.COMMANDS.items():
+            text = ' '.join([entry['what'], entry['when'], *entry['examples']])
+            self.assertNotRegex(text, r'FACTORY-|legacy|issue-57|--workorder|--draft|--context|-fix-|<ID>', name)
+
+    def test_every_tool_version_comes_from_the_npm_manifest(self):
+        package = json.loads((ROOT / 'factory/package.json').read_text())
+        lock = json.loads((ROOT / 'factory/package-lock.json').read_text())
+        self.assertEqual(package['dependencies'], lock['packages']['']['dependencies'])
+        for name, pin in package['dependencies'].items():
+            self.assertEqual(lock['packages'][f'node_modules/{name}']['version'], pin, name)
+        codex, claude = package['dependencies']['@openai/codex'], package['dependencies']['@anthropic-ai/claude-code']
+        self.assertEqual(clients.IMAGE, f'aicepeak-factory-clients:codex-{codex}-claude-{claude}')  # the image author runs use
+        self.assertEqual(clients.VERSIONS, {'codex': f'codex-cli {codex}', 'claude': f'{claude} (Claude Code)'})
+        for path in (ROOT / 'tools/factory/doctor.py', ROOT / 'tools/factory/cli/commands.py'):
+            self.assertNotRegex(path.read_text(), r'\b\d+\.\d+\.\d+\b', path.name)
 
     def test_shim_is_marked_quoted_and_never_replaces_foreign_files(self):
         with tempfile.TemporaryDirectory() as temp:

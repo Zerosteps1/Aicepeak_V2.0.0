@@ -13,11 +13,11 @@ import sys
 sys.dont_write_bytecode = True  # Keep trusted control checkouts clean during CLI use.
 
 import branches  # this trusted checkout's branch model, never code from --root
+import clients
+from contracts import REPOSITORY, REVIEWER
 
 
 ROOT = Path(__file__).resolve().parents[2]
-IMAGE = "aicepeak-factory-clients:codex-0.164.0-claude-2.1.311"
-REPOSITORY = "Zerosteps1/Aicepeak_V2.0.0"
 
 
 def probe(command, *, root, env=None):
@@ -100,8 +100,6 @@ def inspect(root, runner):
         "Target repository and branch model must match the reviewed setup" + (": " + "; ".join(found) if found else
         f" (GitHub default branch {config.get('default_branch')}, config branch {config.get('config_branch')})."),
         "Check repository, default_branch, config_branch and branches in factory/config.json; never guess an identity.")
-    add("reviewer_config", config.get("review_model") == "gpt-6-astra" and config.get("review_effort") == "high",
-        "Required: gpt-6-astra with effort high; configuration does not prove model access.", "Restore the review contract.")
     # Run only this trusted checkout's adapter checker, never code from --root.
     adapters = regular_file(ROOT, "tools/factory/clients.py") and probe(
         [sys.executable, "-B", str(ROOT / "tools/factory/clients.py"), "check", "--root", str(root)], root=root)
@@ -116,7 +114,7 @@ def inspect(root, runner):
         ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "rev-parse", "--verify", "HEAD"], root=root)
     add("git_head", git_ok, "Local commit present; remote branch not checked.", "Check out the reviewed factory commit.")
     add("git_identity",repository_identity(root),"Git root and origin must belong exactly to the target repository.",
-        "Start in the right checkout; compare origin with git@github.com:Zerosteps1/Aicepeak_V2.0.0.git.")
+        f"Start in the right checkout; compare origin with git@github.com:{REPOSITORY}.git.")
     github_ok = bool(shutil.which("gh")) and probe(["gh", "auth", "status", "--hostname", "github.com"], root=root)
     add("github_auth", github_ok, "GitHub CLI authentication checked; administration and App rights stay open.",
         "As an authorized human run gh auth login --hostname github.com, then settings.py inspect.")
@@ -128,15 +126,15 @@ def inspect(root, runner):
     daemon = bool(shutil.which("docker")) and probe(["docker", "info", "--format", "{{.ServerVersion}}"], root=root, env=docker_env)
     add("docker_daemon", daemon, "Docker endpoint checked without personal Docker configuration.",
         "Start Docker or grant access; set FACTORY_DOCKER_HOST explicitly if needed.")
-    image = daemon and probe(["docker", "image", "inspect", IMAGE], root=root, env=docker_env)
+    image = daemon and probe(["docker", "image", "inspect", clients.IMAGE], root=root, env=docker_env)
     add("client_image", image, "Client image present locally; execution not yet checked." if image else "Client image missing or Docker access blocked; not proven.",
-        "docker build -f factory/Dockerfile -t " + IMAGE + " factory; then clients.py smoke --root .")
+        "docker build -f factory/Dockerfile -t " + clients.IMAGE + " factory; then clients.py smoke --root .")
     # The isolated launcher needs the provider key of its runner; the reviewer needs none (ADR-0005).
     for name in ("OPENAI_API_KEY" if runner == "codex" else "ANTHROPIC_API_KEY", "CONTEXT7_API_KEY"):
         add("environment_" + name, bool(os.environ.get(name)), "Presence in the launcher environment only: " + name,
             "Provide " + name + " through the execution environment's secret facility; never write it to the repository.")
     version = codex_version()
-    add("reviewer_codex", version == "codex-cli 0.164.0", "Senior reviewer host needs codex-cli 0.164.0; found: " + (version or "none"),
+    add("reviewer_codex", version == clients.VERSIONS["codex"], f"Senior reviewer host needs {clients.VERSIONS['codex']}; found: " + (version or "none"),
         "Install the pinned Codex CLI; a different version needs a reviewed tool-surface check first.")
     for check, name, service in (("reviewer_access_token", "CODEX_ACCESS_TOKEN", "aicepeak-factory-codex-access-token"),
                                  ("reviewer_publisher_key", "FACTORY_PUBLISHER_APP_PRIVATE_KEY", "aicepeak-factory-publisher-key")):
@@ -169,11 +167,11 @@ def inspect(root, runner):
                         "live_status": "unverified",
                         "required_evidence": ["settings.py inspect/diff: identities, Apps, rulesets and environment",
                                               "clients.py smoke: pinned CLIs; launch/run: real model, Context7 and OpenAI Docs access",
-                                              "local_review.py --smoke: gpt-6-astra high under the ChatGPT Business access token",
+                                              f"local_review.py --smoke: {REVIEWER['model']} {REVIEWER['effort']} under the ChatGPT Business access token",
                                               "real smoke PR with review, correction, new review and human approval"]},
             "product": {"status": "locally_configured_unverified" if approved and product_checks else "blocked",
                         "northstar_configured_and_approved": approved, "product_checks_configured": product_checks,
-                        "continuation": "Store and approve the canonical north star in the repository; approve checks and a versioned product task before implementation.",
+                        "continuation": "Store and approve the canonical north star in the repository; approve the product checks and a product work-order issue before implementation.",
                         "blocks_factory_setup": False},
             "note": "No secret values, model calls, container starts or changes. gh auth status may contact GitHub read-only. This report is not an acceptance."}
 

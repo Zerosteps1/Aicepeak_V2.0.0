@@ -5,6 +5,19 @@ import re
 from pathlib import PurePosixPath
 
 
+# The repository every trusted tool acts on. It is written into the code, not read from factory/config.json, so a
+# changed configuration can never point the factory at another repository; verify.py checks every other copy against it.
+REPOSITORY = "Zerosteps1/Aicepeak_V2.0.0"
+# The binding senior reviewer. Code, not configuration: a config PR needs only maintainer approvals and no AI review,
+# so it must not be able to swap the reviewer that gates every other change.
+REVIEWER = {"model": "gpt-6-astra", "effort": "high"}
+KINDS = ("factory", "product", "smoke")
+ISSUE_TASK = re.compile(r"#([1-9][0-9]{0,8})")
+FILE_TASK = re.compile(r"docs/work/[A-Za-z0-9_-]+\.md")
+TASK_REFERENCE = re.compile(f"{ISSUE_TASK.pattern}|{FILE_TASK.pattern}")
+TASK_BLOCK = re.compile(r"```factory-task\s*\n(.*?)\n```", re.S)
+
+
 class Blocked(ValueError):
     pass
 
@@ -63,7 +76,7 @@ def validate_review(review, schema, snapshot):
     validate(review, schema)
     for key in ("repository", "pr", "head_sha", "base_sha", "policy_sha", "run_id", "run_attempt"):
         require(review[key] == snapshot[key], "review binding mismatch: " + key)
-    require(review["model"] == "gpt-6-astra" and review["effort"] == "high", "wrong reviewer")
+    require(review["model"] == REVIEWER["model"] and review["effort"] == REVIEWER["effort"], "wrong reviewer")
     require(set(review["scope"]) == set(snapshot["files"]), "incomplete diff scope")
     require(len(review["scope"]) == len(set(review["scope"])), "duplicate scope")
     require(len({f["id"] for f in review["findings"]}) == len(review["findings"]), "duplicate finding ID")
@@ -81,7 +94,7 @@ def validate_review(review, schema, snapshot):
 
 
 def binding(snapshot):
-    """Check external_id: repository, PR, head, policy (config tip), target branch, run and attempt."""
+    """A check run's external_id. Readers split it on ':' and compare fields by position, so the order is a contract."""
     return (f"{snapshot['repository']}:{snapshot['pr']}:{snapshot['head_sha']}:{snapshot['policy_sha']}:"
             f"{snapshot['base_ref']}:{snapshot['run_id']}:{snapshot['run_attempt']}")
 
@@ -105,23 +118,29 @@ def handoff(body, config):
         raise Blocked("invalid handoff JSON") from exc
     require(isinstance(obj, dict) and set(obj) == {"runner", "task", "owner"}, "handoff fields")
     require(obj["runner"] in config["runners"], "runner not allowlisted")
-    # A work-order issue (#N, tools/factory/issues.py) or a work-order file on the config branch.
     require(isinstance(obj["task"], str) and TASK_REFERENCE.fullmatch(obj["task"]) is not None, "invalid task reference")
     require(obj["owner"] in [m["login"] for m in config["maintainers"]], "unverified responsible maintainer")
     return obj
 
 
-TASK_REFERENCE = re.compile(r"docs/work/[A-Za-z0-9_-]+\.md|#[1-9][0-9]{0,8}")
-TASK_BLOCK = re.compile(r"```factory-task\s*\n(.*?)\n```", re.S)
+def maintainer(user, config):
+    """The configured maintainer entry of a GitHub user, or None. The numeric ID decides; the login must still match
+    (GitHub compares logins ignoring case), so a renamed or recreated account never inherits maintainer rights."""
+    user = user if isinstance(user, dict) else {}
+    if user.get("type") != "User" or not isinstance(user.get("login"), str):
+        return None
+    return next((entry for entry in config["maintainers"] if isinstance(entry, dict) and entry.get("id") == user.get("id")
+                 and str(entry.get("login", "")).lower() == user["login"].lower()), None)
 
 
 def task_spec(text):
-    """The approved factory-task block of a work order, from a file or an issue description."""
+    """Work-order files and issue descriptions share this parser, so both meet the same rules; issues.draft_spec reads
+    a block that is not approved yet."""
     blocks = TASK_BLOCK.findall(text)
     require(len(blocks) == 1, 'approved task metadata absent')
     spec = json.loads(blocks[0])
     require(isinstance(spec, dict) and set(spec) == {'status', 'kind', 'allowed_paths'}, 'invalid task metadata')
-    require(spec['status'] == 'approved' and spec['kind'] in ('factory', 'product', 'smoke'), 'task not approved')
+    require(spec['status'] == 'approved' and spec['kind'] in KINDS, 'task not approved')
     require(isinstance(spec['allowed_paths'], list) and spec['allowed_paths'], 'task scope absent')
     for path in spec['allowed_paths']:
         require(isinstance(path, str), 'invalid task scope')
@@ -131,8 +150,6 @@ def task_spec(text):
 
 def is_control(path, config):
     safe_path(path)
-    if path == "factory-smoke.json":
-        return False
     return path == config.get("northstar_path") or any(path == p or (p.endswith("/") and path.startswith(p)) for p in config["protected_paths"])
 
 

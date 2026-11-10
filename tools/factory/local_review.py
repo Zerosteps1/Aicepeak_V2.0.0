@@ -25,9 +25,10 @@ import threading
 import time
 import uuid
 
+import branches
 import engine
 import local_review_queue as queue
-from contracts import Blocked, digest, require, validate_review
+from contracts import REVIEWER, Blocked, digest, require, validate_review
 from github_api import installation
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +38,7 @@ REVIEW_TERMINATE_SECONDS = 2
 # Credentials come from the environment or the maintainer's login keychain, never from files.
 KEYCHAIN = {'CODEX_ACCESS_TOKEN': 'aicepeak-factory-codex-access-token',
             'FACTORY_PUBLISHER_APP_PRIVATE_KEY': 'aicepeak-factory-publisher-key'}
-# Codex 0.164.0 features that add tools or load state. Flags alone do not remove the shell:
+# Features of the pinned Codex CLI that add tools or load state. Flags alone do not remove the shell:
 # the generated model catalog disables it (shell_type) and apply_patch for the reviewer model.
 TOOL_FEATURES = ('shell_tool', 'unified_exec', 'apps', 'plugins', 'remote_plugin', 'multi_agent', 'image_generation',
                  'view_image', 'browser_use', 'browser_use_external', 'in_app_browser', 'computer_use', 'hooks', 'goals',
@@ -85,13 +86,13 @@ def child_env(tmp, token):
 
 def reviewer_catalog(catalog):
     """Only the reviewer model, without shell or patch tools."""
-    models = [m for m in catalog.get('models', []) if m.get('slug') == 'gpt-6-astra']
-    require(len(models) == 1, 'Codex model catalog has no gpt-6-astra entry')
+    models = [m for m in catalog.get('models', []) if m.get('slug') == REVIEWER['model']]
+    require(len(models) == 1, f"Codex model catalog has no {REVIEWER['model']} entry")
     return {'models': [{**models[0], 'shell_type': 'disabled', 'apply_patch_tool_type': None, 'experimental_supported_tools': []}]}
 
 
 def session_overrides(catalog_path, instructions):
-    overrides = ['model="gpt-6-astra"', 'model_reasoning_effort="high"', 'sandbox_mode="read-only"', 'approval_policy="never"',
+    overrides = [f'model="{REVIEWER["model"]}"', f'model_reasoning_effort="{REVIEWER["effort"]}"', 'sandbox_mode="read-only"', 'approval_policy="never"',
                  'web_search="disabled"', 'project_doc_max_bytes=0', 'history.persistence="none"', 'analytics.enabled=false',
                  'feedback.enabled=false', 'check_for_update_on_startup=false', 'cli_auth_credentials_store="ephemeral"',
                  'agents.enabled=false', f'model_catalog_json={json.dumps(str(catalog_path))}']
@@ -102,7 +103,7 @@ def session_overrides(catalog_path, instructions):
 
 def codex_arguments(schema_path, output_path, workdir, catalog_path, instructions):
     args = ['codex', 'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--strict-config', '--skip-git-repo-check',
-            '--json', '--sandbox', 'read-only', '--cd', str(workdir), '--model', 'gpt-6-astra',
+            '--json', '--sandbox', 'read-only', '--cd', str(workdir), '--model', REVIEWER['model'],
             '--output-schema', str(schema_path), '--output-last-message', str(output_path)]
     for override in session_overrides(catalog_path, instructions):
         args += ['-c', override]
@@ -110,7 +111,7 @@ def codex_arguments(schema_path, output_path, workdir, catalog_path, instruction
 
 
 def check_tool_surface(items):
-    """Fail closed unless the model-visible tools are exactly the inert set verified for 0.164.0.
+    """Fail closed unless the model-visible tools are exactly the inert set verified for the pinned Codex CLI.
 
     Nested tools are read from the exec description, which may omit deferred ones; the
     disabled code-mode host is what makes every exec call fail (regression-tested).
@@ -127,7 +128,7 @@ def check_tool_surface(items):
 
 
 def parse_events(stdout):
-    """Count turns and usage; any tool item means the tool-less contract was broken."""
+    """Any tool item means the tool-less contract was broken, so the whole review is discarded."""
     thread, turns, usage = None, 0, {}
     for line in stdout.decode(errors='replace').splitlines():
         try:
@@ -361,7 +362,6 @@ def dispatch_review(config, pr, check_id, claim_id, result_id=0):
 
 
 def production_command(config, pr):
-    """The maintainer's own command that re-runs the production check of a PR on the config branch."""
     return ['gh', 'workflow', 'run', 'factory-promotion.yml', '--repo', config['repository'],
             '--ref', config['config_branch'], '-f', f'pr={pr}']
 
@@ -495,7 +495,7 @@ def smoke(config):
                                       'required': ['status'], 'additionalProperties': False}))
         result, events = run_codex('Return only the schema.', 'Return status OK.', schema, config)
     require(result == {'status': 'OK'}, 'smoke output unexpected')
-    return {'status': 'passed', 'model': 'gpt-6-astra', 'effort': 'high', 'auth': 'CODEX_ACCESS_TOKEN', **events}
+    return {'status': 'passed', **REVIEWER, 'auth': 'CODEX_ACCESS_TOKEN', **events}
 
 
 def main():
@@ -506,7 +506,7 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='print the review; consumes a review claim and completes the gate as blocked')
     parser.add_argument('--no-dispatch', action='store_true', help='never start an automatic correction run')
     args = parser.parse_args()
-    config = engine.load_config()
+    config = branches.load_config()
     try:
         if args.smoke:
             print(json.dumps(smoke(config)))

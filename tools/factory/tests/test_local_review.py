@@ -15,29 +15,12 @@ import time
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(os.environ.get('FACTORY_CANDIDATE', Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(ROOT / 'tools/factory'))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import branch_fixture
+from factory_testlib import JOB_ENV, MAINTAINER, QueueTransport, fixture_config, review_for, reviewer as reviewer_metadata
 import contracts
 import engine
 import local_review
-from contracts import Blocked
-from test_local_review_queue import QueueTransport, reviewer as reviewer_metadata
+from contracts import REVIEWER, Blocked
 import local_review_queue as queue
-
-# The engine tests' job environment, inlined: importing test_engine would put it into review material too.
-ENV = {'GITHUB_SHA': 'b' * 40, 'GITHUB_REF': 'refs/heads/production', 'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1',
-       'FACTORY_RETRY': 'false'}
-
-
-def review_for(snapshot, outcome='changes_requested'):
-    findings = [{'id': 'F-1', 'kind': 'defect', 'confidence': 'high', 'priority': 'P1', 'file': 'example.txt', 'line': 1, 'impact': 'i', 'evidence': 'e',
-                 'requirement': 'r', 'minimal_fix': 'm', 'verification': 'v'}] if outcome == 'changes_requested' else []
-    binding = {k: snapshot[k] for k in ('repository', 'pr', 'head_sha', 'base_sha', 'policy_sha', 'run_id', 'run_attempt')}
-    return {**binding, 'model': 'gpt-6-astra', 'effort': 'high', 'scope': ['example.txt'], 'evidence': [],
-            'limitations': [], 'complete': True, 'outcome': outcome, 'summary': 's', 'findings': findings}
-
 
 TOOL_ITEM = {'type': 'additional_tools', 'role': 'developer', 'tools': [{'type': 'namespace', 'name': 'functions', 'tools': [
     {'type': 'function', 'name': 'exec', 'description': 'Run JavaScript. declare const tools: { read_mcp_resource(args: {}): Promise<unknown> }'},
@@ -51,10 +34,12 @@ class ToolLessSession(unittest.TestCase):
         for flag in ('--ephemeral', '--ignore-user-config', '--ignore-rules', '--strict-config', '--skip-git-repo-check', '--json'):
             self.assertIn(flag, args)
         self.assertEqual(args[args.index('--sandbox') + 1], 'read-only')
+        self.assertEqual(args[args.index('--model') + 1], REVIEWER['model'])
         self.assertEqual(args[args.index('--output-schema') + 1], '/r/schema.json')
         overrides = [args[i + 1] for i, arg in enumerate(args) if arg == '-c']
         for expected in ('agents.enabled=false', 'model_catalog_json="/r/catalog.json"', 'web_search="disabled"',
-                         'project_doc_max_bytes=0', 'model_reasoning_effort="high"', 'approval_policy="never"'):
+                         'project_doc_max_bytes=0', f'model="{REVIEWER["model"]}"',
+                         f'model_reasoning_effort="{REVIEWER["effort"]}"', 'approval_policy="never"'):
             self.assertIn(expected, overrides)
         for feature in local_review.TOOL_FEATURES:
             self.assertIn(f'features.{feature}=false', overrides)
@@ -68,12 +53,13 @@ class ToolLessSession(unittest.TestCase):
         self.assertTrue(env['HOME'].startswith(tmp) and env['CODEX_HOME'].startswith(tmp))
 
     def test_reviewer_catalog_removes_shell_and_patch_tools(self):
-        catalog = {'models': [{'slug': 'other'}, {'slug': 'gpt-6-astra', 'shell_type': 'unified_exec', 'apply_patch_tool_type': 'freeform',
+        model = REVIEWER['model']
+        catalog = {'models': [{'slug': 'other'}, {'slug': model, 'shell_type': 'unified_exec', 'apply_patch_tool_type': 'freeform',
                                                   'experimental_supported_tools': ['clock'], 'context_window': 272000}]}
         result = local_review.reviewer_catalog(catalog)
-        self.assertEqual(result, {'models': [{'slug': 'gpt-6-astra', 'shell_type': 'disabled', 'apply_patch_tool_type': None,
+        self.assertEqual(result, {'models': [{'slug': model, 'shell_type': 'disabled', 'apply_patch_tool_type': None,
                                               'experimental_supported_tools': [], 'context_window': 272000}]})
-        with self.assertRaisesRegex(Blocked, 'gpt-6-astra'):
+        with self.assertRaisesRegex(Blocked, f'no {model} entry'):
             local_review.reviewer_catalog({'models': [{'slug': 'other'}]})
 
     def test_tool_surface_preflight_allows_only_the_isolated_script_tool(self):
@@ -405,14 +391,13 @@ class TrustedCheckout(unittest.TestCase):
 
 class Publication(unittest.TestCase):
     def setUp(self):
-        self.config = branch_fixture.load(ROOT)
-        self.config.update(repository='fixture/repo', publisher_app_id=7, automatic_correction=False, maintainers=[{'id': 1, 'login': 'test-human'}])
+        self.config = fixture_config(automatic_correction=False)
         self.transport = QueueTransport(self.config)
         self.next_run = 100
         dispatcher = patch.object(local_review, 'dispatch_review', side_effect=self.dispatch)
         dispatcher.start()
         self.addCleanup(dispatcher.stop)
-        env = patch.dict(os.environ, ENV)
+        env = patch.dict(os.environ, JOB_ENV)
         env.start()
         self.addCleanup(env.stop)
 
@@ -473,14 +458,14 @@ class Publication(unittest.TestCase):
         with patch.object(local_review.subprocess, 'run') as run:
             outcome = local_review.publish_review(self.transport, self.config, check, record, review_for(snapshot), reviewer, dispatch=True)
         self.assertEqual(outcome, 'changes_requested')
-        run.assert_not_called()  # automatic_correction is false during the shadow phase
+        run.assert_not_called()  # automatic_correction is false in this fixture
         published = self.transport.checks[snapshot['check_id']]
         saved = json.loads(published['output']['text'])
         self.assertEqual((published['status'], published['conclusion'], saved['phase'], saved['reviewer']), ('completed', 'failure', 'completed', reviewer))
         self.assertIn('needs-author-action', self.transport.comments[-1]['body'])
         self.assertEqual(self.transport.labels, {'needs-author-action'})
         self.config['automatic_correction'] = True
-        self.transport.runs[2] = {'triggering_actor': {'type': 'User', 'id': 1}}
+        self.transport.runs[2] = {'triggering_actor': dict(MAINTAINER)}
         captured = {}
         with patch.dict(os.environ, {'GITHUB_RUN_ID': '2'}), patch.object(engine, 'installation', return_value=self.transport), \
                 patch.object(engine, 'emit', side_effect=lambda name, value: captured.update({name: value})):
@@ -546,7 +531,7 @@ class Publication(unittest.TestCase):
         with patch.object(local_review, 'require_trusted_checkout'), patch.object(local_review, 'run_codex', side_effect=fake_codex):
             outcome = local_review.review_pr(self.transport, 1, self.config, dispatch=False, dry_run=False)
         self.assertEqual(outcome, 'pass')
-        # Live Astra/high twice returned a prose scope (PR #20); generation now names the exact files.
+        # A prose scope can never pass: generation names the exact files.
         self.assertEqual(schemas[0]['properties']['scope']['items']['enum'], snapshot['files'])
         self.assertEqual(schemas[0]['properties']['findings']['items']['properties']['file']['enum'], snapshot['files'])
         self.assertIn('APPROVED WORK ORDER', prompts[0][1])

@@ -1,4 +1,5 @@
 """Boundary tests: no Docker daemon, network, personal configuration, or credentials."""
+import contextlib
 import copy
 import importlib.util
 import io
@@ -16,14 +17,14 @@ import types
 import unittest
 from unittest import mock
 
-REPO = Path(os.environ.get("FACTORY_CANDIDATE", Path(__file__).resolve().parents[3])).resolve()
+from factory_testlib import ROOT
 # The harness is trusted base code, while the implementation under test must
 # come from the candidate even with python -I and previously imported modules.
 _package = types.ModuleType("_factory_client_candidate")
-_package.__path__ = [str(REPO / "tools/factory")]
+_package.__path__ = [str(ROOT / "tools/factory")]
 sys.modules[_package.__name__] = _package
 def _candidate_module(name):
-    spec = importlib.util.spec_from_file_location(f"{_package.__name__}.{name}", REPO / "tools/factory" / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"{_package.__name__}.{name}", ROOT / "tools/factory" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -37,9 +38,24 @@ SONNET = {
     "author_pricing_usd_per_million": {"codex": {"input": 10, "output": 50, "cache_read": 1},
                                        "claude": {"input": 2, "output": 10, "cache_read": 0.2, "cache_write": 2.5}},
 }
+AUTHOR_REPORT = {"summary": "done", "changes": [], "verification": [], "acceptance": [], "review_items": [],
+                 "control_proposals": [], "open_issues": []}
+FINDINGS = {"summary": "One problem.", "findings": [{"file": "app.py", "line": 1, "problem": "empty module",
+                                                     "evidence": "only `pass`", "fix": "add the function"}]}
+
+
+def claude_result(report, **fields):
+    """Claude Code's final result message of a --json-schema run (Agent SDK structured outputs)."""
+    return json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "",
+                       "structured_output": report, **fields}).encode()
+
+
+def report_schema(kind):
+    return json.loads((ROOT / clients.REPORT_SCHEMAS[kind]).read_text())
+
+
 CONFIG = {
     "author_models": {"codex": "gpt-6-astra", "claude": None},
-    "review_model": "gpt-6-astra",
     "limits": {"max_cost_usd": 25, "max_run_cost_usd": 5, "author_output_tokens": 32000, "timeout_seconds": 900, "max_patch_bytes": 200000},
     "pricing_usd_per_million": {"review_input": 10, "review_output": 50},
     "author_pricing_usd_per_million": {"codex": {"input": 10, "output": 50}, "claude": None},
@@ -52,10 +68,12 @@ class AdapterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "trusted"
         self.root.mkdir()
-        shutil.copytree(REPO / ".agents", self.root / ".agents")
+        shutil.copytree(ROOT / ".agents", self.root / ".agents")
         (self.root / "factory").mkdir()
         (self.root / "factory/config.json").write_text(json.dumps(CONFIG))
         (self.root / "factory/policy.md").write_text("Trusted policy")
+        for name in clients.REPORT_SCHEMAS.values():
+            shutil.copyfile(ROOT / name, self.root / name)
         (self.root / "tools/factory").mkdir(parents=True)
         (self.root / "tools/factory/placeholder.py").write_text("# trusted")
         (self.root / "AGENTS.md").write_text("Trusted repository instructions")
@@ -76,7 +94,7 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(config["mcp_servers"]["openai_docs"]["required"])
 
     def test_role_adapters_omit_keys_codex_ignores_for_roles(self):
-        # Codex 0.164.0 discards sandbox_mode from role files; the line would only mislead readers.
+        # The pinned Codex CLI discards sandbox_mode from role files; the line would only mislead readers.
         for name in ("factory_author", "factory_senior_reviewer"):
             role = tomllib.loads((self.root / f".codex/agents/{name}.toml").read_text())
             self.assertNotIn("sandbox_mode", role)
@@ -182,8 +200,10 @@ class AdapterTests(unittest.TestCase):
         calls = []
         real_command = clients.command
         image_id = "sha256:" + "a" * 64
+        disputed = {**AUTHOR_REPORT, "summary": "No code change needed.", "review_items": [
+            {"item": "R1", "response": "disputed", "explanation": "test evidence attached"}]}
         events = b'\n'.join(json.dumps(event).encode() for event in [
-            {"type": "item.completed", "item": {"type": "agent_message", "text": "Disputed R1: no code change needed; test evidence attached."}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(disputed)}},
             {"type": "turn.completed"},
         ])
 
@@ -204,8 +224,10 @@ class AdapterTests(unittest.TestCase):
             subprocess_run.side_effect = lambda args, **kw: subprocess.CompletedProcess(args, 0) if args[0] == "docker" else real_run(args, **kw)
             result = clients.run(candidate, self.root, "codex", b"Review R1", output)
         self.assertEqual(output.read_bytes(), b"")
-        self.assertIn("Disputed R1", Path(result["report"]).read_text())
+        self.assertIn("- R1: disputed — test evidence attached", Path(result["report"]).read_text())
         worker = next((args, env) for args, env in calls if "_worker" in args)
+        # The worker receives the trusted author-report schema; _worker hands it to Codex as --output-schema.
+        self.assertEqual(json.loads(worker[0][worker[0].index("--report-schema") + 1]), report_schema("author"))
         self.assertIn(image_id, worker[0])
         self.assertNotIn(clients.IMAGE, worker[0])
         self.assertNotIn("OPENAI_API_KEY", worker[1])
@@ -214,7 +236,7 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(any("target=/work," in value and "type=bind" in value for value in worker[0]))
         self.assertTrue(any("volume-keeper" in str(args) and "none" in args for args, _ in calls))
         # Without volume-nocopy Docker copies the image's /work owner onto the shared tmpfs
-        # when the second container mounts it; the host-uid seed then fails (live run 40762431387).
+        # when the second container mounts it; the host-uid seed then fails.
         work_mounts = [value for args, _ in calls for value in args if value.startswith("type=volume,") and "target=/work" in value]
         self.assertGreaterEqual(len(work_mounts), 4)
         self.assertTrue(all(value.endswith(",volume-nocopy") for value in work_mounts))
@@ -241,7 +263,7 @@ class AdapterTests(unittest.TestCase):
             if args[1:3] == ["image", "inspect"]:
                 return ("sha256:" + "a" * 64).encode()
             if "_worker" in args:
-                return json.dumps({"type": "result", "subtype": "success", "result": "done", "is_error": False}).encode()
+                return claude_result(AUTHOR_REPORT)
             return b""
         oidc = {"ACTIONS_ID_TOKEN_REQUEST_URL": "https://pipelines.actions.githubusercontent.com/x/idtoken?api-version=2.0",
                 "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc-request-only-for-broker", "CONTEXT7_API_KEY": "context-only-test-value"}
@@ -288,22 +310,22 @@ class AdapterTests(unittest.TestCase):
         return result, calls
 
     def test_labels_reach_every_container_network_and_volume(self):
-        result, calls = self.run_claude(lambda args, kwargs: json.dumps({"type": "result", "result": "done", "is_error": False}).encode(),
-                                        labels=["aicepeak.factory.run=FACTORY-007-1"])
+        result, calls = self.run_claude(lambda args, kwargs: claude_result(AUTHOR_REPORT),
+                                        labels=["aicepeak.factory.run=issue-57-20261108-101500-a1b2"])
         self.assertEqual(result["status"], "completed")
         created = [args for args in calls if args[:2] == ["docker", "run"] or args[:3] in (["docker", "network", "create"], ["docker", "volume", "create"])]
         self.assertGreaterEqual(len(created), 7)  # network, volume, keeper, seed, proxy, worker, extract
         for args in created:
-            self.assertEqual(args[args.index("--label") + 1], "aicepeak.factory.run=FACTORY-007-1", args[:3])
+            self.assertEqual(args[args.index("--label") + 1], "aicepeak.factory.run=issue-57-20261108-101500-a1b2", args[:3])
         for bad in (["Upper=case"], ["no-value="], ["a=b"] * 9):
             with self.assertRaisesRegex(clients.ClientError, "labels"):
                 clients.run(Path(self.temp.name), self.root, "claude", b"x", Path(self.temp.name) / "x.patch", labels=bad)
 
     def test_read_only_review_mounts_work_read_only_and_returns_no_patch(self):
-        result, calls = self.run_claude(lambda args, kwargs: json.dumps({"type": "result", "result": "1. app.py:1 empty module", "is_error": False}).encode(),
-                                        read_only=True)
+        result, calls = self.run_claude(lambda args, kwargs: claude_result(FINDINGS), read_only=True)
         worker = next(args for args in calls if "_worker" in args)
         self.assertIn("--read-only", worker)
+        self.assertEqual(json.loads(worker[worker.index("--report-schema") + 1]), report_schema("review"))
         work = [value for value in worker if value.startswith("type=volume,") and "target=/work" in value]
         self.assertEqual(work, [work[0]])
         self.assertTrue(work[0].endswith(",volume-nocopy,readonly"))
@@ -311,7 +333,7 @@ class AdapterTests(unittest.TestCase):
         self.assertIsNone(result["patch"])
         self.assertTrue(result["read_only"])
         self.assertFalse((Path(self.temp.name) / "out.patch").exists())
-        self.assertIn("empty module", Path(result["report"]).read_text())
+        self.assertIn("1. `app.py:1`: empty module", Path(result["report"]).read_text())
         with self.assertRaisesRegex(clients.ClientError, "prompt"):
             clients.run(Path(self.temp.name), self.root, "claude", None, Path(self.temp.name) / "y.patch", read_only=True, interactive=True)
 
@@ -339,7 +361,7 @@ class AdapterTests(unittest.TestCase):
             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "pass"}]}},
             {"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "python3 -m unittest\nrm -rf /"}}]}},
-            {"type": "result", "subtype": "success", "result": "Done: app.py reviewed.", "is_error": False, "total_cost_usd": 0.42},
+            json.loads(claude_result({**AUTHOR_REPORT, "summary": "Done: app.py reviewed."}, total_cost_usd=0.42)),
         ]
         def worker(args, kwargs):
             self.assertIn("--events", args)
@@ -604,7 +626,7 @@ class BrokerTests(unittest.TestCase):
                 self.policy.prepare("/openai/v1/responses", json.dumps({**fixture, field: value}).encode())
 
     def test_incremental_tool_items_get_the_same_hosted_tool_check(self):
-        # Codex 0.164.0 announces tools as an input item of type additional_tools, not in "tools".
+        # The pinned Codex CLI announces tools as an input item of type additional_tools, not in "tools".
         native = {"type": "additional_tools", "role": "developer", "tools": [{"type": "namespace", "name": "functions", "tools": [{"type": "function", "name": "exec"}]}]}
         self.policy.prepare("/openai/v1/responses", self.payload(input=[native]))
         for hosted in ({"type": "web_search"}, {"type": "namespace", "name": "x", "tools": [{"type": "web_search"}]}):
@@ -731,8 +753,8 @@ class BrokerTests(unittest.TestCase):
 
 class LauncherTests(unittest.TestCase):
     def test_candidate_modules_and_canonical_inputs_share_root(self):
-        self.assertEqual(Path(clients.__file__).resolve().parents[2], REPO)
-        self.assertEqual(Path(proxy.__file__).resolve().parents[2], REPO)
+        self.assertEqual(Path(clients.__file__).resolve().parents[2], ROOT.resolve())
+        self.assertEqual(Path(proxy.__file__).resolve().parents[2], ROOT.resolve())
 
     def test_codex_worker_routes_through_broker_when_project_provider_keys_are_ignored(self):
         for interactive in (False, True):
@@ -807,15 +829,15 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn("--max-turns", clients.worker_arguments("claude", "claude-sonnet-5-5", interactive=True, max_turns=60, max_budget_usd=12.0))
 
     def test_factory_runs_only_the_claude_author(self):
-        config = json.loads((REPO / "factory/config.json").read_text())
+        config = json.loads((ROOT / "factory/config.json").read_text())
         self.assertEqual(config["runners"], ["claude"])
         self.assertEqual(set(config["anthropic_federation"]), {"organization_id", "service_account_id", "federation_rule_id", "workspace_id"})
         # The configured (non-secret) federation IDs must pass the broker's own validation.
         proxy.FederatedToken(config["anthropic_federation"], "https://pipelines.actions.githubusercontent.com/x/idtoken?api-version=2.0", "request-token", opener=lambda *a, **k: None)
 
     def test_standard_npm_lock_matches_reviewed_cli_versions(self):
-        package = json.loads((REPO / "factory/package.json").read_text())
-        lock = json.loads((REPO / "factory/package-lock.json").read_text())
+        package = json.loads((ROOT / "factory/package.json").read_text())
+        lock = json.loads((ROOT / "factory/package-lock.json").read_text())
         self.assertEqual(package["dependencies"], lock["packages"][""]["dependencies"])
         self.assertEqual(package["dependencies"]["@openai/codex"], clients.VERSIONS["codex"].split()[1])
         self.assertEqual(package["dependencies"]["@anthropic-ai/claude-code"], clients.VERSIONS["claude"].split()[0])
@@ -886,25 +908,127 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual({url for url, _ in seen}, {"http://credential-proxy:8080/context7/mcp", "http://credential-proxy:8080/openai-docs/mcp"})
 
     def test_final_report_omits_reasoning_and_keeps_dispute(self):
+        disputed = {**AUTHOR_REPORT, "summary": "No change.", "review_items": [
+            {"item": "R1", "response": "disputed", "explanation": "the test proves the change would regress behavior"}]}
         output = b'\n'.join(json.dumps(event).encode() for event in [
             {"type": "item.completed", "item": {"type": "reasoning", "text": "PRIVATE DO NOT PUBLISH"}},
-            {"type": "item.completed", "item": {"type": "agent_message", "text": "Disputed R1: test proves the proposed change would regress behavior."}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(disputed)}},
             {"type": "turn.completed", "usage": {"output_tokens": 42}},
         ])
-        report, truncated = clients.final_report("codex", output)
-        self.assertIn("Disputed R1", report)
+        report, truncated = clients.final_report("codex", output, "author", report_schema("author"))
+        self.assertIn("- R1: disputed — the test proves", report)
         self.assertNotIn("PRIVATE", report)
         self.assertFalse(truncated)
-        report, _ = clients.final_report("claude", b'{"result":"No patch: requirement conflicts with approved scope.","is_error":false}')
-        self.assertIn("No patch", report)
+        claude = claude_result({**AUTHOR_REPORT, "summary": "No patch: requirement conflicts with approved scope."},
+                               result="PRIVATE free text is never the report")
+        report, _ = clients.final_report("claude", claude, "author", report_schema("author"))
+        self.assertEqual(report, "No patch: requirement conflicts with approved scope.\n")
+
+    def test_author_report_renders_every_section_and_leaves_out_empty_ones(self):
+        full = {"summary": "Added the export.\nTwo lines.",
+                "changes": [{"path": "app.py", "what": "export()"}],
+                "verification": [{"command": "python3 -m unittest", "outcome": "passed", "evidence": "Ran 3 tests\nOK"}],
+                "acceptance": [{"criterion": "AC-1", "status": "met", "evidence": "test_export"}],
+                "review_items": [{"item": "R2", "response": "addressed", "explanation": "renamed"}],
+                "control_proposals": [{"path": "factory/config.json", "change": "raise max_patch_bytes"}],
+                "open_issues": ["no load test"]}
+        self.assertEqual(clients.render_author_report(full), (
+            "Added the export. Two lines.\n\n"
+            "Changed files:\n- `app.py`: export()\n\n"
+            "Verification:\n- `python3 -m unittest`: passed — Ran 3 tests OK\n\n"
+            "Acceptance criteria:\n- AC-1: met — test_export\n\n"
+            "Review items:\n- R2: addressed — renamed\n\n"
+            "Control-path proposals:\n- `factory/config.json`: raise max_patch_bytes\n\n"
+            "Open issues:\n- no load test"))
+        self.assertEqual(clients.render_author_report(AUTHOR_REPORT), "done")
+
+    def test_review_findings_render_as_a_numbered_list_or_no_problems(self):
+        two = {"summary": "Two problems.", "findings": [
+            FINDINGS["findings"][0], {"file": "docs/a.md", "line": 0, "problem": "stale", "evidence": "says v1", "fix": "v2"}]}
+        self.assertEqual(clients.render_review_findings(two), (
+            "Two problems.\n\n"
+            "1. `app.py:1`: empty module\n   Evidence: only `pass`\n   Fix: add the function\n"
+            "2. `docs/a.md`: stale\n   Evidence: says v1\n   Fix: v2"))
+        none = {"summary": "the change matches the request", "findings": []}
+        report, _ = clients.final_report("claude", claude_result(none), "review", report_schema("review"))
+        self.assertEqual(report, "No problems found: the change matches the request\n")
 
     def test_report_bounds_errors_and_nontext(self):
-        report, truncated = clients.final_report("claude", json.dumps({"result": "ä" * 8000}).encode())
+        long = {**AUTHOR_REPORT, "summary": "ä" * 8000}
+        report, truncated = clients.final_report("claude", claude_result(long), "author", report_schema("author"))
         self.assertLess(len(report.encode()), 8192)
         self.assertTrue(truncated)
-        for output in (b'{"result":null}', b'{"result":"failure","is_error":true}', b'{"result":"bad\\u001b[0m"}'):
-            with self.assertRaises(clients.ClientError):
-                clients.final_report("claude", output)
+        author = report_schema("author")
+        cases = [(claude_result(None), "no structured report"),
+                 (claude_result(None, result="free text only"), "no structured report"),
+                 (claude_result(AUTHOR_REPORT, is_error=True), "successful result"),
+                 (claude_result(AUTHOR_REPORT, subtype="error_max_structured_output_retries"), "successful result"),
+                 (claude_result({**AUTHOR_REPORT, "extra": 1}), "does not match its schema"),
+                 (claude_result({**AUTHOR_REPORT, "verification": [{"command": "x", "outcome": "green", "evidence": ""}]}),
+                  "does not match its schema"),
+                 (claude_result({**AUTHOR_REPORT, "summary": "bad\x1b[0m"}), "control characters"),
+                 (claude_result({**AUTHOR_REPORT, "summary": " "}), "no final report")]
+        for output, reason in cases:
+            with self.subTest(reason=reason, output=output[:80]):
+                with self.assertRaisesRegex(clients.ClientError, reason):
+                    clients.final_report("claude", output, "author", author)
+        codex_text = b'\n'.join([json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "not json"}}).encode(),
+                                 b'{"type":"turn.completed"}'])
+        with self.assertRaisesRegex(clients.ClientError, "no structured report"):
+            clients.final_report("codex", codex_text, "author", author)
+        # The schema stays with the trusted root: a review run validates against the findings schema.
+        with self.assertRaisesRegex(clients.ClientError, "does not match its schema"):
+            clients.final_report("claude", claude_result(AUTHOR_REPORT), "review", report_schema("review"))
+
+    def test_structured_output_retries_have_a_stop_hint(self):
+        retries = json.dumps({"type": "result", "subtype": "error_max_structured_output_retries", "num_turns": 9}).encode()
+        self.assertEqual(clients.native_failure("claude", retries),
+                         "Claude stopped (error_max_structured_output_retries: no schema-valid final report, 9 turns)")
+
+    def test_report_schemas_are_api_safe_strict_and_broker_compatible(self):
+        sys.path.insert(0, str(ROOT / "tools/factory"))
+        try:
+            import structured
+        finally:
+            sys.path.remove(str(ROOT / "tools/factory"))
+        forbidden = {"image_url", "file_id", "file_url", "audio_url"}
+
+        def walk(schema, where):
+            if schema.get("type") == "object":
+                # Codex's strict --output-schema: every property required, no additional properties.
+                self.assertIs(schema["additionalProperties"], False, where)
+                self.assertEqual(set(schema["required"]), set(schema["properties"]), where)
+                self.assertFalse(forbidden & set(schema["properties"]), where)
+                for name, sub in schema["properties"].items():
+                    walk(sub, where + "." + name)
+            if schema.get("type") == "array":
+                walk(schema["items"], where + "[]")
+        for kind in clients.REPORT_SCHEMAS:
+            with self.subTest(kind=kind):
+                schema = report_schema(kind)
+                self.assertEqual(structured.api_problems(schema), [])
+                walk(schema, kind)
+                self.assertIn(kind, clients.RENDERERS)
+                self.assertIn(kind, clients.REPORT_INSTRUCTIONS)
+
+    def test_unattended_runs_ask_the_cli_for_the_report_schema(self):
+        schema = json.dumps(report_schema("review"))
+        claude = clients.worker_arguments("claude", "claude-sonnet-5-5", read_only=True, report_schema=schema)
+        self.assertEqual(claude[claude.index("--json-schema") + 1], schema)
+        self.assertEqual(claude[claude.index("--tools") + 1], "Read,Glob,Grep,Skill,StructuredOutput")
+        self.assertIn("StructuredOutput", claude[claude.index("--allowedTools") + 1].split(","))
+        author = clients.worker_arguments("claude", "claude-sonnet-5-5", report_schema=schema)
+        self.assertNotIn("--tools", author)
+        self.assertIn("StructuredOutput", author[author.index("--allowedTools") + 1].split(","))
+        codex = clients.worker_arguments("codex", "gpt-6-astra", report_schema=schema)
+        self.assertEqual(codex[codex.index("--output-schema") + 1], clients.CODEX_REPORT_SCHEMA)
+        self.assertEqual(codex[-1], "-")
+        for runner, model in (("claude", "claude-sonnet-5-5"), ("codex", "gpt-6-astra")):
+            interactive = clients.worker_arguments(runner, model, interactive=True, report_schema=schema)
+            self.assertFalse({"--json-schema", "--output-schema"} & set(interactive), runner)
+            self.assertNotIn("StructuredOutput", " ".join(interactive))
+            plain = clients.worker_arguments(runner, model)
+            self.assertFalse({"--json-schema", "--output-schema"} & set(plain), runner)
 
     def test_native_flags_fresh_sessions_and_explicit_sources(self):
         codex = clients.worker_arguments("codex", "gpt-6-astra")
@@ -934,6 +1058,31 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("--security-opt=no-new-privileges", flags)
         self.assertIn("127.0.0.1", flags)
         self.assertFalse(any("docker.sock" in flag for flag in flags))
+
+
+
+class PinnedClients(unittest.TestCase):
+    def test_image_and_versions_come_from_the_npm_manifest(self):
+        pins = json.loads((ROOT / "factory/package.json").read_text())["dependencies"]
+        codex, claude = pins["@openai/codex"], pins["@anthropic-ai/claude-code"]
+        expected = (f"aicepeak-factory-clients:codex-{codex}-claude-{claude}",
+                    {"codex": f"codex-cli {codex}", "claude": f"{claude} (Claude Code)"})
+        self.assertEqual(clients.pinned_clients(), expected)
+        self.assertEqual((clients.IMAGE, clients.VERSIONS), expected)
+        # One bump of the manifest changes the image and every version check at once.
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = Path(temp) / "factory/package.json"
+            manifest.parent.mkdir()
+            manifest.write_text(json.dumps({"dependencies": {"@openai/codex": "9.8.7", "@anthropic-ai/claude-code": "6.5.4"}}))
+            with mock.patch.object(clients, "__file__", str(Path(temp) / "tools/factory/clients.py")):
+                self.assertEqual(clients.pinned_clients(), ("aicepeak-factory-clients:codex-9.8.7-claude-6.5.4",
+                                                            {"codex": "codex-cli 9.8.7", "claude": "6.5.4 (Claude Code)"}))
+
+    def test_the_image_command_prints_the_pinned_tag(self):
+        with mock.patch.object(sys, "argv", ["clients.py", "image"]), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(clients.main(), 0)
+        self.assertEqual(output.getvalue(), clients.IMAGE + "\n")
+        self.assertIn('"$root/tools/factory/clients.py" image', (ROOT / "tools/factory/sandbox-verify.sh").read_text())
 
 
 if __name__ == "__main__":

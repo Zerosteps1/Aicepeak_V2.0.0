@@ -23,7 +23,7 @@ from common import Blocked, git, is_ancestor, out, require, say, warn
 import session
 import workorders
 
-CONFIG = 'factory/config.json'
+CONFIG = branches.CONFIG
 DIAGRAM = 'docs/factory-branches.md'
 PAGE = 'branches.html'
 NAME_CLASS, MUTED_CLASS = ' class="name"', ' class="muted"'
@@ -35,7 +35,7 @@ def local_tip(repo, name):
     return found.stdout.decode().strip() if found.returncode == 0 else None
 
 
-# --- config PRs (type b: only factory/config.json, into a production branch) ------------------------
+# --- config PRs (only factory/config.json, into a production branch) --------------------------------
 
 def settings_step(branch):
     return (f'Apply the repository settings from a clean checkout of `{branch}`: `python3 tools/factory/settings.py diff`, '
@@ -50,17 +50,16 @@ def create_step(ctx, name, source):
 
 
 def proposed(repo, sha, tip, after):
-    """An earlier push of exactly this proposal: one commit on tip whose only change is factory/config.json = after."""
     parents = out(repo, 'rev-list', '--parents', '-n', '1', sha).split()[1:]
     return (parents == [tip] and out(repo, 'diff', '--name-only', '--no-renames', tip, sha) == CONFIG
             and commands.blob(repo, sha, CONFIG) == after)
 
 
 def propose(ctx, change, title, slug, summary, steps, target=None):
-    """Push a branch from the tip of a production branch (default: the config branch) whose only change is
-    factory/config.json, then open the PR into it through session.py (a work-order/config PR: maintainer
-    approvals, merged on GitHub). A branch left by an earlier attempt is reused when it holds exactly this proposal and
-    replaced only after confirmation; an open PR of it is reported and left alone."""
+    """A config PR from the tip of a production branch (default: the config branch) that changes only
+    factory/config.json; maintainer approvals and a merge on GitHub decide it. A branch left by an earlier attempt is
+    reused when it holds exactly this proposal and replaced only after confirmation; an open PR of it is reported and
+    left alone."""
     name, candidate = ctx.model.config_branch, ctx.candidate
     target = target or name
     branch = f'{ctx.login}/config-{slug}'
@@ -115,7 +114,7 @@ def propose(ctx, change, title, slug, summary, steps, target=None):
         into = f'the config branch `{name}`' if target == name else f'the production branch `{target}`'
         body = scratch / 'body.md'
         body.write_text(f'{summary}, proposed with `factory`.\n\nOnly `{CONFIG}` changes (its `branches` and '
-                        '`config_branch` values, checked by `tools/factory/branches.py`). This is a work-order/config PR '
+                        '`config_branch` values, checked by `tools/factory/branches.py`). This is a config PR '
                         f'into {into}: it needs approving reviews from {ctx.model.work_order_approvals} maintainer '
                         f'account{"" if ctx.model.work_order_approvals == 1 else "s"} at its current head, `/bypass` '
                         'does not apply, and a maintainer merges it on GitHub. It cannot carry `docs/factory-branches.md`: '
@@ -248,7 +247,8 @@ def set_config(ctx, name):
 # --- the control branch of this device ---------------------------------------------------------------
 
 def use(ctx, name):
-    """Switch the control checkout to a listed branch: only when clean, by switch and fast-forward, never reset."""
+    """Only a clean control checkout is switched, and only by switch and fast-forward, never reset: factory never
+    deletes files there."""
     model, control, config = ctx.model, ctx.control, ctx.config
     level = model.level(name)
     require(level, f'{name} is not a listed production or validation branch; listed: {", ".join(model.names)}')
@@ -269,7 +269,7 @@ def use(ctx, name):
             git(control, 'merge', '--ff-only', '--quiet', remote)
         session.clean_tree(control, remote)
         checkouts.record_branch(name)
-    say(f'The control checkout now runs the {level} branch {name} ({remote[:12]}); rules, policy and work orders still '
+    say(f'The control checkout now runs the {level} branch {name} ({remote[:12]}); rules and policy still '
         f'come from the config branch {model.config_branch}. Recorded in {common.CONFIG_FILE}.')
     return 0
 
@@ -301,19 +301,18 @@ def promote(ctx, source, target=None):
 
 
 def bring_in(ctx, branch, remote, theirs, message, why, guard=None):
-    """Bring the commit `theirs` into the candidate's local `branch`, never pushing: the core of promote's merge-back
-    and of `factory update`. `remote` is the tip of `branch` on GitHub, None when it is not there.
+    """Bring the commit `theirs` into the candidate's local `branch`, never pushing; shared by promote's merge-back
+    and `factory update`. `remote` is the tip of `branch` on GitHub, None when it is not there.
 
     Refuses, changing nothing, while the candidate has uncommitted or untracked files (`why` says what needs it clean)
     or the local branch and GitHub's diverged; a local branch behind GitHub counts at GitHub's tip, unpushed local
-    commits are kept with a warning. `guard(tip, fast)` sees the tip and whether it is a fast-forward before anything
-    changes and may refuse. A tip contained in `theirs` is fast-forwarded to it, otherwise `theirs` is merged with
-    --no-ff and `message`. Returns ('contained', tip), ('fast-forward', sha), ('merged', sha) or ('conflicts', names);
-    a merge stopped on conflicts is left in the candidate."""
+    commits are kept with a warning. `guard` may refuse before anything changes. Returns ('contained', tip),
+    ('fast-forward', sha), ('merged', sha) or ('conflicts', names); a merge stopped on conflicts is left in the
+    candidate for the maintainer to resolve."""
     candidate = ctx.candidate
     with ctx.candidate_lock():
-        require(not out(candidate, 'status', '--porcelain'), f'{why} in the candidate, which has uncommitted or '
-                f'untracked files: commit, stash or remove them (`git -C {shlex.quote(str(candidate))} status`), then retry')
+        require(not common.changes(candidate), f'{why} in the candidate, which has uncommitted or untracked files: '
+                f'commit, stash or remove them (`git -C {shlex.quote(str(candidate))} status`), then retry')
         local = local_tip(candidate, branch)
         require(local or remote, f'{branch} is neither a branch of the candidate nor on GitHub')
         tip = remote or local
@@ -368,8 +367,9 @@ def merge_production(ctx, source, target, head, base, again):
 
 
 def open_promotion(ctx, source, target, head, base):
-    """The production tip is contained: open the promotion PR unless one into that production branch is open. An open
-    promotion of source itself already carries the new head (its checks re-run); only another one refuses."""
+    """Expects the production tip to be contained in source. Only one promotion into a production branch may be open
+    (factory/production passes only then): an open promotion of source itself already carries the new head and its
+    checks re-run, so only another one refuses."""
     model, repository = ctx.model, ctx.config['repository']
     pulls = ctx.gh.pages(f'/repos/{repository}/pulls?state=open&base={target}')
     promotions = [pull for pull in pulls if (pull.get('base') or {}).get('ref') == target
@@ -418,16 +418,15 @@ def merge_result(repo, ours, theirs):
 
 
 def outside_scope(repo, tip, theirs, fast):
-    """Paths that bringing theirs into tip would change beyond work orders and factory/config.json."""
+    """Paths that bringing theirs into tip would change beyond factory/config.json and docs/work/*.md."""
     tree, conflicted = (theirs, []) if fast else merge_result(repo, tip, theirs)
     changed = [path for path in out(repo, 'diff', '--name-only', '--no-renames', '-z', tip, tree).split('\0') if path]
     return sorted(path for path in {*changed, *conflicted} if not branches.config_change([path]))
 
 
 def update(ctx, target=None):
-    """Bring the config branch tip into a branch of the candidate: a fast-forward when the branch has nothing the
-    config branch lacks, otherwise a local merge commit. Only work orders and factory/config.json may change; never
-    pushes, never touches a production branch."""
+    """Bring the config branch tip into a branch of the candidate. Only factory/config.json and docs/work/*.md may
+    change; never pushes, never touches a production branch."""
     model, candidate = ctx.model, ctx.candidate
     source = model.config_branch
     target = target or checkouts.current_branch(candidate)
@@ -435,7 +434,7 @@ def update(ctx, target=None):
     valid = git(candidate, 'check-ref-format', f'refs/heads/{target}', check=False).returncode == 0
     require(valid and not target.startswith('-'), f'{common.printable(target, 100)!r} is not a valid branch name')
     require(model.level(target) != 'production', f'{target} is a production branch; factory never changes one. Name a '
-            f'validation branch ({", ".join(model.validation)}) or a feature branch')
+            f'validation branch ({", ".join(model.validation)}) or your own branch, e.g. an issue branch')
     tips = ctx.tips(source, target)
     require(source in tips, f'the config branch {source} is not on GitHub')
     theirs, quoted = tips[source], shlex.quote(str(candidate))
@@ -447,7 +446,7 @@ def update(ctx, target=None):
         more = f' and {len(found) - 20} more' if len(found) > 20 else ''
         instead = (f'`factory promote {target}` brings all of {source} into it' if validation
                    else f'merge it by hand: `git -C {quoted} merge origin/{source}`')
-        require(not found, f'factory update brings only work orders (docs/work/*.md) and {CONFIG}, but bringing {source} '
+        require(not found, f'factory update brings only {CONFIG} and docs/work/*.md, but bringing {source} '
                 f'into {target} would also change {shown}{more}. Nothing was changed; {instead}')
 
     outcome, value = bring_in(ctx, target, tips.get(target), theirs, f'Merge {source} into {target} (factory update)',
@@ -506,8 +505,8 @@ def drift(repo, old_tip, new_tip, old, name):
     have, want = orders_at(repo, new_tip, work), orders_at(repo, old_tip, work)
     missing = sorted(workorders.name_of(path) for path in want if path not in have)
     differing = sorted(workorders.name_of(path) for path in want if path in have and have[path][1] != want[path][1])
-    found += [f'{name} lacks the work orders ' + ', '.join(missing)] if missing else []
-    found += [f'work orders on {name} differ from {old}: ' + ', '.join(differing)] if differing else []
+    found += [f'{name} lacks ' + ', '.join(workorders.path_of(item) for item in missing)] if missing else []
+    found += [f'files on {name} differ from {old}: ' + ', '.join(workorders.path_of(item) for item in differing)] if differing else []
     return found
 
 
@@ -520,7 +519,7 @@ def nodes(model):
                   for i, (name, entry) in enumerate(model.validation.items())]
     production = [(f'p{i}', [name, f'review: {entry["review"]}'] + (['config branch'] if name == model.config_branch else []))
                   for i, (name, entry) in enumerate(model.production.items())]
-    return [('feature', ['feature branches', 'login/ID'])], validation, production
+    return [('feature', ['issue branches', 'e.g. 57-csv-export'])], validation, production
 
 
 def edges(model):
@@ -530,7 +529,7 @@ def edges(model):
     config = next(key for key, lines in production if lines[0] == model.config_branch)
     found = [('feature', key, 'PR' if model.gated(names[key]) else 'PR, not gated', False) for key, _ in validation]
     found += [(v, p, 'promotion PR', False) for v, _ in validation for p, _ in production]
-    found += [(config, key, 'sync work orders', True) for key, _ in validation]
+    found += [(config, key, 'factory update', True) for key, _ in validation]
     return found
 
 
@@ -560,9 +559,10 @@ def document(model):
     table += [f'| `{name}` | {level} | {rule} | {kinds or "–"} | {checks or "–"} |'
               for name, level, rule, kinds, checks in rows(model)]
     return ('# Factory branches\n\nGenerated by `factory branches` from `factory/config.json` on the config branch '
-            f'`{model.config_branch}`; do not edit by hand. Work flows from feature branches through validation branches '
-            'into production branches; work orders are synced from the config branch to every validation branch '
-            '([factory-cli.md](factory-cli.md#factory-branches)).\n\n```mermaid\n' + mermaid(model) + '```\n\n'
+            f'`{model.config_branch}`; do not edit by hand. Work flows from issue branches (`57-<issue title>` for work-order '
+            'issue #57) through validation branches into production branches; after a promotion or a config PR, `factory '
+            'update` brings the config branch back into every validation branch ([factory-cli.md](factory-cli.md#factory-branches)).'
+            '\n\n```mermaid\n' + mermaid(model) + '```\n\n'
             + '\n'.join(table) + '\n')
 
 
@@ -571,12 +571,12 @@ BOLD = 8.5  # px per character of a 13px bold name: a box grows with a long name
 
 
 def layout(model):
-    """Boxes {key: (x, y, width, height, lines)}, arrows [(class, sx, sy, ex, ey, bend)], labels [(x, y, text)] (centred)
-    and the size. Edge labels stand once per column gap in a band above (PRs, promotions) and below (sync) the boxes,
-    so they never overlap however many branches a column lists. Arrows run only in the gaps between columns and every
-    line of text stays inside its box, which grows with a long name: `not gated` is the last line of its own
-    box, so no arrow ever crosses it. Promotions leave and enter boxes in their upper part, sync arrows in their lower
-    part, so the two never run together."""
+    """Boxes {key: (x, y, width, height, lines)}, arrows [(class, sx, sy, ex, ey, bend)], labels [(x, y, text)]
+    (centred) and the size. Edge labels stand once per column gap in a band above (PRs, promotions) and below
+    (factory update) the boxes, so they never overlap however many branches a column lists. Arrows run only in the
+    gaps between columns and every line of text stays inside its box, which grows with a long name: `not gated` is the
+    last line of its own box, so no arrow ever crosses it. Promotions leave and enter boxes in their upper part, update
+    arrows in their lower part, so the two never run together."""
     feature, validation, production = nodes(model)
     names = dict(zip([key for key, _ in validation], model.validation))
     validation = [(key, text + ([] if model.gated(names[key]) else [UNGATED])) for key, text in validation]
@@ -597,17 +597,17 @@ def layout(model):
         (x1, y1, _, h1, _), (x2, y2, _, h2, _) = boxes[start], boxes[end]
         share = 0.75 if dotted else 0.5 if start == 'feature' else 0.3
         if dotted:  # backwards: from the config branch's left edge to the validation branch's right edge
-            arrows.append(('sync', x1, y1 + h1 * share, x2 + wide, y2 + h2 * share, -bend))
+            arrows.append(('back', x1, y1 + h1 * share, x2 + wide, y2 + h2 * share, -bend))
         else:
             arrows.append(('edge', x1 + wide, y1 + h1 * share, x2, y2 + h2 * share, bend))
     middle = lambda column: columns[column] + wide + LANE / 2
     labels = [(middle(0), BAND - 14, 'pull requests'), (middle(1), BAND - 14, 'promotion PRs'),
-              (middle(1), BAND + body + 26, 'dotted: work-order sync')]
+              (middle(1), BAND + body + 26, 'dotted: factory update')]
     return boxes, arrows, labels, (columns[2] + wide + 20, body + 2 * BAND)
 
 
 def svg(model):
-    """A self-drawn diagram: three columns of boxes, arrows between them, dotted sync arrows back."""
+    """Drawn here rather than rendered from the Mermaid source, so the page loads no script."""
     boxes, arrows, labels, (width, height) = layout(model)
     parts = []
     for x, y, wide, tall, text in boxes.values():
@@ -636,12 +636,13 @@ def page(model):
             'svg{width:100%;height:auto}rect{fill:var(--box);stroke:var(--line)}svg text{fill:var(--fg);font-size:13px}'
             'svg text.name{font-weight:600}svg text.muted{fill:var(--muted)}'
             'svg text.label{fill:var(--muted);font-size:11px;text-anchor:middle}'
-            '.edge,.sync{fill:none;stroke:var(--line);stroke-width:1.5}.sync{stroke-dasharray:5 4}.tip{fill:var(--line)}'
+            '.edge,.back{fill:none;stroke:var(--line);stroke-width:1.5}.back{stroke-dasharray:5 4}.tip{fill:var(--line)}'
             'table{border-collapse:collapse;width:100%}td,th{border:1px solid var(--line);padding:4px 8px;text-align:left}'
             'pre{background:var(--box);padding:1rem;overflow:auto}</style></head><body>'
             f'<h1>Factory branches</h1><p>From <code>factory/config.json</code> on the config branch '
-            f'<code>{html.escape(model.config_branch)}</code>. Feature branches reach validation branches by pull '
-            'request, validation branches reach production branches by promotion; dotted arrows: work-order sync.</p>'
+            f'<code>{html.escape(model.config_branch)}</code>. Issue branches reach validation branches by pull '
+            'request, validation branches reach production branches by promotion; dotted arrows: <code>factory update</code> '
+            'brings the config branch back.</p>'
             + svg(model) + '<h2>Branches</h2><table><tr><th>Branch</th><th>Level</th><th>Gate or review</th><th>Kinds</th>'
             '<th>Required checks</th></tr>' + cells + '</table><h2>Mermaid source</h2><pre>'
             + html.escape(mermaid(model)) + '</pre></body></html>\n')

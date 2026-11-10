@@ -32,7 +32,7 @@ codex --version
 
 Expected: Python **3.11 or newer** and exactly the Codex version that [factory/package.json](../factory/package.json) pins (`@openai/codex`, today **`codex-cli 0.164.0`**; install that version in the command above). The `factory` command puts this pinned Codex directory in front of the `PATH` of its helper processes itself; reapply the `export PATH` line only in Terminals where you run `session.py` or `local_review.py` by hand. This separate installation does not replace a personal Codex installation. If the access-token UI requires a newer CLI, stop and request a reviewed factory version update; do not silently upgrade the pinned reviewer.
 
-For isolated author runs, install and start [Docker Desktop for your Mac's processor](https://docs.docker.com/desktop/setup/install/mac-install/), complete its first-launch setup and check `docker info`. Claude Code is installed inside the factory image; no host Claude installation is required.
+For isolated author runs, install and start Docker Desktop as described in [Docker](#docker) at the end of this runbook. Claude Code is installed inside the factory image; no host Claude installation is required.
 
 Sign in to GitHub and check your access:
 
@@ -163,3 +163,56 @@ factory submit --finished --title 'test(factory): reviewer device smoke' \
 `origin/testing` is the validation branch that `smoke` work orders are routed to (see the [branch diagram](factory-branches.md)). `factory submit --finished` commits the staged file, pushes the branch, then runs `session.py submit`: advisory preflight, PR into `testing`, and its watcher. If `testing` moved meanwhile, merge the new `origin/testing` into the candidate branch (`git merge origin/testing`), commit any resolution, push it with `factory submit`, then retry; do not bypass freshness checks or use `/bypass`. If you resume an existing PR, use `factory watch <number>`. `factory` keeps the Mac from idle-sleeping while it watches; keep the lid open. Confirm both `factory/deterministic` and `factory/senior-review` from App **5510081** are successful for that PR's current head, the current `testing` tip and the current config branch policy (see [merge rules](way-of-working.md#merge-rules)). The watcher can keep polling after success; Ctrl-C stops it once both final checks are green. This is the publication test for your publisher key; a successful model smoke alone is insufficient. Record the head/base, run/check IDs and your executed probes in a reviewed evidence update ([factory/evidence.md](../factory/evidence.md)). Until then, your device remains unverified; already verified reviewer devices may review shared PRs.
 
 Also inspect the final senior check receipt (`output.text` JSON) and confirm `claim.actor.login` is your active account. If another maintainer won the claim, this run is not acceptance of your device: coordinate again and create a fresh smoke PR or deliberate retry. The smoke fixture needs no merge. Product implementation still requires architecture decisions, implemented product checks and an approved product work order; the north-star approval alone does not remove that gate.
+
+## PostgreSQL for development
+
+The product uses PostgreSQL ([ADR-0010](decisions/0010-product-stack.md), decision 11). For local development, run it in a Docker container instead of installing it on the Mac. This needs Docker Desktop running (see [Docker](#docker)).
+
+Start a container named `aicepeak-pg`:
+
+```sh
+docker run -d --name aicepeak-pg \
+  -e POSTGRES_PASSWORD=postgres \
+  -p 5432:5432 \
+  postgres:17
+```
+
+This pulls the [official `postgres` image](https://hub.docker.com/_/postgres) on first use. It starts the server in the background on `localhost:5432` with the superuser `postgres` and the password `postgres`. These credentials are for local development only; never use them anywhere else. `-p 5432:5432` makes the port reachable from other machines on your network as well; on untrusted networks use `-p 127.0.0.1:5432:5432` instead. If the port is already taken, for example by a Homebrew PostgreSQL, stop that server or publish another host port (`-p 5433:5432`) and use that port below. The production major version is not chosen yet; it will be chosen with the hosting (ADR-0010).
+
+Check that the server answers:
+
+```sh
+docker exec -it aicepeak-pg psql -U postgres -c 'select version();'
+```
+
+Expected: one row that starts with `PostgreSQL 17`. An Npgsql/EF Core connection string for this container is `Host=localhost;Port=5432;Username=postgres;Password=postgres`. Keep connection strings in local configuration such as .NET user secrets, not in Git.
+
+Daily handling:
+
+```sh
+docker stop aicepeak-pg       # stop the server; data is kept
+docker start aicepeak-pg      # start it again
+docker logs aicepeak-pg       # server log, for example after a failed start
+docker rm -f -v aicepeak-pg   # delete the container and its data volume for a fresh database
+```
+
+The container does not start on its own after a reboot or after Docker Desktop restarts; run `docker start aicepeak-pg`.
+
+## Docker
+
+Docker Desktop is needed for isolated author runs (step 2) and for local development services such as [PostgreSQL](#postgresql-for-development). A reviewer-only device does not need it for reviews, but `factory doctor` still checks it.
+
+1. **Choose the installer.** Run `uname -m`: `arm64` means Apple silicon, `x86_64` means an Intel Mac. Download the matching Docker Desktop installer from the [official Mac install page](https://docs.docker.com/desktop/setup/install/mac-install/), which also lists the supported macOS versions.
+2. **Install.** Open `Docker.dmg` and drag Docker to Applications. The page above also describes a command-line install with `installer` if you need one.
+3. **First launch.** Open Docker from Applications, accept the [Docker Subscription Service Agreement](https://www.docker.com/legal/docker-subscription-service-agreement/) and use the recommended settings; macOS asks for your password once. Sign-in to a Docker account is optional. Docker Desktop is free for small businesses (fewer than 250 employees and less than USD 10 million annual revenue), personal use and education; larger organisations need a paid subscription.
+4. **Check it.** In a new Terminal:
+
+   ```sh
+   docker --version
+   docker info
+   docker run --rm hello-world
+   ```
+
+   Expected: a version, server details from `docker info` without an error, and the `Hello from Docker!` message.
+
+Under **Settings › General** you can turn on "Start Docker Desktop when you sign in to your computer" so that author runs and the PostgreSQL container are available after a reboot. Docker Desktop's resource saver pauses it when idle; `factory` and `factory doctor` start a stopped Docker Desktop and wake it themselves. If you change the allocated CPU or memory (**Settings › Resources**), leave enough for the factory image build in step 4. For the `docker-credential-desktop` error during the image build, see step 4.

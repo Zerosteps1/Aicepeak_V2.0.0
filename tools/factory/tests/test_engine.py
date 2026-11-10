@@ -395,6 +395,9 @@ class EngineBoundaries(unittest.TestCase):
         self.assertEqual(engine.author_failure(blocked('expected bounded regular file: /home/runner/secret')),'unclassified launcher error (details withheld)')
         self.assertEqual(engine.author_failure(b'',b'{"status":"passed"}\n'),'no launcher report')
         self.assertEqual(engine.author_failure(b'',blocked('worker CLI version mismatch')),'worker CLI version mismatch')
+        # The schema-bound final report's fixed reasons (clients.final_report).
+        for reason in ('author returned no structured report','author report does not match its schema'):
+            self.assertEqual(engine.author_failure(blocked(reason)),reason)
         for leaked in ('docker failed (1): token','missing proxy-only environment: X=1','unclassified',42):
             self.assertFalse(engine.publishable_failure(leaked))
         self.assertTrue(engine.publishable_failure('missing proxy-only environment: ANTHROPIC_API_KEY, CONTEXT7_API_KEY'))

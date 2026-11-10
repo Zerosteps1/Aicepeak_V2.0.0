@@ -21,7 +21,7 @@ The flow is an issue from the "Factory work order" template → `/review` and `/
    /review
    ```
 
-   The factory's issue reviewer (Claude Sonnet, without tools) posts two comments as the publisher App: a proposal of `allowed_paths` with a reason for each (new paths and control paths are marked), and a list of unclear, weak or missing sections, each with a proposed text. Copy what you agree with into the description by hand and comment `/review` again; each review costs one model call, at most `limits.max_issue_reviews` per issue. When the proposal is right, comment:
+   The factory's issue reviewer (Claude Sonnet, without tools, answering in schema-bound JSON) posts two comments as the publisher App: a proposal of `allowed_paths` with a reason for each (new paths and control paths are marked), and a list of unclear, weak or missing sections, each with a proposed text. Copy what you agree with into the description by hand and comment `/review` again; each review costs one model call, at most `limits.max_issue_reviews` per issue. When the proposal is right, comment:
 
    ```text
    /accept

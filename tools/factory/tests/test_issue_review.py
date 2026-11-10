@@ -12,6 +12,7 @@ import urllib.error
 from factory_testlib import STRANGER, IssueHub, Response, candidate_config, user
 import issue_review
 import issues
+import structured
 from contracts import Blocked
 
 POLICY, TESTING = 'b' * 40, 'e' * 40
@@ -55,9 +56,12 @@ class Model:
         raise AssertionError(url)
 
 
-def message(result=RESULT, stop='tool_use', name='issue_review'):
+def message(result=RESULT, stop='end_turn', texts=None):
+    """A structured-output answer: a thinking block, then the JSON text block(s)."""
+    texts = [json.dumps(result)] if texts is None else texts
     return {'type': 'message', 'role': 'assistant', 'stop_reason': stop,
-            'content': [{'type': 'tool_use', 'id': 't', 'name': name, 'input': result}],
+            'content': [{'type': 'thinking', 'thinking': '', 'signature': 's'}]
+            + [{'type': 'text', 'text': text} for text in texts],
             'usage': {'input_tokens': 12000, 'output_tokens': 900}}
 
 
@@ -75,7 +79,7 @@ class Base(unittest.TestCase):
 
 
 class ModelCall(Base):
-    def test_one_forced_tool_call_with_the_federated_token(self):
+    def test_one_structured_output_call_without_tools_with_the_federated_token(self):
         model = Model(message())
         result, usage = issue_review.call_model(self.config, 'MATERIAL', opener=model)
         self.assertEqual((result, usage), (RESULT, {'input_tokens': 12000, 'output_tokens': 900}))
@@ -83,17 +87,34 @@ class ModelCall(Base):
         body = json.loads(call.data)
         self.assertEqual(call.get_header('Authorization'), 'Bearer sk-ant-oat-federated')
         self.assertEqual((body['model'], body['max_tokens']), ('claude-sonnet-5-5', 8000))
-        self.assertEqual(body['tool_choice'], {'type': 'tool', 'name': 'issue_review'})
-        self.assertEqual([tool['name'] for tool in body['tools']], ['issue_review'])
+        # Claude Sonnet 5.5 rejects forced tool use with HTTP 400: no tools, no tool_choice, no thinking override.
+        self.assertFalse({'tools', 'tool_choice', 'thinking'} & body.keys())
+        self.assertEqual(body['output_config']['effort'], 'low')
+        sent = body['output_config']['format']
+        self.assertEqual(sent['type'], 'json_schema')
+        self.assertEqual(structured.api_problems(sent['schema']), [])
+        self.assertEqual(sent['schema'], structured.api_schema(issue_review.model_schema(self.config)))
         self.assertEqual(body['messages'], [{'role': 'user', 'content': 'MATERIAL'}])
         self.assertIn('untrusted data', body['system'])
+        self.assertIn(f"at most {self.config['limits']['max_changed_files']} allowed_paths", body['system'])
+
+    def test_the_full_schema_is_enforced_after_the_api_subset(self):
+        too_long = {**RESULT, 'summary': 'x' * 601}
+        too_many = {**RESULT, 'findings': RESULT['findings'] * (issue_review.MAX_FINDINGS + 1)}
+        for result in (too_long, too_many, {**RESULT, 'allowed_paths': []}):
+            with self.assertRaisesRegex(Blocked, 'length'):
+                issue_review.call_model(self.config, 'MATERIAL', opener=Model(message(result=result)))
 
     def test_incomplete_invalid_or_failed_answers_block_without_provider_text(self):
         long_path = {**RESULT, 'allowed_paths': [{'path': 'has space/', 'reason': 'x'}]}
         extra = {**RESULT, 'note': 'extra'}
-        cases = [(message(stop='max_tokens'), 'did not complete the review'), (message(name='other'), 'no single review'),
+        cases = [(message(stop='max_tokens'), 'did not complete the review'), (message(stop='refusal'), 'refused'),
+                 (message(texts=[]), 'no single review'), (message(texts=['{}', '{}']), 'no single review'),
+                 (message(texts=['SECRET not json']), 'review is not JSON'),
                  (message(result=long_path), 'pattern'), (message(result=extra), 'extra keys'),
                  ({**message(), 'usage': {}}, 'no usage'),
+                 (urllib.error.HTTPError(issue_review.MESSAGES, 400, 'SECRET provider text', {}, io.BytesIO(b'SECRET')),
+                  r'model request failed \(HTTP 400\)'),
                  (urllib.error.HTTPError(issue_review.MESSAGES, 529, 'SECRET provider text', {}, io.BytesIO(b'SECRET')),
                   r'model request failed \(HTTP 529\)')]
         for answer, reason in cases:

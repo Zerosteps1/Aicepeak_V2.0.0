@@ -1,0 +1,25 @@
+{
+  "title": "Factory read-only review findings",
+  "description": "Final answer of a read-only review run (clients.py run --read-only, used by factory review, fix and hotfix). The launcher validates it and renders it to a numbered Markdown list. API-safe structured-output subset: no length or count limits; the rendered report is truncated at 7900 bytes. No findings means no problems found.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "findings"],
+  "properties": {
+    "summary": {"type": "string", "description": "The overall result; with no findings, why there are none."},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "problem", "evidence", "fix"],
+        "properties": {
+          "file": {"type": "string", "description": "Repository-relative path."},
+          "line": {"type": "integer", "description": "1-based line; 0 when the problem has no single line."},
+          "problem": {"type": "string"},
+          "evidence": {"type": "string"},
+          "fix": {"type": "string", "description": "The minimal fix."}
+        }
+      }
+    }
+  }
+}

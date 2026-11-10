@@ -1,0 +1,83 @@
+{
+  "title": "Factory author report",
+  "description": "Final report of an isolated author run (clients.py run). The launcher validates it and renders it to the Markdown report its consumers read. API-safe structured-output subset: no length or count limits; the rendered report is truncated at 7900 bytes. Every property is required; an empty list means none.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "changes", "verification", "acceptance", "review_items", "control_proposals", "open_issues"],
+  "properties": {
+    "summary": {"type": "string", "description": "What changed and why, or why there is no patch."},
+    "changes": {
+      "type": "array",
+      "description": "Every changed file.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "what"],
+        "properties": {
+          "path": {"type": "string", "description": "Repository-relative path."},
+          "what": {"type": "string", "description": "The change in this file."}
+        }
+      }
+    },
+    "verification": {
+      "type": "array",
+      "description": "Every check that was run or that could not run, with its actual result.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "outcome", "evidence"],
+        "properties": {
+          "command": {"type": "string", "description": "The exact command."},
+          "outcome": {"type": "string", "enum": ["passed", "failed", "not_run"]},
+          "evidence": {"type": "string", "description": "The relevant output, or why it did not run."}
+        }
+      }
+    },
+    "acceptance": {
+      "type": "array",
+      "description": "The status of each acceptance criterion of the work order.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "status", "evidence"],
+        "properties": {
+          "criterion": {"type": "string", "description": "The criterion ID, for example AC-1."},
+          "status": {"type": "string", "enum": ["met", "not_met", "not_verified"]},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "review_items": {
+      "type": "array",
+      "description": "One response per review finding or problem to fix; empty for a first implementation.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["item", "response", "explanation"],
+        "properties": {
+          "item": {"type": "string", "description": "The finding or problem, briefly."},
+          "response": {"type": "string", "enum": ["addressed", "disputed", "blocked"]},
+          "explanation": {"type": "string", "description": "The fix, the evidence for the dispute, or the missing prerequisite."}
+        }
+      }
+    },
+    "control_proposals": {
+      "type": "array",
+      "description": "Proposed changes to read-only control paths, for a maintainer to apply by hand.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "change"],
+        "properties": {
+          "path": {"type": "string"},
+          "change": {"type": "string"}
+        }
+      }
+    },
+    "open_issues": {
+      "type": "array",
+      "description": "Remaining risks, blockers and unverified points.",
+      "items": {"type": "string"}
+    }
+  }
+}

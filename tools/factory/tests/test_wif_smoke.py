@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 
 from factory_testlib import REPOSITORY, candidate_config, candidate_config_text
+import structured
 import wif_smoke
 
 
@@ -48,6 +49,11 @@ class WIFSmokeTests(unittest.TestCase):
                         'stop_reason': 'end_turn', 'stop_sequence': None,
                         'content': [{'type': 'text', 'text': 'OK'}],
                         'usage': {'input_tokens': 12, 'output_tokens': 1}}
+        self.structured = {'type': 'message', 'role': 'assistant', 'id': 'msg_structured',
+                           'model': self.config['issue_review_model'], 'stop_reason': 'end_turn',
+                           'content': [{'type': 'thinking', 'thinking': '', 'signature': 's'},
+                                       {'type': 'text', 'text': '{"status":"OK"}'}],
+                           'usage': {'input_tokens': 40, 'output_tokens': 9}}
         self.requests = []
 
     def transport(self, req, timeout):
@@ -76,6 +82,17 @@ class WIFSmokeTests(unittest.TestCase):
             self.assertEqual(body['max_tokens'], 16)
             self.assertEqual(body['messages'], [{'role': 'user', 'content': 'Reply with exactly OK.'}])
             data = self.message
+        elif index == 4:
+            self.assertEqual(req.full_url, 'https://api.anthropic.com/v1/messages')
+            self.assertEqual(req.get_header('Authorization'), 'Bearer fixture-federated-credential')
+            body = json.loads(req.data)
+            # The issue reviewer's request shape with its model: a structured output, no tools.
+            self.assertEqual(body, structured.messages_body(self.config['issue_review_model'], 256, None,
+                                                            'Return status OK.', wif_smoke.STRUCTURED_SMOKE))
+            self.assertFalse({'tools', 'tool_choice'} & body.keys())
+            if isinstance(self.structured, Exception):
+                raise self.structured
+            data = self.structured
         else:
             self.fail('Unexpected extra call or retry')
         return io.BytesIO(json.dumps(data).encode())
@@ -87,10 +104,37 @@ class WIFSmokeTests(unittest.TestCase):
     def test_real_sequence_exchanges_token_and_confirms_inference_without_exposing_credentials(self):
         result = self.run_smoke()
         self.assertEqual(result['status'], 'passed')
-        self.assertEqual(result['stages'], ['github_oidc', 'token_exchange', 'claude_message'])
+        self.assertEqual(result['stages'], ['github_oidc', 'token_exchange', 'claude_message', 'claude_structured'])
+        self.assertEqual(result['structured_model'], self.config['issue_review_model'])
         self.assertEqual(result['usage'], {'input_tokens': 12, 'output_tokens': 1})
-        self.assertEqual(len(self.requests), 3)
+        self.assertEqual(len(self.requests), 4)
         self.assertNotIn('credential', json.dumps(result))
+
+    def test_without_an_issue_review_model_there_is_no_structured_probe(self):
+        del self.config['issue_review_model']
+        result = self.run_smoke()
+        self.assertEqual(result['stages'], ['github_oidc', 'token_exchange', 'claude_message'])
+        self.assertNotIn('structured_model', result)
+        self.assertEqual(len(self.requests), 3)
+
+    def test_a_rejected_or_invalid_structured_answer_fails_the_smoke_without_provider_text(self):
+        good = copy.deepcopy(self.structured)
+        cases = [('stop_reason', 'max_tokens'), ('stop_reason', 'refusal'),
+                 ('content', [{'type': 'text', 'text': '{"status":"NO"}'}]),
+                 ('content', [{'type': 'text', 'text': 'SECRET not json'}]), ('content', []), ('usage', {})]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                self.structured = {**copy.deepcopy(good), field: value}
+                self.requests.clear()
+                with self.assertRaisesRegex(wif_smoke.SmokeFailure, '^claude_structured: ') as caught:
+                    self.run_smoke()
+                self.assertNotIn('SECRET', str(caught.exception))
+        self.structured = urllib.error.HTTPError('https://api.anthropic.com/v1/messages', 400, 'SECRET', {},
+                                                 io.BytesIO(b'SECRET tool_choice is not supported'))
+        self.requests.clear()
+        with self.assertRaisesRegex(wif_smoke.SmokeFailure, '^claude_structured: HTTP 400') as caught:
+            self.run_smoke()
+        self.assertNotIn('SECRET', str(caught.exception))
 
     def test_other_branch_or_non_actions_context_never_requests_credentials(self):
         default = 'refs/heads/' + self.config['default_branch']

@@ -670,6 +670,7 @@ def author_stage(config,args):
 AUTHOR_FAILURES=re.compile(r'(?:docker|git|claude|codex) failed \([0-9]{1,3}\)|missing proxy-only environment: [A-Z0-9_]+(?:, [A-Z0-9_]+)*|'
     r'Docker CLI not installed|prompt too large|expected a content-addressed Docker image|credential broker did not become ready|'
     r'credential broker unreachable from the worker|Claude did not return a successful result|author returned no final report|'
+    r'author returned no structured report|author report does not match its schema|'
     r'author report contains control characters|worker produced a symlink or special file|worker output exceeds file/byte limits|'
     r'worker patch exceeds configured limit|worker CLI version mismatch|candidate exceeds file/byte limits|'
     r'fresh candidate unexpectedly contains Git metadata')

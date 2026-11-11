@@ -37,6 +37,14 @@ describe('HealthStatus', () => {
     expect(await screen.findByText('Backend health: unreachable')).toBeInTheDocument()
   })
 
+  it('shows that the backend is unreachable when a proxy answers 502 Bad Gateway', async () => {
+    stubFetch(() => Promise.resolve(new Response('', { status: 502 })))
+
+    render(<HealthStatus />)
+
+    expect(await screen.findByText('Backend health: unreachable (502)')).toBeInTheDocument()
+  })
+
   it('aborts the request when unmounted', () => {
     const fetchMock = stubFetch(() => new Promise<Response>(() => {}))
 

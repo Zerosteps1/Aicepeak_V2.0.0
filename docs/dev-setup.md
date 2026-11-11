@@ -68,7 +68,7 @@ factory doctor
 
 ### Test changes in the sandbox
 
-Test changes to the factory the way the pipeline does, in the author image (Docker running), with a read-only root filesystem, no network and a throwaway copy of your working tree, uncommitted changes included:
+Test changes to the factory the way the pipeline does, in the trusted test image ([factory/test.Dockerfile](../factory/test.Dockerfile), Docker running), with a read-only root filesystem, no network and a throwaway copy of the files Git sees in your working tree (uncommitted and untracked changes included, ignored files such as `node_modules` left out). The first run builds the test image, which takes a few minutes; later runs reuse it until `factory/test.Dockerfile` or a file it copies changes ([test image](../factory/clients.md#test-image)):
 
 ```sh
 tools/factory/sandbox-verify.sh                  # full verify.py --ci: ends with four PASS lines

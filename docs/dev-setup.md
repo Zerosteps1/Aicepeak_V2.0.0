@@ -242,12 +242,15 @@ Open http://localhost:5173. Vite proxies `/api/*` to the backend. The page shows
 **Checks:**
 
 ```sh
-dotnet build backend/Aicepeak.slnx -warnaserror   # 0 warnings, 0 errors
+dotnet build backend/Aicepeak.slnx -warnaserror   # 0 warnings, 0 errors; also fails on formatting violations
+dotnet format backend/Aicepeak.slnx               # fixes formatting (--verify-no-changes only checks)
 dotnet test backend/Aicepeak.slnx                 # needs Docker: database tests start a throwaway postgres:17 container
 npm --prefix frontend test
 npm --prefix frontend run lint
 npm --prefix frontend run build
 ```
+
+**Code style.** The repository's [`.editorconfig`](../.editorconfig) defines the formatting: UTF-8, LF, final newline, two-space indentation (four for C# and Python) and Java-style braces in C# (`{` at the end of the line; `else`, `catch` and `finally` after `}`). Rider and Visual Studio read it directly; in VS Code install the C# Dev Kit and the EditorConfig extension. The .NET build enforces the C# formatting (`EnforceCodeStyleInBuild`, rule IDE0055), so run `dotnet format backend/Aicepeak.slnx` before committing. EF Core migrations are generated code and are not formatted. TypeScript already uses braces on the same line; the frontend has no formatter besides `.editorconfig`.
 
 Without Docker, skip the database tests with `dotnet test backend/Aicepeak.slnx --filter "Category!=Database"`. `backend/` holds both the API project and the solution, so `dotnet build` and `dotnet test` need the solution file named; inside `backend/`, `dotnet run`, `dotnet watch` and `dotnet ef` use the API project.
 

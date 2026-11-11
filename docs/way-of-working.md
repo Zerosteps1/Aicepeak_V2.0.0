@@ -200,7 +200,20 @@ Maintainers and their agents can work on several PRs at once. Parallel PRs break
 
 ## Verify locally
 
-In the sandbox, like the pipeline: `tools/factory/sandbox-verify.sh` from the checkout you changed ([dev-setup](dev-setup.md#test-changes-in-the-sandbox)). On the host:
+**Product code** (`backend/`, `frontend/`): before you stage or submit, run from the repository root
+
+```sh
+dotnet format backend/Aicepeak.slnx
+dotnet build backend/Aicepeak.slnx -warnaserror
+dotnet test backend/Aicepeak.slnx
+npm --prefix frontend run lint
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+`backend/` holds the API project and the solution, so `dotnet build`, `dotnet test` and `dotnet format` name `Aicepeak.slnx`; `dotnet run`, `dotnet watch` and `dotnet ef` run inside `backend/`. The database tests need Docker; without it add `--filter "Category!=Database"` to `dotnet test`. The build fails on formatting violations, which `dotnet format` fixes. Setup, local start and the code style are in [dev-setup](dev-setup.md#running-aicepeak-locally).
+
+**Factory code:** in the sandbox, like the pipeline: `tools/factory/sandbox-verify.sh` from the checkout you changed ([dev-setup](dev-setup.md#test-changes-in-the-sandbox)). On the host:
 
 Full local verification of the control checkout (needs `actionlint` and `gitleaks`; `factory doctor` prints the command that installs them), run from the control checkout without leaving files behind:
 

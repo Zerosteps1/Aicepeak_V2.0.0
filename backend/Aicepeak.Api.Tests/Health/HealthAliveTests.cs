@@ -6,7 +6,8 @@ namespace Aicepeak.Api.Tests.Health;
 /// <summary>AC-4 and AC-5 for <c>GET /api/v1/health/alive</c> without a database.</summary>
 public sealed class HealthAliveTests {
     private const string Endpoint = "/api/v1/health/alive";
-    private const string PasswordMarker = "pwd-marker-7f3a";
+    // Used as DB_PWD (and inside DB_CON_STR); it must never appear in a Production response.
+    private const string LeakMarker = "leak-marker-7f3a";
 
     [Theory]
     [InlineData(TestSettings.Development)]
@@ -48,14 +49,14 @@ public sealed class HealthAliveTests {
 
     [Fact]
     public async Task Production_UnhealthyBody_ContainsNoSecretsOrExceptionDetails() {
-        var unreachable = TestSettings.UnreachableDatabase(PasswordMarker);
-        var invalid = TestSettings.Database($"Host=127.0.0.1;Port={PasswordMarker}", "postgres", PasswordMarker);
+        var unreachable = TestSettings.UnreachableDatabase(LeakMarker);
+        var invalid = TestSettings.Database($"Host=127.0.0.1;Port={LeakMarker}", "postgres", LeakMarker);
 
         foreach (var settings in new[] { unreachable, invalid }) {
             var (status, health) = await GetHealth(TestSettings.Production, settings);
 
             Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
-            Assert.DoesNotContain(PasswordMarker, health.Body);
+            Assert.DoesNotContain(LeakMarker, health.Body);
             Assert.DoesNotContain("Exception", health.Body);
             Assert.DoesNotContain("   at ", health.Body);
             Assert.DoesNotContain("Npgsql", health.Body);

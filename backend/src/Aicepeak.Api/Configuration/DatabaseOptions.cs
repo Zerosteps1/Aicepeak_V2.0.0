@@ -5,12 +5,17 @@ namespace Aicepeak.Api.Configuration;
 /// </summary>
 public sealed class DatabaseOptions
 {
-    [ConfigurationKeyName("DB_CON_STR")]
+    public const string ConnectionStringKey = "DB_CON_STR";
+    public const string UsernameKey = "DB_USR";
+    public const string PasswordKey = "DB_PWD";
+
+    /// <summary>Npgsql connection string without credentials, e.g. <c>Host=localhost;Port=5432;Database=aicepeak</c>.</summary>
+    [ConfigurationKeyName(ConnectionStringKey)]
     public string? ConnectionString { get; set; }
 
-    [ConfigurationKeyName("DB_USR")]
+    [ConfigurationKeyName(UsernameKey)]
     public string? Username { get; set; }
 
-    [ConfigurationKeyName("DB_PWD")]
+    [ConfigurationKeyName(PasswordKey)]
     public string? Password { get; set; }
 }

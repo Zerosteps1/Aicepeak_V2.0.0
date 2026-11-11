@@ -4,15 +4,17 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Aicepeak.Api.Health;
 
-/// <summary>Checks that EF Core can open a connection to the database.</summary>
+/// <summary>
+/// Checks that EF Core can reach the database. A round trip is needed: opening a pooled
+/// connection succeeds without contacting the server.
+/// </summary>
 public sealed class DatabaseHealthCheck(AppDbContext db) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
         try
         {
-            await db.Database.OpenConnectionAsync(cancellationToken);
-            await db.Database.CloseConnectionAsync();
+            await db.Database.ExecuteSqlAsync($"SELECT 1", cancellationToken);
 
             return HealthCheckResult.Healthy();
         }

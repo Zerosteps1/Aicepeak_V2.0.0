@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react'
 import { getHealthStatus } from '../../api/health.ts'
 import styles from './HealthStatus.module.scss'
 
+/** A proxy in front of the backend (the Vite dev server) answers 502 when the backend is not running. */
+const BAD_GATEWAY = 502
+
 type HealthState =
   | { kind: 'checking' }
   | { kind: 'done'; status: number }
-  | { kind: 'unreachable' }
+  | { kind: 'unreachable'; status?: number }
 
 function describe(state: HealthState): string {
   switch (state.kind) {
@@ -14,7 +17,7 @@ function describe(state: HealthState): string {
     case 'done':
       return String(state.status)
     case 'unreachable':
-      return 'unreachable'
+      return state.status === undefined ? 'unreachable' : `unreachable (${state.status})`
   }
 }
 
@@ -26,7 +29,7 @@ export function HealthStatus() {
     const controller = new AbortController()
 
     getHealthStatus(controller.signal)
-      .then((status) => setState({ kind: 'done', status }))
+      .then((status) => setState(status === BAD_GATEWAY ? { kind: 'unreachable', status } : { kind: 'done', status }))
       .catch(() => {
         if (!controller.signal.aborted) {
           setState({ kind: 'unreachable' })

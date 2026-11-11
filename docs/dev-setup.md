@@ -237,7 +237,7 @@ cd backend && dotnet watch     # API on http://localhost:5043 with C# hot reload
 cd frontend && npm ci && npm run dev   # app with hot reload on http://localhost:5173
 ```
 
-Open http://localhost:5173. Vite proxies `/api/*` to the backend. The page shows the HTTP status of `GET /api/v1/health/alive`: `204` when the database is reachable, `503` when it is not or the configuration is missing or invalid. In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
+Open http://localhost:5173. Vite proxies `/api/*` to the backend. The page shows the HTTP status of `GET /api/v1/health/alive`: `204` when the database is reachable, `503` when it is not or the configuration is missing or invalid, and `unreachable (502)` when the backend is not running (the Vite proxy then answers 502 Bad Gateway). In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
 
 **Checks:**
 

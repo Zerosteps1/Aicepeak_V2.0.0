@@ -1,8 +1,9 @@
-using Aicepeak.Api.Configuration;
 using Aicepeak.Api.Data;
 using Aicepeak.Api.Data.Entities;
 using Aicepeak.Api.Tests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Aicepeak.Api.Tests.Data;
 
@@ -15,14 +16,11 @@ public sealed class MigrationDatabaseTests(PostgresFixture postgres)
     public async Task Migrate_CreatesUsersTable_AndUserRoundTrips()
     {
         var ct = TestContext.Current.CancellationToken;
-        var settings = postgres.Settings(database: "migration_test");
-        var connectionString = DatabaseConnectionString.Create(new DatabaseOptions
-        {
-            ConnectionString = settings["DB_CON_STR"],
-            Username = settings["DB_USR"],
-            Password = settings["DB_PWD"],
-        }).ConnectionString;
-        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString).Options;
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(postgres.Settings(database: "migration_test"))
+            .Build();
+        await using var services = new ServiceCollection().AddDatabase(configuration).BuildServiceProvider();
+        var options = services.GetRequiredService<DbContextOptions<AppDbContext>>();
 
         await using (var db = new AppDbContext(options))
         {

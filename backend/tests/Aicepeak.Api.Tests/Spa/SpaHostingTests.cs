@@ -37,6 +37,17 @@ public sealed class SpaHostingTests : IAsyncDisposable
         Assert.Contains(Marker, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
     }
 
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/index.html")]
+    [InlineData("/projects/42")]
+    public async Task IndexHtml_IsRevalidated_SoRedeploysAreNotMaskedByCachedShell(string path)
+    {
+        var response = await _factory.CreateClient().GetAsync(path, TestContext.Current.CancellationToken);
+
+        Assert.True(response.Headers.CacheControl?.NoCache, $"Cache-Control of {path}: {response.Headers.CacheControl}");
+    }
+
     [Fact]
     public async Task StaticAsset_IsServed()
     {

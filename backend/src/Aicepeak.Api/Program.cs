@@ -1,5 +1,6 @@
 using Aicepeak.Api.Configuration;
 using Aicepeak.Api.Data;
+using Aicepeak.Api.Frontend;
 using Aicepeak.Api.Health;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -26,7 +27,7 @@ if (!app.Environment.IsDevelopment())
 }
 
 // The built frontend (wwwroot, copied on publish). Static files stay public.
-app.UseStaticFiles();
+app.UseFrontendStaticFiles();
 app.UseRouting();
 // app.UseAuthentication(); // Microsoft Entra ID (later)
 app.UseAuthorization();
@@ -39,8 +40,6 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-// Unknown API routes are 404 and never fall through to the frontend.
-app.Map("/api/{**path}", () => Results.NotFound());
-app.MapFallbackToFile("index.html").AllowAnonymous();
+app.MapFrontendFallback();
 
 app.Run();

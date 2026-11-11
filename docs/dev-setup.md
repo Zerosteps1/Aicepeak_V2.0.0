@@ -202,7 +202,7 @@ The container does not start on its own after a reboot or after Docker Desktop r
 
 The backend (`backend/`, ASP.NET Core on .NET 10 with EF Core) and the frontend (`frontend/`, React with Vite) are described in the [architecture](architecture/AICEPEAK_ARCHITECTURE.md). Commands below run from the repository root unless a `cd` says otherwise.
 
-**Tools, once:** the .NET 10 SDK from the [official download page](https://dotnet.microsoft.com/download/dotnet/10.0) (`global.json` requires a 10.0 SDK; a newer major SDK alone is not enough) and Node.js 22.22 or newer (installed in step 2). Then restore the pinned EF Core tool:
+**Tools, once:** the .NET 10 SDK from the [official download page](https://dotnet.microsoft.com/download/dotnet/10.0) (`global.json` requires a 10.0 SDK; a newer major SDK alone is not enough) and Node.js 22.22.2+, 24.15+ or 26+ (installed in step 2; the range is `engines` in `frontend/package.json`). Then restore the pinned EF Core tool:
 
 ```sh
 dotnet tool restore
@@ -227,7 +227,7 @@ After changing the EF model, add a migration with `dotnet ef migrations add <Nam
 **Development, two terminals:**
 
 ```sh
-cd backend && dotnet run --project src/Aicepeak.Api    # API on http://localhost:5043
+cd backend && dotnet watch --project src/Aicepeak.Api  # API on http://localhost:5043, hot reload of C# changes
 cd frontend && npm ci && npm run dev                   # app with hot reload on http://localhost:5173
 ```
 

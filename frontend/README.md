@@ -9,7 +9,7 @@ TypeScript + React, built with Vite. Styles use SCSS with CSS Modules; tests use
 | `npm ci` | Install the locked dependencies |
 | `npm run dev` | Dev server with hot reload on http://localhost:5173 |
 | `npm test` | Run the tests once (`npm run test:watch` to watch) |
-| `npm run lint` | Lint with oxlint |
+| `npm run lint` | Lint with oxlint; warnings fail the check |
 | `npm run build` | Type-check and build into `dist/` |
 
 ## Development
@@ -17,7 +17,7 @@ TypeScript + React, built with Vite. Styles use SCSS with CSS Modules; tests use
 Run the backend and the dev server in two terminals:
 
 ```sh
-cd backend && dotnet run --project src/Aicepeak.Api   # http://localhost:5043
+cd backend && dotnet watch --project src/Aicepeak.Api # http://localhost:5043, C# hot reload
 cd frontend && npm run dev                            # http://localhost:5173
 ```
 

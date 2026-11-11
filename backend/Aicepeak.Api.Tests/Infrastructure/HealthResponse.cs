@@ -3,8 +3,7 @@ using System.Text.Json;
 namespace Aicepeak.Api.Tests.Infrastructure;
 
 /// <summary>Reads the 503 problem details body of the health endpoint.</summary>
-public sealed class HealthResponse(string body)
-{
+public sealed class HealthResponse(string body) {
     private readonly JsonElement _root = JsonDocument.Parse(body).RootElement;
 
     public string Body { get; } = body;

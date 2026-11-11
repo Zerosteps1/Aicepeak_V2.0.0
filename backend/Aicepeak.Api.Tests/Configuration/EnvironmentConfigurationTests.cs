@@ -9,21 +9,18 @@ namespace Aicepeak.Api.Tests.Configuration;
 
 /// <summary>These tests change process environment variables, so they never run in parallel with others.</summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class ProcessEnvironmentCollection
-{
+public sealed class ProcessEnvironmentCollection {
     public const string Name = "ProcessEnvironment";
 }
 
 [Collection(ProcessEnvironmentCollection.Name)]
-public sealed class EnvironmentConfigurationTests : IDisposable
-{
+public sealed class EnvironmentConfigurationTests : IDisposable {
     private readonly string _contentRoot = Directory.CreateTempSubdirectory("aicepeak-env-").FullName;
 
     public void Dispose() => Directory.Delete(_contentRoot, recursive: true);
 
     [Fact]
-    public void DatabaseOptions_BindFromEnvironmentVariables()
-    {
+    public void DatabaseOptions_BindFromEnvironmentVariables() {
         using var _ = new EnvironmentVariables(("DB_CON_STR", "Host=env"), ("DB_USR", "env-user"), ("DB_PWD", "env-pwd"));
 
         var options = new ConfigurationBuilder().AddEnvironmentVariables().Build().Get<DatabaseOptions>();
@@ -35,8 +32,7 @@ public sealed class EnvironmentConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void DotEnv_IsReadInDevelopment_AndRealEnvironmentVariablesWin()
-    {
+    public void DotEnv_IsReadInDevelopment_AndRealEnvironmentVariablesWin() {
         WriteDotEnv("DB_USR='dotenv-user'", "DB_PWD='dotenv-pwd'");
         using var _ = new EnvironmentVariables(("DB_USR", "env-user"), ("DB_PWD", null));
 
@@ -50,8 +46,7 @@ public sealed class EnvironmentConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void DotEnv_IsIgnoredOutsideDevelopment()
-    {
+    public void DotEnv_IsIgnoredOutsideDevelopment() {
         WriteDotEnv("DB_PWD='dotenv-pwd'");
         using var _ = new EnvironmentVariables(("DB_PWD", null));
 
@@ -62,8 +57,7 @@ public sealed class EnvironmentConfigurationTests : IDisposable
     }
 
     [Fact]
-    public void DotEnv_MissingFile_IsIgnored()
-    {
+    public void DotEnv_MissingFile_IsIgnored() {
         var configuration = new ConfigurationManager();
 
         configuration.AddDotEnvInDevelopment(Environment(TestSettings.Development));
@@ -74,8 +68,7 @@ public sealed class EnvironmentConfigurationTests : IDisposable
     [Theory]
     [InlineData(TestSettings.Development, "Healthy")]
     [InlineData(TestSettings.Production, "Unhealthy")]
-    public async Task Api_ReadsDotEnvFromContentRoot_OnlyInDevelopment(string environment, string expectedConfigurationStatus)
-    {
+    public async Task Api_ReadsDotEnvFromContentRoot_OnlyInDevelopment(string environment, string expectedConfigurationStatus) {
         var unreachable = TestSettings.UnreachableDatabase();
         WriteDotEnv(
             $"DB_CON_STR='{unreachable["DB_CON_STR"]}'",
@@ -96,15 +89,13 @@ public sealed class EnvironmentConfigurationTests : IDisposable
     private void WriteDotEnv(params string[] lines) =>
         File.WriteAllLines(Path.Combine(_contentRoot, ".env"), lines);
 
-    private TestHostEnvironment Environment(string name) => new()
-    {
+    private TestHostEnvironment Environment(string name) => new() {
         EnvironmentName = name,
         ContentRootPath = _contentRoot,
         ContentRootFileProvider = new PhysicalFileProvider(_contentRoot),
     };
 
-    private sealed class TestHostEnvironment : IHostEnvironment
-    {
+    private sealed class TestHostEnvironment : IHostEnvironment {
         public required string EnvironmentName { get; set; }
         public string ApplicationName { get; set; } = "Aicepeak.Api";
         public required string ContentRootPath { get; set; }
@@ -112,23 +103,18 @@ public sealed class EnvironmentConfigurationTests : IDisposable
     }
 
     /// <summary>Sets process environment variables and restores the previous values on dispose.</summary>
-    private sealed class EnvironmentVariables : IDisposable
-    {
+    private sealed class EnvironmentVariables : IDisposable {
         private readonly Dictionary<string, string?> _previous = [];
 
-        public EnvironmentVariables(params (string Name, string? Value)[] variables)
-        {
-            foreach (var (name, value) in variables)
-            {
+        public EnvironmentVariables(params (string Name, string? Value)[] variables) {
+            foreach (var (name, value) in variables) {
                 _previous[name] = System.Environment.GetEnvironmentVariable(name);
                 System.Environment.SetEnvironmentVariable(name, value);
             }
         }
 
-        public void Dispose()
-        {
-            foreach (var (name, value) in _previous)
-            {
+        public void Dispose() {
+            foreach (var (name, value) in _previous) {
                 System.Environment.SetEnvironmentVariable(name, value);
             }
         }

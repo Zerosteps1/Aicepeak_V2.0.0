@@ -4,13 +4,11 @@ using Aicepeak.Api.Tests.Infrastructure;
 namespace Aicepeak.Api.Tests.ErrorHandling;
 
 /// <summary>AC-5: in Production no endpoint exposes exception details.</summary>
-public sealed class ErrorExposureTests
-{
+public sealed class ErrorExposureTests {
     private const string ThrowingEndpoint = "/api/v1/test/throw";
 
     [Fact]
-    public async Task Production_UnhandledException_ReturnsProblemDetailsWithoutDetails()
-    {
+    public async Task Production_UnhandledException_ReturnsProblemDetailsWithoutDetails() {
         await using var factory = new ApiFactory(TestSettings.Production, TestSettings.UnreachableDatabase());
 
         var response = await factory.CreateClient().GetAsync(ThrowingEndpoint, TestContext.Current.CancellationToken);
@@ -24,8 +22,7 @@ public sealed class ErrorExposureTests
     }
 
     [Fact]
-    public async Task Development_UnhandledException_ShowsDetails()
-    {
+    public async Task Development_UnhandledException_ShowsDetails() {
         await using var factory = new ApiFactory(TestSettings.Development, TestSettings.UnreachableDatabase());
 
         var response = await factory.CreateClient().GetAsync(ThrowingEndpoint, TestContext.Current.CancellationToken);
@@ -35,8 +32,7 @@ public sealed class ErrorExposureTests
     }
 
     [Fact]
-    public async Task Production_OpenApiDocument_IsNotExposed()
-    {
+    public async Task Production_OpenApiDocument_IsNotExposed() {
         await using var factory = new ApiFactory(TestSettings.Production, TestSettings.UnreachableDatabase());
 
         var response = await factory.CreateClient().GetAsync("/openapi/v1.json", TestContext.Current.CancellationToken);

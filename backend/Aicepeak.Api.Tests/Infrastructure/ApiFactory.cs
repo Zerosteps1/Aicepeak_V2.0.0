@@ -13,14 +13,11 @@ namespace Aicepeak.Api.Tests.Infrastructure;
 public sealed class ApiFactory(
     string environment,
     IReadOnlyDictionary<string, string?> settings,
-    string? contentRoot = null) : WebApplicationFactory<Program>
-{
-    protected override void ConfigureWebHost(IWebHostBuilder builder)
-    {
+    string? contentRoot = null) : WebApplicationFactory<Program> {
+    protected override void ConfigureWebHost(IWebHostBuilder builder) {
         builder.UseEnvironment(environment);
 
-        if (contentRoot is not null)
-        {
+        if (contentRoot is not null) {
             builder.UseContentRoot(contentRoot);
         }
 

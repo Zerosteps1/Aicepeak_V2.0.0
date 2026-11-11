@@ -7,16 +7,14 @@ using Microsoft.EntityFrameworkCore.Metadata;
 namespace Aicepeak.Api.Tests.Data;
 
 /// <summary>AC-6: the EF model and its migrations, without a database.</summary>
-public sealed class UserModelTests : IDisposable
-{
+public sealed class UserModelTests : IDisposable {
     private readonly AppDbContext _db = new(
         new DbContextOptionsBuilder<AppDbContext>().UseNpgsql("Host=localhost").Options);
 
     public void Dispose() => _db.Dispose();
 
     [Fact]
-    public void User_HasStringPrimaryKeyEntraId_AndRequiredName()
-    {
+    public void User_HasStringPrimaryKeyEntraId_AndRequiredName() {
         var user = _db.GetService<IDesignTimeModel>().Model.FindEntityType(typeof(User));
 
         Assert.NotNull(user);
@@ -31,14 +29,12 @@ public sealed class UserModelTests : IDisposable
     }
 
     [Fact]
-    public void Migrations_ContainInitialCreate()
-    {
+    public void Migrations_ContainInitialCreate() {
         Assert.Contains(_db.Database.GetMigrations(), migration => migration.EndsWith("_InitialCreate", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void Model_HasNoChangesMissingFromMigrations()
-    {
+    public void Model_HasNoChangesMissingFromMigrations() {
         Assert.False(_db.Database.HasPendingModelChanges());
     }
 }

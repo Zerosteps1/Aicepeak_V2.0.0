@@ -4,8 +4,7 @@ using Testcontainers.PostgreSql;
 namespace Aicepeak.Api.Tests.Infrastructure;
 
 /// <summary>A throwaway PostgreSQL container shared by the tests in <see cref="PostgresCollection"/>. Requires Docker.</summary>
-public sealed class PostgresFixture : IAsyncLifetime
-{
+public sealed class PostgresFixture : IAsyncLifetime {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17").Build();
 
     public string ConnectionStringWithoutCredentials { get; private set; } = "";
@@ -14,8 +13,7 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public string Password { get; private set; } = "";
 
-    public async ValueTask InitializeAsync()
-    {
+    public async ValueTask InitializeAsync() {
         await _container.StartAsync();
 
         var builder = new NpgsqlConnectionStringBuilder(_container.GetConnectionString());
@@ -30,11 +28,9 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public Task StopAsync() => _container.StopAsync();
 
-    public Dictionary<string, string?> Settings(string? database = null, string? password = null)
-    {
+    public Dictionary<string, string?> Settings(string? database = null, string? password = null) {
         var builder = new NpgsqlConnectionStringBuilder(ConnectionStringWithoutCredentials);
-        if (database is not null)
-        {
+        if (database is not null) {
             builder.Database = database;
         }
 
@@ -43,7 +39,6 @@ public sealed class PostgresFixture : IAsyncLifetime
 }
 
 [CollectionDefinition(Name)]
-public sealed class PostgresCollection : ICollectionFixture<PostgresFixture>
-{
+public sealed class PostgresCollection : ICollectionFixture<PostgresFixture> {
     public const string Name = "Postgres";
 }

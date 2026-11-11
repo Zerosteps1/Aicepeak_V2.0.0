@@ -6,15 +6,13 @@ namespace Aicepeak.Api.Tests.Health;
 /// <summary>AC-3 and AC-4 against a real PostgreSQL (Docker).</summary>
 [Collection(PostgresCollection.Name)]
 [Trait("Category", "Database")]
-public sealed class HealthAliveDatabaseTests(PostgresFixture postgres)
-{
+public sealed class HealthAliveDatabaseTests(PostgresFixture postgres) {
     private const string Endpoint = "/api/v1/health/alive";
 
     [Theory]
     [InlineData(TestSettings.Development)]
     [InlineData(TestSettings.Production)]
-    public async Task ReachableDatabase_Returns204WithEmptyBody(string environment)
-    {
+    public async Task ReachableDatabase_Returns204WithEmptyBody(string environment) {
         await using var factory = new ApiFactory(environment, postgres.Settings());
 
         var response = await factory.CreateClient().GetAsync(Endpoint, TestContext.Current.CancellationToken);
@@ -24,8 +22,7 @@ public sealed class HealthAliveDatabaseTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task WrongPassword_Returns503NamingDatabase_WithoutPasswordInProduction()
-    {
+    public async Task WrongPassword_Returns503NamingDatabase_WithoutPasswordInProduction() {
         const string wrongPassword = "wrong-pwd-marker-5d1e";
         await using var factory = new ApiFactory(TestSettings.Production, postgres.Settings(password: wrongPassword));
 

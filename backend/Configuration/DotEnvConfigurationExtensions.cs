@@ -4,19 +4,16 @@ using Microsoft.Extensions.Configuration.Memory;
 
 namespace Aicepeak.Api.Configuration;
 
-public static class DotEnvConfigurationExtensions
-{
+public static class DotEnvConfigurationExtensions {
     private const string FileName = ".env";
 
     /// <summary>
     /// In Development, adds the values of <c>.env</c> in the content root with the lowest precedence,
     /// so real environment variables always win. The process environment is not changed.
     /// </summary>
-    public static IConfigurationBuilder AddDotEnvInDevelopment(this IConfigurationBuilder configuration, IHostEnvironment environment)
-    {
+    public static IConfigurationBuilder AddDotEnvInDevelopment(this IConfigurationBuilder configuration, IHostEnvironment environment) {
         var path = Path.Combine(environment.ContentRootPath, FileName);
-        if (!environment.IsDevelopment() || !File.Exists(path))
-        {
+        if (!environment.IsDevelopment() || !File.Exists(path)) {
             return configuration;
         }
 

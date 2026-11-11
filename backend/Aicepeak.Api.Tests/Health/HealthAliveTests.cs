@@ -4,16 +4,14 @@ using Aicepeak.Api.Tests.Infrastructure;
 namespace Aicepeak.Api.Tests.Health;
 
 /// <summary>AC-4 and AC-5 for <c>GET /api/v1/health/alive</c> without a database.</summary>
-public sealed class HealthAliveTests
-{
+public sealed class HealthAliveTests {
     private const string Endpoint = "/api/v1/health/alive";
     private const string PasswordMarker = "pwd-marker-7f3a";
 
     [Theory]
     [InlineData(TestSettings.Development)]
     [InlineData(TestSettings.Production)]
-    public async Task UnreachableDatabase_Returns503NamingDatabase(string environment)
-    {
+    public async Task UnreachableDatabase_Returns503NamingDatabase(string environment) {
         var (status, health) = await GetHealth(environment, TestSettings.UnreachableDatabase());
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
@@ -26,8 +24,7 @@ public sealed class HealthAliveTests
     [InlineData("DB_CON_STR")]
     [InlineData("DB_USR")]
     [InlineData("DB_PWD")]
-    public async Task MissingConfiguration_AppStartsAndReturns503NamingConfiguration(string missingKey)
-    {
+    public async Task MissingConfiguration_AppStartsAndReturns503NamingConfiguration(string missingKey) {
         var settings = TestSettings.UnreachableDatabase();
         settings[missingKey] = "";
 
@@ -42,8 +39,7 @@ public sealed class HealthAliveTests
     [InlineData("Unknown=value")]
     [InlineData("Host=127.0.0.1;Port=not-a-number")]
     [InlineData("Database=aicepeak")]
-    public async Task InvalidConnectionString_Returns503NamingConfiguration(string conStr)
-    {
+    public async Task InvalidConnectionString_Returns503NamingConfiguration(string conStr) {
         var (status, health) = await GetHealth(TestSettings.Production, TestSettings.Database(conStr, "postgres", "postgres"));
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
@@ -51,13 +47,11 @@ public sealed class HealthAliveTests
     }
 
     [Fact]
-    public async Task Production_UnhealthyBody_ContainsNoSecretsOrExceptionDetails()
-    {
+    public async Task Production_UnhealthyBody_ContainsNoSecretsOrExceptionDetails() {
         var unreachable = TestSettings.UnreachableDatabase(PasswordMarker);
         var invalid = TestSettings.Database($"Host=127.0.0.1;Port={PasswordMarker}", "postgres", PasswordMarker);
 
-        foreach (var settings in new[] { unreachable, invalid })
-        {
+        foreach (var settings in new[] { unreachable, invalid }) {
             var (status, health) = await GetHealth(TestSettings.Production, settings);
 
             Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
@@ -71,8 +65,7 @@ public sealed class HealthAliveTests
     }
 
     [Fact]
-    public async Task Development_UnhealthyBody_ContainsExceptionTrace()
-    {
+    public async Task Development_UnhealthyBody_ContainsExceptionTrace() {
         var (_, unreachable) = await GetHealth(TestSettings.Development, TestSettings.UnreachableDatabase());
         var (_, invalid) = await GetHealth(TestSettings.Development, TestSettings.Database("Unknown=value", "postgres", "postgres"));
 
@@ -84,8 +77,7 @@ public sealed class HealthAliveTests
     }
 
     [Fact]
-    public async Task Unhealthy_RespondsWithProblemDetails()
-    {
+    public async Task Unhealthy_RespondsWithProblemDetails() {
         await using var factory = new ApiFactory(TestSettings.Production, TestSettings.UnreachableDatabase());
         var response = await factory.CreateClient().GetAsync(Endpoint, TestContext.Current.CancellationToken);
 
@@ -93,8 +85,7 @@ public sealed class HealthAliveTests
     }
 
     private static async Task<(HttpStatusCode Status, HealthResponse Health)> GetHealth(
-        string environment, IReadOnlyDictionary<string, string?> settings)
-    {
+        string environment, IReadOnlyDictionary<string, string?> settings) {
         await using var factory = new ApiFactory(environment, settings);
         var response = await factory.CreateClient().GetAsync(Endpoint, TestContext.Current.CancellationToken);
         var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);

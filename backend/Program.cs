@@ -18,8 +18,7 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-if (!app.Environment.IsDevelopment())
-{
+if (!app.Environment.IsDevelopment()) {
     // Problem details without exception details; Development uses the developer exception page.
     app.UseExceptionHandler();
     app.UseHsts();
@@ -35,8 +34,7 @@ app.UseAuthorization();
 app.MapHealth();
 app.MapControllers();
 
-if (app.Environment.IsDevelopment())
-{
+if (app.Environment.IsDevelopment()) {
     app.MapOpenApi();
 }
 

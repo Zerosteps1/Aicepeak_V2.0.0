@@ -1,32 +1,35 @@
-# React + TypeScript + Vite
+# Aicepeak frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+TypeScript + React, built with Vite. Styles use SCSS with CSS Modules; tests use Vitest and Testing Library.
 
-Currently, two official plugins are available:
+## Scripts
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+| Command | Purpose |
+|---|---|
+| `npm ci` | Install the locked dependencies |
+| `npm run dev` | Dev server with hot reload on http://localhost:5173 |
+| `npm test` | Run the tests once (`npm run test:watch` to watch) |
+| `npm run lint` | Lint with oxlint |
+| `npm run build` | Type-check and build into `dist/` |
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Run the backend and the dev server in two terminals:
 
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+cd backend && dotnet run --project src/Aicepeak.Api   # http://localhost:5043
+cd frontend && npm run dev                            # http://localhost:5173
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Open http://localhost:5173. Vite proxies `/api/*` to the backend, so the app calls the same relative paths as in production.
+
+## Production
+
+`dotnet publish` of the backend runs `npm ci` and `npm run build` and copies `dist/` into the backend's `wwwroot`. The backend then serves the app at `/`.
+
+## Structure
+
+- `src/api/`: backend calls. `httpClient.ts` is the single place that sends requests; the Microsoft Entra access token will be attached there.
+- `src/features/<feature>/`: components with their `*.module.scss` and tests.
+- `src/styles/`: global styles.
+- `src/main.tsx`: entry point; `MsalProvider` will wrap `<App />` here.

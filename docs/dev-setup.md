@@ -168,6 +168,10 @@ Also inspect the final senior check receipt (`output.text` JSON) and confirm `cl
 
 The product uses PostgreSQL ([ADR-0010](decisions/0010-product-stack.md), decision 11). For local development, run it in a Docker container instead of installing it on the Mac. This needs Docker Desktop running (see [Docker](#docker)).
 
+**Shortcut:** once `backend/.env` exists (see [Running Aicepeak locally](#running-aicepeak-locally)), `cd backend && ./start` does the steps below: it starts Docker Desktop if needed and creates or starts the container `aicepeak-pg` with the version (`DB_PG_VERSION`), port, database, user and password from `.env`. If an existing container has another version, port or password, it stops with a message and changes nothing. `./start --migrate` also applies the EF Core migrations. It needs only `python3` (standard library).
+
+Manual steps:
+
 Start a container named `aicepeak-pg`:
 
 ```sh
@@ -216,11 +220,13 @@ cp backend/.env.example backend/.env
 
 `.env` is git-ignored and never published; other environments set the variables directly. If a setting is missing or invalid the backend still starts, and its health endpoint reports the problem.
 
-**Database schema.** Create or update the database `aicepeak` with the EF Core migrations:
+**Database.** Start Docker and the Postgres container and create or update the database schema with the EF Core migrations:
 
 ```sh
-cd backend && dotnet ef database update
+cd backend && ./start --migrate
 ```
+
+`./start` alone only makes sure Docker and the container run. Without the script, start the container as described in [PostgreSQL for development](#postgresql-for-development) and run `cd backend && dotnet ef database update`.
 
 After changing the EF model, add a migration with `dotnet ef migrations add <Name> --output-dir Data/Migrations` (from `backend/`).
 

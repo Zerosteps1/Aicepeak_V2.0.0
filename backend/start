@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Start the local development database: Docker and the PostgreSQL container `aicepeak-pg`.
+
+Settings come from `.env` next to this script: DB_CON_STR (Host, Port, Database), DB_USR,
+DB_PWD and DB_PG_VERSION. A missing container is created from them; an existing container
+with another Postgres version or port is reported, never deleted.
+
+Usage (from backend/):  ./start [--migrate]
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CONTAINER = "aicepeak-pg"
+BACKEND_DIR = Path(__file__).resolve().parent
+ENV_FILE = BACKEND_DIR / ".env"
+REQUIRED_KEYS = ("DB_CON_STR", "DB_USR", "DB_PWD", "DB_PG_VERSION")
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+TIMEOUT_SECONDS = 60
+RECREATE_HINT = f"To recreate it (deletes its data): docker rm -f -v {CONTAINER}"
+
+
+class StartError(Exception):
+    """A problem the user has to fix; printed without a traceback."""
+
+
+def read_env(path):
+    """Parses KEY=VALUE lines; skips blanks and # comments; strips one pair of surrounding quotes."""
+    if not path.is_file():
+        raise StartError(f"{path} not found. Create it with: cp .env.example .env")
+
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        values[key.strip()] = value
+
+    missing = [key for key in REQUIRED_KEYS if not values.get(key)]
+    if missing:
+        raise StartError(f"Missing in {path}: {', '.join(missing)} (see .env.example).")
+    return values
+
+
+def parse_connection_string(connection_string):
+    """Returns (port, database) of a local Npgsql connection string."""
+    parts = {}
+    for part in connection_string.split(";"):
+        key, separator, value = part.partition("=")
+        if separator:
+            parts[key.strip().lower()] = value.strip()
+
+    host = parts.get("host") or parts.get("server")
+    if not host:
+        raise StartError("DB_CON_STR has no Host.")
+    if host.lower() not in LOCAL_HOSTS:
+        raise StartError(f"DB_CON_STR points to '{host}', not to a local container.")
+
+    port = parts.get("port", "5432")
+    if not port.isdigit():
+        raise StartError(f"DB_CON_STR has an invalid Port: '{port}'.")
+
+    database = parts.get("database") or parts.get("db")
+    if not database:
+        raise StartError("DB_CON_STR has no Database.")
+
+    return port, database
+
+
+def run(*args, env=None):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, env=env, check=False)
+    except FileNotFoundError:
+        raise StartError(f"'{args[0]}' not found. Is it installed and on PATH?") from None
+
+
+def wait_until(what, predicate):
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise StartError(f"Timed out after {TIMEOUT_SECONDS}s waiting for {what}.")
+        time.sleep(1)
+
+
+def ensure_docker():
+    def docker_running():
+        return run("docker", "info").returncode == 0
+
+    if docker_running():
+        return
+    if sys.platform != "darwin":
+        raise StartError("Docker is not running. Start it and run this script again.")
+
+    print("Starting Docker Desktop ...")
+    if run("open", "-a", "Docker").returncode != 0:
+        raise StartError("Could not start Docker Desktop (open -a Docker). Is it installed?")
+    wait_until("Docker", docker_running)
+
+
+def inspect_container():
+    result = run("docker", "inspect", CONTAINER, "--format", "{{json .}}")
+    return json.loads(result.stdout) if result.returncode == 0 else None
+
+
+def check_container(info, version, port):
+    """Fails if the existing container does not match the expected major version and host port."""
+    env = dict(entry.split("=", 1) for entry in info["Config"]["Env"] if "=" in entry)
+    found_major = env.get("PG_MAJOR")
+    expected_major = version.split(".")[0]
+    if found_major != expected_major:
+        raise StartError(
+            f"Container {CONTAINER} runs PostgreSQL {found_major or 'unknown'} ({info['Config']['Image']}), "
+            f"but DB_PG_VERSION is {version}.\n{RECREATE_HINT}")
+
+    bindings = (info["HostConfig"].get("PortBindings") or {}).get("5432/tcp") or []
+    found_ports = sorted({binding.get("HostPort") for binding in bindings})
+    if port not in found_ports:
+        raise StartError(
+            f"Container {CONTAINER} publishes port {', '.join(found_ports) or 'none'}, "
+            f"but DB_CON_STR uses port {port}.\n{RECREATE_HINT}")
+
+
+def create_container(version, port, database, user, password):
+    print(f"Creating container {CONTAINER} from postgres:{version} (the image is pulled on first use) ...")
+    # The password is passed through the environment so it never shows up on the command line.
+    result = subprocess.run(
+        ["docker", "run", "-d", "--name", CONTAINER,
+         "-e", f"POSTGRES_USER={user}", "-e", "POSTGRES_PASSWORD", "-e", f"POSTGRES_DB={database}",
+         "-p", f"127.0.0.1:{port}:5432", f"postgres:{version}"],
+        env={**os.environ, "POSTGRES_PASSWORD": password}, stdout=subprocess.DEVNULL, check=False)
+    if result.returncode != 0:
+        raise StartError(f"Could not create container {CONTAINER}.")
+
+
+def start_container():
+    result = run("docker", "start", CONTAINER)
+    if result.returncode != 0:
+        raise StartError(f"Could not start container {CONTAINER}: {result.stderr.strip()}")
+
+
+def wait_for_postgres(user):
+    def ready():
+        info = inspect_container()
+        if not info or not info["State"]["Running"]:
+            raise StartError(f"Container {CONTAINER} stopped. See: docker logs {CONTAINER}")
+        # TCP (-h localhost): during the first initialisation the server briefly listens on its socket only.
+        return run("docker", "exec", CONTAINER, "pg_isready", "-q", "-h", "localhost", "-U", user).returncode == 0
+
+    wait_until("PostgreSQL", ready)
+
+
+def container_ip():
+    networks = inspect_container()["NetworkSettings"]["Networks"].values()
+    return next(network["IPAddress"] for network in networks if network.get("IPAddress"))
+
+
+def psql(sql, database, user, password, host="localhost"):
+    return run("docker", "exec", "-e", "PGPASSWORD", CONTAINER,
+               "psql", "-h", host, "-U", user, "-d", database, "-tAc", sql,
+               env={**os.environ, "PGPASSWORD": password})
+
+
+def check_database(database, user, password):
+    """Verifies the credentials; returns a hint if the database or its schema is missing."""
+    # The image trusts loopback connections, so the login is checked over the container's network address,
+    # where the password is required, as for the app.
+    login = psql("SELECT 1", "postgres", user, password, host=container_ip())
+    if login.returncode != 0:
+        raise StartError(
+            f"Cannot log in as '{user}' with DB_PWD from .env; the container was probably created with "
+            f"other credentials.\n{RECREATE_HINT}")
+
+    escaped = database.replace("'", "''")
+    if psql(f"SELECT 1 FROM pg_database WHERE datname = '{escaped}'", "postgres", user, password).stdout.strip() != "1":
+        return f"Database '{database}' does not exist yet. Run: ./start --migrate"
+    schema = psql("SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL", database, user, password)
+    if schema.stdout.strip() != "t":
+        return "No migrations applied yet. Run: ./start --migrate"
+    return None
+
+
+def migrate():
+    for command in (["dotnet", "tool", "restore"], ["dotnet", "ef", "database", "update"]):
+        print(f"Running: {' '.join(command)}")
+        try:
+            result = subprocess.run(command, cwd=BACKEND_DIR, check=False)
+        except FileNotFoundError:
+            raise StartError("'dotnet' not found. Install the .NET 10 SDK.") from None
+        if result.returncode != 0:
+            raise StartError(f"'{' '.join(command)}' failed.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--migrate", action="store_true", help="apply the EF Core migrations afterwards")
+    args = parser.parse_args()
+
+    env = read_env(ENV_FILE)
+    port, database = parse_connection_string(env["DB_CON_STR"])
+    user, password, version = env["DB_USR"], env["DB_PWD"], env["DB_PG_VERSION"]
+
+    ensure_docker()
+    info = inspect_container()
+    if info is None:
+        create_container(version, port, database, user, password)
+    else:
+        check_container(info, version, port)
+        start_container()
+    wait_for_postgres(user)
+
+    hint = check_database(database, user, password)
+    if args.migrate:
+        migrate()
+        hint = None
+
+    print(f"PostgreSQL {version} is ready: container {CONTAINER}, localhost:{port}, database {database}.")
+    if hint:
+        print(hint)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except StartError as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)

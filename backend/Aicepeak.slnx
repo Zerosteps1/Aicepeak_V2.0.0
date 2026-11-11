@@ -4,10 +4,6 @@
     <File Path="Directory.Packages.props" />
     <File Path="nuget.config" />
   </Folder>
-  <Folder Name="/src/">
-    <Project Path="src/Aicepeak.Api/Aicepeak.Api.csproj" />
-  </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/Aicepeak.Api.Tests/Aicepeak.Api.Tests.csproj" />
-  </Folder>
+  <Project Path="Aicepeak.Api.csproj" />
+  <Project Path="Aicepeak.Api.Tests/Aicepeak.Api.Tests.csproj" />
 </Solution>

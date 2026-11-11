@@ -208,10 +208,10 @@ The backend (`backend/`, ASP.NET Core on .NET 10 with EF Core) and the frontend 
 dotnet tool restore
 ```
 
-**Configuration.** The backend reads `DB_CON_STR` (connection string without credentials), `DB_USR` and `DB_PWD` from environment variables. In the `Development` environment it also reads `backend/src/Aicepeak.Api/.env`; real environment variables win. Create it from the example, which matches the `aicepeak-pg` container above:
+**Configuration.** The backend reads `DB_CON_STR` (connection string without credentials), `DB_USR` and `DB_PWD` from environment variables. In the `Development` environment it also reads `backend/.env`; real environment variables win. Create it from the example, which matches the `aicepeak-pg` container above:
 
 ```sh
-cp backend/src/Aicepeak.Api/.env.example backend/src/Aicepeak.Api/.env
+cp backend/.env.example backend/.env
 ```
 
 `.env` is git-ignored and never published; other environments set the variables directly. If a setting is missing or invalid the backend still starts, and its health endpoint reports the problem.
@@ -219,16 +219,16 @@ cp backend/src/Aicepeak.Api/.env.example backend/src/Aicepeak.Api/.env
 **Database schema.** Create or update the database `aicepeak` with the EF Core migrations:
 
 ```sh
-cd backend && dotnet ef database update --project src/Aicepeak.Api
+cd backend && dotnet ef database update
 ```
 
-After changing the EF model, add a migration with `dotnet ef migrations add <Name> --project src/Aicepeak.Api --output-dir Data/Migrations` (from `backend/`).
+After changing the EF model, add a migration with `dotnet ef migrations add <Name> --output-dir Data/Migrations` (from `backend/`).
 
 **Development, two terminals:**
 
 ```sh
-cd backend && dotnet watch --project src/Aicepeak.Api  # API on http://localhost:5043, hot reload of C# changes
-cd frontend && npm ci && npm run dev                   # app with hot reload on http://localhost:5173
+cd backend && dotnet watch     # API on http://localhost:5043 with C# hot reload (or dotnet run)
+cd frontend && npm ci && npm run dev   # app with hot reload on http://localhost:5173
 ```
 
 Open http://localhost:5173. Vite proxies `/api/*` to the backend. The page shows the HTTP status of `GET /api/v1/health/alive`: `204` when the database is reachable, `503` when it is not or the configuration is missing or invalid. In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
@@ -236,16 +236,16 @@ Open http://localhost:5173. Vite proxies `/api/*` to the backend. The page shows
 **Checks:**
 
 ```sh
-dotnet build backend -warnaserror     # 0 warnings, 0 errors
-dotnet test backend                   # needs Docker: database tests start a throwaway postgres:17 container
+dotnet build backend/Aicepeak.slnx -warnaserror   # 0 warnings, 0 errors
+dotnet test backend/Aicepeak.slnx                 # needs Docker: database tests start a throwaway postgres:17 container
 npm --prefix frontend test
 npm --prefix frontend run lint
 npm --prefix frontend run build
 ```
 
-Without Docker, skip the database tests with `dotnet test backend --filter "Category!=Database"`.
+Without Docker, skip the database tests with `dotnet test backend/Aicepeak.slnx --filter "Category!=Database"`. `backend/` holds both the API project and the solution, so `dotnet build` and `dotnet test` need the solution file named; inside `backend/`, `dotnet run`, `dotnet watch` and `dotnet ef` use the API project.
 
-**Production build:** `dotnet publish backend/src/Aicepeak.Api -c Release -o <dir>` also runs `npm ci` and `npm run build` in `frontend/` and copies `frontend/dist` into `<dir>/wwwroot`; the backend then serves the app at `/`. Add `-p:SkipFrontendBuild=true` to skip the frontend.
+**Production build:** `dotnet publish backend/Aicepeak.Api.csproj -c Release -o <dir>` also runs `npm ci` and `npm run build` in `frontend/` and copies `frontend/dist` into `<dir>/wwwroot`; the backend then serves the app at `/`. Add `-p:SkipFrontendBuild=true` to skip the frontend.
 
 ## Docker
 

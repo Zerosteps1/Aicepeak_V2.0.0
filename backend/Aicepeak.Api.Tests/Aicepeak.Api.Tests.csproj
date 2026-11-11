@@ -14,7 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Aicepeak.Api/Aicepeak.Api.csproj" />
+    <ProjectReference Include="../Aicepeak.Api.csproj" />
   </ItemGroup>
 
   <ItemGroup>

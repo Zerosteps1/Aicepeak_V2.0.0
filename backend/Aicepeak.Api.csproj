@@ -2,7 +2,9 @@
 
   <PropertyGroup>
     <!-- The React app; `dotnet publish` builds it and ships dist/ as wwwroot/. -->
-    <FrontendRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '..', '..', '..', 'frontend'))</FrontendRoot>
+    <FrontendRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '..', 'frontend'))</FrontendRoot>
+    <!-- The test project lives in a subfolder; keep its sources and build output out of this project. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);Aicepeak.Api.Tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

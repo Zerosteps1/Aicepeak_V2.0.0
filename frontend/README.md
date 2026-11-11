@@ -17,8 +17,8 @@ TypeScript + React, built with Vite. Styles use SCSS with CSS Modules; tests use
 Run the backend and the dev server in two terminals:
 
 ```sh
-cd backend && dotnet watch --project src/Aicepeak.Api # http://localhost:5043, C# hot reload
-cd frontend && npm run dev                            # http://localhost:5173
+cd backend && dotnet watch    # http://localhost:5043, C# hot reload
+cd frontend && npm run dev    # http://localhost:5173
 ```
 
 Open http://localhost:5173. Vite proxies `/api/*` to the backend, so the app calls the same relative paths as in production.

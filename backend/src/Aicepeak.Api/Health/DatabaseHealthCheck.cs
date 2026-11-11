@@ -20,7 +20,7 @@ public sealed class DatabaseHealthCheck(AppDbContext db) : IHealthCheck
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return new HealthCheckResult(context.Registration.FailureStatus, "Could not open a connection to the database.", exception);
+            return new HealthCheckResult(context.Registration.FailureStatus, "Could not reach the database.", exception);
         }
     }
 }

@@ -185,7 +185,7 @@ Check that the server answers:
 docker exec -it aicepeak-pg psql -U postgres -c 'select version();'
 ```
 
-Expected: one row that starts with `PostgreSQL 17`. An Npgsql/EF Core connection string for this container is `Host=localhost;Port=5432;Username=postgres;Password=postgres`. Keep connection strings in local configuration such as .NET user secrets, not in Git.
+Expected: one row that starts with `PostgreSQL 17`. The backend reads the connection settings from environment variables; in development they come from a git-ignored `.env` file (see [Running Aicepeak locally](#running-aicepeak-locally)). Never commit connection strings or passwords.
 
 Daily handling:
 
@@ -197,6 +197,55 @@ docker rm -f -v aicepeak-pg   # delete the container and its data volume for a f
 ```
 
 The container does not start on its own after a reboot or after Docker Desktop restarts; run `docker start aicepeak-pg`.
+
+## Running Aicepeak locally
+
+The backend (`backend/`, ASP.NET Core on .NET 10 with EF Core) and the frontend (`frontend/`, React with Vite) are described in the [architecture](architecture/AICEPEAK_ARCHITECTURE.md). Commands below run from the repository root unless a `cd` says otherwise.
+
+**Tools, once:** the .NET 10 SDK from the [official download page](https://dotnet.microsoft.com/download/dotnet/10.0) (`global.json` requires a 10.0 SDK; a newer major SDK alone is not enough) and Node.js 22.22 or newer (installed in step 2). Then restore the pinned EF Core tool:
+
+```sh
+dotnet tool restore
+```
+
+**Configuration.** The backend reads `DB_CON_STR` (connection string without credentials), `DB_USR` and `DB_PWD` from environment variables. In the `Development` environment it also reads `backend/src/Aicepeak.Api/.env`; real environment variables win. Create it from the example, which matches the `aicepeak-pg` container above:
+
+```sh
+cp backend/src/Aicepeak.Api/.env.example backend/src/Aicepeak.Api/.env
+```
+
+`.env` is git-ignored and never published; other environments set the variables directly. If a setting is missing or invalid the backend still starts, and its health endpoint reports the problem.
+
+**Database schema.** Create or update the database `aicepeak` with the EF Core migrations:
+
+```sh
+cd backend && dotnet ef database update --project src/Aicepeak.Api
+```
+
+After changing the EF model, add a migration with `dotnet ef migrations add <Name> --project src/Aicepeak.Api --output-dir Data/Migrations` (from `backend/`).
+
+**Development, two terminals:**
+
+```sh
+cd backend && dotnet run --project src/Aicepeak.Api    # API on http://localhost:5043
+cd frontend && npm ci && npm run dev                   # app with hot reload on http://localhost:5173
+```
+
+Open http://localhost:5173. Vite proxies `/api/*` to the backend. The page shows the HTTP status of `GET /api/v1/health/alive`: `204` when the database is reachable, `503` when it is not or the configuration is missing or invalid. In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
+
+**Checks:**
+
+```sh
+dotnet build backend -warnaserror     # 0 warnings, 0 errors
+dotnet test backend                   # needs Docker: database tests start a throwaway postgres:17 container
+npm --prefix frontend test
+npm --prefix frontend run lint
+npm --prefix frontend run build
+```
+
+Without Docker, skip the database tests with `dotnet test backend --filter "Category!=Database"`.
+
+**Production build:** `dotnet publish backend/src/Aicepeak.Api -c Release -o <dir>` also runs `npm ci` and `npm run build` in `frontend/` and copies `frontend/dist` into `<dir>/wwwroot`; the backend then serves the app at `/`. Add `-p:SkipFrontendBuild=true` to skip the frontend.
 
 ## Docker
 

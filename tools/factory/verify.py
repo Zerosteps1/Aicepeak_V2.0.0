@@ -23,12 +23,46 @@ def run(command, **kwargs):
     return result.stdout
 
 
+# TypeScript reads its tsconfig files as JSONC (comments, trailing commas); every other .json file stays strict JSON.
+TSCONFIG=re.compile(r'tsconfig(\.[A-Za-z0-9_-]+)*\.json')
+
+
+def jsonc(text):
+    """Strict JSON from JSONC: drop // and /* */ comments and trailing commas outside strings."""
+    out,i,n=[],0,len(text)
+    while i<n:
+        c=text[i]
+        if c=='"':
+            j=i+1
+            while j<n and text[j]!='"':j+=2 if text[j]=='\\' else 1
+            out.append(text[i:j+1]);i=j+1
+        elif text.startswith('//',i):
+            i=text.find('\n',i);i=n if i<0 else i
+        elif text.startswith('/*',i):
+            end=text.find('*/',i+2)
+            if end<0:raise ValueError('unterminated comment in JSONC')
+            i=end+2
+        elif c==',':
+            j=i+1
+            while j<n and (text[j].isspace() or text.startswith('//',j) or text.startswith('/*',j)):
+                if text.startswith('//',j):j=text.find('\n',j);j=n if j<0 else j
+                elif text.startswith('/*',j):
+                    end=text.find('*/',j+2)
+                    if end<0:raise ValueError('unterminated comment in JSONC')
+                    j=end+2
+                else:j+=1
+            if j<n and text[j] in '}]':i+=1
+            else:out.append(c);i+=1
+        else:out.append(c);i+=1
+    return ''.join(out)
+
+
 def structural(root, trusted):
     for path in root.rglob('*'):
         if '.git' in path.parts or '__pycache__' in path.parts or '.factory-runtime' in path.parts:continue
         if path.is_symlink():raise ValueError('symlink in candidate: '+str(path))
         if not path.is_file():continue
-        if path.suffix=='.json':json.loads(path.read_text())
+        if path.suffix=='.json':json.loads(jsonc(path.read_text()) if TSCONFIG.fullmatch(path.name) else path.read_text())
         elif path.suffix=='.toml':tomllib.loads(path.read_text())
         elif path.suffix=='.py':ast.parse(path.read_text(),filename=str(path))
         elif path.suffix=='.md':

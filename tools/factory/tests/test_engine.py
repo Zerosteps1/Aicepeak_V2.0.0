@@ -511,6 +511,23 @@ class EngineBoundaries(unittest.TestCase):
             engine.test_stage(self.config)
         run.assert_not_called()
 
+    def test_tsconfig_files_are_read_as_jsonc_and_every_other_json_stays_strict(self):
+        text='{\n  // comment\n  "a": "x//y, /* z */ ]", /* block */\n  "b": [1, 2,],\n}\n'
+        self.assertEqual(json.loads(verify.jsonc(text)),{'a':'x//y, /* z */ ]','b':[1,2]})
+        self.assertEqual(json.loads(verify.jsonc('{"s":"a\\\\\\"//b"}')),{'s':'a\\"//b'})
+        with self.assertRaisesRegex(ValueError,'unterminated comment'):verify.jsonc('{/* open')
+        for name,jsonc in (('tsconfig.json',True),('tsconfig.app.json',True),('tsconfig.node.json',True),('package.json',False),
+                           ('config.json',False),('mytsconfig.json',False),('tsconfig.json.bak',False)):
+            self.assertEqual(bool(verify.TSCONFIG.fullmatch(name)),jsonc,name)
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'frontend').mkdir()
+            (root/'frontend/tsconfig.app.json').write_text(text)
+            (root/'frontend/data.json').write_text(text)
+            with self.assertRaises(json.JSONDecodeError):verify.structural(root,ROOT)
+            (root/'frontend/data.json').unlink()
+            with self.assertRaises(FileNotFoundError):verify.structural(root,ROOT)  # past the JSON walk: no factory/config.json
+
     def test_every_stage_runs_only_on_the_config_branch(self):
         self.config['automatic_correction']=True
         stages={'snapshot':lambda:engine.snapshot_stage(argparse.Namespace(pr=1,feedback_kind='',feedback_id=0),self.config),

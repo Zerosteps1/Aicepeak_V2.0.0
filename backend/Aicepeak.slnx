@@ -7,4 +7,7 @@
   <Folder Name="/src/">
     <Project Path="src/Aicepeak.Api/Aicepeak.Api.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Aicepeak.Api.Tests/Aicepeak.Api.Tests.csproj" />
+  </Folder>
 </Solution>

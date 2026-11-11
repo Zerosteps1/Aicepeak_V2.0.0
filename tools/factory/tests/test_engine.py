@@ -1,5 +1,7 @@
 """Boundary regressions with real Git/stdlib and GitHub mocked only at transport."""
 import argparse
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -455,6 +458,58 @@ class EngineBoundaries(unittest.TestCase):
             (candidate/'sitecustomize.py').write_text('raise SystemExit(0)\n')
             with self.assertRaisesRegex(ValueError,'FAILED'):
                 verify.unit_tests(candidate,trusted)
+
+    def test_the_test_stage_runs_verify_in_the_trusted_test_image_with_every_sandbox_flag(self):
+        snapshot={'draft':False,'repository':'fixture/repo','head_sha':HEAD,'policy_sha':POLICY,'run_id':'1'}
+        image_id='sha256:'+'c'*64
+        runs,captured=[],{}
+
+        def checkout(repo,sha,destination,token=None):
+            (destination/'.git').mkdir(parents=True)
+            return destination
+
+        def docker(argv,**kwargs):
+            runs.append(argv)
+            return subprocess.CompletedProcess(argv,0,'PASS: all\n','')
+
+        for built,line in ((True,'test image aicepeak-factory-test:0123456789abcdef: built in 87.5 s'),
+                           (False,'test image aicepeak-factory-test:0123456789abcdef: present')):
+            runs.clear()
+            with self.subTest(built=built), patch.dict(os.environ,{'SNAPSHOT_JSON':json.dumps(snapshot)}), \
+                    patch.object(engine,'GitHub',return_value=SimpleNamespace(token='t')), patch.object(engine,'current'), \
+                    patch.object(engine,'git_checkout',side_effect=checkout), \
+                    patch.object(engine.images,'ensure_test_image',return_value=(image_id,'aicepeak-factory-test:0123456789abcdef',built,87.5)) as ensure, \
+                    patch.object(engine.subprocess,'run',side_effect=docker), \
+                    patch.object(engine,'emit',side_effect=lambda name,value:captured.update({name:value})), \
+                    contextlib.redirect_stderr(io.StringIO()) as log:
+                engine.test_stage(self.config)
+                ensure.assert_called_once_with(engine.ROOT)
+            self.assertEqual(log.getvalue(),line+'\n')
+            [argv]=runs
+            self.assertEqual(argv[:2],['docker','run'])
+            self.assertNotIn('build',argv)
+            for flags in (['--rm','--init'],['--network','none'],['--read-only'],['--cap-drop','ALL'],['--security-opt','no-new-privileges'],
+                          ['--pids-limit','256'],['--memory','2g'],['--cpus','2'],['--tmpfs','/tmp:rw,nosuid,nodev,size=256m']):
+                self.assertTrue(any(argv[i:i+len(flags)]==flags for i in range(len(argv))),flags)
+            self.assertEqual([argv[i+1].split(',')[-1] for i,a in enumerate(argv) if a=='--mount'],['readonly','readonly'])
+            self.assertEqual(argv[argv.index(image_id)+1:],['python3','/policy/tools/factory/verify.py','--root','/candidate','--trusted-root','/policy','--ci'])
+            self.assertEqual(captured['tests']['image'],line)
+            self.assertTrue(captured['tests']['summary'].startswith(line+'\n'))
+            self.assertTrue(captured['tests']['ok'])
+
+    def test_a_failing_test_image_build_blocks_the_test_stage(self):
+        snapshot={'draft':False,'repository':'fixture/repo','head_sha':HEAD,'policy_sha':POLICY,'run_id':'1'}
+
+        def checkout(repo,sha,destination,token=None):
+            (destination/'.git').mkdir(parents=True)
+            return destination
+
+        with patch.dict(os.environ,{'SNAPSHOT_JSON':json.dumps(snapshot)}), patch.object(engine,'GitHub',return_value=SimpleNamespace(token='t')), \
+                patch.object(engine,'current'), patch.object(engine,'git_checkout',side_effect=checkout), \
+                patch.object(engine.images,'ensure_test_image',side_effect=engine.images.ImageError('test image build failed: x')), \
+                patch.object(engine.subprocess,'run') as run, self.assertRaisesRegex(Blocked,'^trusted test image build failed$'):
+            engine.test_stage(self.config)
+        run.assert_not_called()
 
     def test_every_stage_runs_only_on_the_config_branch(self):
         self.config['automatic_correction']=True

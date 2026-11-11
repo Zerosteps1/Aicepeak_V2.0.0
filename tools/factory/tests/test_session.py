@@ -65,6 +65,9 @@ class SessionBoundaries(SessionRepos, unittest.TestCase):
     def test_plain_entrypoints_do_not_create_bytecode_in_control_checkout(self):
         for source in (ROOT / 'tools/factory').glob('*.py'):
             (self.control / 'tools/factory' / source.name).write_bytes(source.read_bytes())
+        # clients.py reads the pinned CLI versions at import; a control checkout has the manifest, the test image not.
+        (self.control / 'factory').mkdir(exist_ok=True)
+        (self.control / 'factory/package.json').write_bytes((ROOT / 'factory/package.json').read_bytes())
         git(self.control, 'add', '.')
         git(self.control, 'commit', '-qm', 'CLI source fixture')
         env={'PATH':os.environ['PATH'], 'HOME':self.temp.name}

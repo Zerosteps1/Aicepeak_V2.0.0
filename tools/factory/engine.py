@@ -19,6 +19,7 @@ from urllib.parse import quote
 import branches
 from branches import load_config
 import bypass
+import images
 import issues
 from contracts import (Blocked, allowed_patch, assert_current, authentic_check, binding, digest, gates,
                        handoff, is_control, maintainer, require, safe_path, validate_review)
@@ -326,10 +327,13 @@ def test_stage(config):
         candidate = git_checkout(snapshot['repository'], snapshot['head_sha'], Path(tmp)/'candidate', gh.token)
         # Credentials and .git never cross the container boundary.
         shutil.rmtree(candidate/'.git')
-        image = subprocess.run(['docker','build','--quiet','-f',str(ROOT/'factory/Dockerfile'),str(ROOT/'factory')], capture_output=True, text=True, timeout=600)
-        require(image.returncode == 0, 'trusted test image build failed')
-        image_id = image.stdout.strip().splitlines()[-1]
+        # The trusted test image (factory/test.Dockerfile from this config-branch checkout), built only when its
+        # content-derived tag is missing; never restored from a cache another run could have written.
+        try:image_id, tag, built, seconds = images.ensure_test_image(ROOT)
+        except (images.ImageError, OSError, subprocess.SubprocessError) as exc:raise Blocked('trusted test image build failed') from exc
         require(re.fullmatch(r'sha256:[0-9a-f]{64}', image_id), 'invalid built image identity')
+        image_line = f'test image {tag}: ' + (f'built in {seconds} s' if built else 'present')
+        print(image_line, file=sys.stderr)
         cmd = ['docker','run','--rm','--init','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges',
                '--pids-limit','256','--memory','2g','--cpus','2','--tmpfs','/tmp:rw,nosuid,nodev,size=256m',
                '--mount',f'type=bind,src={candidate},dst=/candidate,readonly',
@@ -339,7 +343,8 @@ def test_stage(config):
     # Exit status is observed by trusted host orchestration, never read from a PR-created success file.
     evidence = {'repository':snapshot['repository'],'head_sha':snapshot['head_sha'],'policy_sha':snapshot['policy_sha'],
                 'run_id':snapshot['run_id'],'ok':result.returncode==0,'exit_code':result.returncode,
-                'duration_seconds':round(time.monotonic()-started,2),'summary':(result.stdout+result.stderr)[-12000:]}
+                'duration_seconds':round(time.monotonic()-started,2),'image':image_line,
+                'summary':image_line+'\n'+(result.stdout+result.stderr)[-12000:]}
     emit('tests', evidence)
     if result.returncode:raise Blocked('deterministic candidate checks failed')
 

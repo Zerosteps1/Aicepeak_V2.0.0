@@ -57,9 +57,16 @@ def jsonc(text):
     return ''.join(out)
 
 
-def structural(root, trusted):
+# Installed dependencies, skipped by the file walk only on a maintainer's machine. With --ci (the pipeline,
+# sandbox-verify.sh) the walk skips nothing: a PR could otherwise hide files from it in a folder of that name. Gitleaks'
+# own default rules ignore node_modules in every run.
+HOST_SKIP=('node_modules',)
+
+
+def structural(root, trusted, skip=()):
     for path in root.rglob('*'):
         if '.git' in path.parts or '__pycache__' in path.parts or '.factory-runtime' in path.parts:continue
+        if any(part in skip for part in path.relative_to(root).parts):continue
         if path.is_symlink():raise ValueError('symlink in candidate: '+str(path))
         if not path.is_file():continue
         if path.suffix=='.json':json.loads(jsonc(path.read_text()) if TSCONFIG.fullmatch(path.name) else path.read_text())
@@ -125,10 +132,10 @@ def unit_tests(root, trusted):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=Path('.'));p.add_argument('--trusted-root',type=Path)
-    p.add_argument('--ci',action='store_true');p.add_argument('--actionlint',default='actionlint');p.add_argument('--structure-only',action='store_true')
+    p.add_argument('--ci',action='store_true',help='check everything, as the pipeline does; without it node_modules is skipped');p.add_argument('--actionlint',default='actionlint');p.add_argument('--structure-only',action='store_true')
     args=p.parse_args();root=args.root.resolve();trusted=(args.trusted_root or root).resolve()
     try:
-        structural(root,trusted)
+        structural(root,trusted,skip=() if args.ci else HOST_SKIP)
         print('PASS: JSON/TOML/Python syntax, branch model, model/limit contract, native adapter drift, internal links and smoke fixture')
         if args.structure_only:return 0
         for tool in (args.actionlint,'gitleaks'):

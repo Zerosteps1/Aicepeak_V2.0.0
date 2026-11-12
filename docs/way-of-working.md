@@ -222,6 +222,8 @@ python3 tools/factory/verify.py --root .
 python3 -I -B -m unittest discover -s tools/factory/tests
 ```
 
+On the host, `verify.py` leaves installed dependencies (`node_modules`) out of its file checks; with `--ci`, as in the pipeline and `sandbox-verify.sh`, it checks every file. Gitleaks' default rules ignore `node_modules` in both cases.
+
 The structural check of your candidate, using only the control checkout's verifier:
 
 ```sh

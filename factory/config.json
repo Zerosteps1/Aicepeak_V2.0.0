@@ -15,7 +15,7 @@
   "work_order_approvals": 1,
   "northstar_path": "AICEPEAK_NORDSTERN.md",
   "northstar_approved": true,
-  "product_checks_ready": false,
+  "product_checks_ready": true,
   "maintainers": [
     {
       "login": "Zerosteps1",

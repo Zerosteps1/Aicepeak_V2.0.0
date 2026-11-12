@@ -3,7 +3,11 @@ using Aicepeak.Api.Tests.Infrastructure;
 
 namespace Aicepeak.Api.Tests.ErrorHandling;
 
-/// <summary>AC-5: in Production no endpoint exposes exception details.</summary>
+/// <summary>
+/// AC-5 for unhandled exceptions: in Production the global exception handler returns problem details without the
+/// exception message, type or stack trace, and the OpenAPI document is not served; Development keeps the developer
+/// exception page. Secrets in the health response are covered by <c>HealthAliveTests</c>.
+/// </summary>
 public sealed class ErrorExposureTests {
     private const string ThrowingEndpoint = "/api/v1/test/throw";
 

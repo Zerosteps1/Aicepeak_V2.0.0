@@ -1,16 +1,22 @@
 using System.Net;
 using Aicepeak.Api.Tests.Infrastructure;
 
-namespace Aicepeak.Api.Tests.Spa;
+namespace Aicepeak.Api.Tests.Frontend;
 
-/// <summary>AC-7: the backend serves the built frontend from wwwroot, as laid out by <c>dotnet publish</c>.</summary>
-public sealed class SpaHostingTests : IAsyncDisposable {
-    private const string Marker = "spa-marker-3b8e";
+/// <summary>
+/// AC-7 for <see cref="Aicepeak.Api.Frontend.FrontendHosting"/>: with a built frontend in <c>wwwroot</c> (the layout the
+/// PublishFrontend target creates on <c>dotnet publish</c>; here a temp content root), <c>/</c> and client routes serve
+/// index.html with <c>Cache-Control: no-cache</c>, static assets are served and stay cacheable, and missing files and
+/// unknown <c>/api/*</c> routes stay 404. In development the Vite dev server serves the frontend instead; the publish
+/// copy itself is not tested here.
+/// </summary>
+public sealed class FrontendHostingTests : IAsyncDisposable {
+    private const string Marker = "index-marker-3b8e";
 
-    private readonly string _contentRoot = Directory.CreateTempSubdirectory("aicepeak-spa-").FullName;
+    private readonly string _contentRoot = Directory.CreateTempSubdirectory("aicepeak-frontend-").FullName;
     private readonly ApiFactory _factory;
 
-    public SpaHostingTests() {
+    public FrontendHostingTests() {
         var webRoot = Directory.CreateDirectory(Path.Combine(_contentRoot, "wwwroot", "assets")).Parent!.FullName;
         File.WriteAllText(Path.Combine(webRoot, "index.html"), $"<!doctype html><html><body>{Marker}</body></html>");
         File.WriteAllText(Path.Combine(webRoot, "assets", "app.js"), "console.log('app')");
@@ -44,10 +50,11 @@ public sealed class SpaHostingTests : IAsyncDisposable {
     }
 
     [Fact]
-    public async Task StaticAsset_IsServed() {
+    public async Task StaticAsset_IsServed_AndStaysCacheable() {
         var response = await _factory.CreateClient().GetAsync("/assets/app.js", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(response.Headers.CacheControl?.NoCache ?? false, $"Cache-Control of /assets/app.js: {response.Headers.CacheControl}");
     }
 
     [Theory]

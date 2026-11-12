@@ -1,7 +1,8 @@
 namespace Aicepeak.Api.Configuration;
 
 /// <summary>
-/// Database settings, read from the environment variables <c>DB_CON_STR</c>, <c>DB_USR</c> and <c>DB_PWD</c>.
+/// Database settings under the configuration keys <c>DB_CON_STR</c>, <c>DB_USR</c> and <c>DB_PWD</c>: environment variables,
+/// in Development also <c>.env</c>. Validated in <c>AddDatabase</c>.
 /// </summary>
 public sealed class DatabaseOptions {
     public const string ConnectionStringKey = "DB_CON_STR";

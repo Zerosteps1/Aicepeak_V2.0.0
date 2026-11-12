@@ -18,7 +18,7 @@ public static class FrontendHosting {
 
     /// <summary>
     /// Unknown API routes are 404; every other path without a file extension falls back to index.html
-    /// for client-side routing. Map this last.
+    /// for client-side routing. Both are catch-alls with the lowest route precedence, so explicit API routes always win.
     /// </summary>
     public static IEndpointRouteBuilder MapFrontendFallback(this IEndpointRouteBuilder endpoints) {
         endpoints.Map("/api/{**path}", () => Results.NotFound());

@@ -3,7 +3,7 @@ using Aicepeak.Api.Tests.Infrastructure;
 
 namespace Aicepeak.Api.Tests.Health;
 
-/// <summary>AC-3 and AC-4 against a real PostgreSQL (Docker).</summary>
+/// <summary>AC-3, AC-4 and AC-5 against a real PostgreSQL (Docker).</summary>
 [Collection(PostgresCollection.Name)]
 [Trait("Category", "Database")]
 public sealed class HealthAliveDatabaseTests(PostgresFixture postgres) {

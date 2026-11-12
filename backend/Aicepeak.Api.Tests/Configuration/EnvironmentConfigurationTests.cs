@@ -13,6 +13,10 @@ public sealed class ProcessEnvironmentCollection {
     public const string Name = "ProcessEnvironment";
 }
 
+/// <summary>
+/// AC-2: the database settings come from environment variables; in Development also from <c>.env</c> in the content
+/// root, with the lowest precedence and without changing the process environment.
+/// </summary>
 [Collection(ProcessEnvironmentCollection.Name)]
 public sealed class EnvironmentConfigurationTests : IDisposable {
     private readonly string _contentRoot = Directory.CreateTempSubdirectory("aicepeak-env-").FullName;
@@ -43,6 +47,18 @@ public sealed class EnvironmentConfigurationTests : IDisposable {
         Assert.Equal("env-user", configuration["DB_USR"]);
         Assert.Equal("dotenv-pwd", configuration["DB_PWD"]);
         Assert.Null(System.Environment.GetEnvironmentVariable("DB_PWD"));
+    }
+
+    [Fact]
+    public void DotEnv_SingleQuotedValue_IsTakenLiterally() {
+        // As .env.example says: single quotes keep ;, =, " and $ as they are.
+        WriteDotEnv("DB_PWD='p;w=d\"$y'");
+        using var _ = new EnvironmentVariables(("DB_PWD", null));
+
+        var configuration = new ConfigurationManager();
+        configuration.AddDotEnvInDevelopment(Environment(TestSettings.Development));
+
+        Assert.Equal("p;w=d\"$y", configuration["DB_PWD"]);
     }
 
     [Fact]

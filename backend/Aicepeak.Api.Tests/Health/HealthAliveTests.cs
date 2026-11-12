@@ -34,6 +34,8 @@ public sealed class HealthAliveTests {
         Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
         Assert.Equal("Unhealthy", health.ComponentStatus("configuration"));
         Assert.Contains("configuration", health.Detail);
+        // Without valid settings the DbContext has no connection string, so the database check fails as well.
+        Assert.Equal("Unhealthy", health.ComponentStatus("database"));
     }
 
     [Theory]
@@ -45,6 +47,7 @@ public sealed class HealthAliveTests {
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
         Assert.Equal("Unhealthy", health.ComponentStatus("configuration"));
+        Assert.Contains("configuration", health.Detail);
     }
 
     [Fact]
@@ -66,15 +69,19 @@ public sealed class HealthAliveTests {
     }
 
     [Fact]
-    public async Task Development_UnhealthyBody_ContainsExceptionTrace() {
+    public async Task Development_UnhealthyBody_ContainsDescriptionsAndExceptionTraces() {
         var (_, unreachable) = await GetHealth(TestSettings.Development, TestSettings.UnreachableDatabase());
         var (_, invalid) = await GetHealth(TestSettings.Development, TestSettings.Database("Unknown=value", "postgres", "postgres"));
+        var (_, missing) = await GetHealth(TestSettings.Development, TestSettings.Database("Host=127.0.0.1", "postgres", ""));
 
+        Assert.Equal("Could not reach the database.", unreachable.ErrorDescription("database"));
         var databaseException = unreachable.ErrorException("database");
         Assert.NotNull(databaseException);
         Assert.Contains("Exception", databaseException);
         Assert.Contains("   at ", databaseException);
+        Assert.Contains("DB_CON_STR", invalid.ErrorDescription("configuration"));
         Assert.Contains("Exception", invalid.ErrorException("configuration"));
+        Assert.Contains("DB_PWD is missing.", missing.ErrorDescription("configuration"));
     }
 
     [Fact]

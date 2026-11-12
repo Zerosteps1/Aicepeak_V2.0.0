@@ -15,11 +15,15 @@ public sealed class HealthResponse(string body) {
             ? status.GetString()
             : null;
 
-    public string? ErrorException(string component) =>
+    public string? ErrorDescription(string component) => ErrorField(component, "description");
+
+    public string? ErrorException(string component) => ErrorField(component, "exception");
+
+    private string? ErrorField(string component, string field) =>
         _root.TryGetProperty("errors", out var errors)
         && errors.TryGetProperty(component, out var error)
-        && error.TryGetProperty("exception", out var exception)
-            ? exception.GetString()
+        && error.TryGetProperty(field, out var value)
+            ? value.GetString()
             : null;
 
     public bool HasErrors => _root.TryGetProperty("errors", out _);

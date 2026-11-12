@@ -1,0 +1,4 @@
+src/broken.ts:2:7: Variable 'unused' is declared but never used. Unused variables should start with a '_'. [Warning/eslint(no-unused-vars)]
+src/fixture.test.ts:12:3: Disabled test [Warning/vitest(no-disabled-tests)]
+
+2 problems

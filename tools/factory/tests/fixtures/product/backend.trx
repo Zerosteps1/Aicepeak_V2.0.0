@@ -1,0 +1,80 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="d17f6778-c451-49f3-bd77-b45a2c1e8543" name="@vm 2026-11-12 15:56:51" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-11-12T15:56:51.0972626+00:00" queuing="2026-11-12T15:56:51.0972626+00:00" start="2026-11-12T15:56:49.6386278+00:00" finish="2026-11-12T15:56:51.1035116+00:00" />
+  <TestSettings name="default" id="ac9e5aad-557c-4465-ab4b-251d40253e7c">
+    <Deployment runDeploymentRoot="_vm_2026-11-12_15_56_51" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="18cf2674-a29b-4fc3-9ae8-ab04833941a3" testId="b72ee8fb-43ef-c3a4-4fbf-d6fb47c27131" testName="Aicepeak.Api.Tests.FixtureTests.Skipped" computerName="vm" duration="00:00:00.0010000" startTime="2026-11-12T15:56:50.9691952+00:00" endTime="2026-11-12T15:56:50.9699009+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="NotExecuted" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="18cf2674-a29b-4fc3-9ae8-ab04833941a3">
+      <Output>
+        <ErrorInfo>
+          <Message>fixture skip</Message>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="953e03f8-3b47-44e0-b11c-858738441375" testId="1bfa7c82-88cb-f540-25c7-83c080339369" testName="Aicepeak.Api.Tests.FixtureTests.Fails_WithMessage" computerName="vm" duration="00:00:00.0090000" startTime="2026-11-12T15:56:50.9434660+00:00" endTime="2026-11-12T15:56:50.9664195+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="953e03f8-3b47-44e0-b11c-858738441375">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.Equal() Failure: Values differ
+Expected: 1
+Actual:   2</Message>
+          <StackTrace>   at Aicepeak.Api.Tests.FixtureTests.Fails_WithMessage() in /work/backend/Aicepeak.Api.Tests/FixtureTests.cs:line 11
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="301a0da2-57cf-4a83-89c9-8db3cd1d6b2a" testId="ed49459c-b326-527d-b7c8-ceab1d30155a" testName="Aicepeak.Api.Tests.FixtureTests.Passes" computerName="vm" duration="00:00:00.0120000" startTime="2026-11-12T15:56:50.9090907+00:00" endTime="2026-11-12T15:56:50.9339940+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="301a0da2-57cf-4a83-89c9-8db3cd1d6b2a" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="Aicepeak.Api.Tests.FixtureTests.Passes" storage="/work/backend/aicepeak.api.tests/bin/debug/net10.0/aicepeak.api.tests.dll" id="ed49459c-b326-527d-b7c8-ceab1d30155a">
+      <Execution id="301a0da2-57cf-4a83-89c9-8db3cd1d6b2a" />
+      <TestMethod codeBase="/work/backend/Aicepeak.Api.Tests/bin/Debug/net10.0/Aicepeak.Api.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner3/netcore/" className="Aicepeak.Api.Tests.FixtureTests" name="Passes" />
+    </UnitTest>
+    <UnitTest name="Aicepeak.Api.Tests.FixtureTests.Skipped" storage="/work/backend/aicepeak.api.tests/bin/debug/net10.0/aicepeak.api.tests.dll" id="b72ee8fb-43ef-c3a4-4fbf-d6fb47c27131">
+      <Execution id="18cf2674-a29b-4fc3-9ae8-ab04833941a3" />
+      <TestMethod codeBase="/work/backend/Aicepeak.Api.Tests/bin/Debug/net10.0/Aicepeak.Api.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner3/netcore/" className="Aicepeak.Api.Tests.FixtureTests" name="Skipped" />
+    </UnitTest>
+    <UnitTest name="Aicepeak.Api.Tests.FixtureTests.Fails_WithMessage" storage="/work/backend/aicepeak.api.tests/bin/debug/net10.0/aicepeak.api.tests.dll" id="1bfa7c82-88cb-f540-25c7-83c080339369">
+      <Execution id="953e03f8-3b47-44e0-b11c-858738441375" />
+      <TestMethod codeBase="/work/backend/Aicepeak.Api.Tests/bin/Debug/net10.0/Aicepeak.Api.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner3/netcore/" className="Aicepeak.Api.Tests.FixtureTests" name="Fails_WithMessage" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="b72ee8fb-43ef-c3a4-4fbf-d6fb47c27131" executionId="18cf2674-a29b-4fc3-9ae8-ab04833941a3" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1bfa7c82-88cb-f540-25c7-83c080339369" executionId="953e03f8-3b47-44e0-b11c-858738441375" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ed49459c-b326-527d-b7c8-ceab1d30155a" executionId="301a0da2-57cf-4a83-89c9-8db3cd1d6b2a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Failed">
+    <Counters total="3" executed="2" passed="1" failed="1" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v4.0.1+0f7d528729 (64-bit .NET 10.0.15)
+[xUnit.net 00:00:00.21]   Discovering: Aicepeak.Api.Tests
+[xUnit.net 00:00:00.56]   Discovered:  Aicepeak.Api.Tests
+[xUnit.net 00:00:00.78]   Starting:    Aicepeak.Api.Tests
+[xUnit.net 00:00:00.94]       Assert.Equal() Failure: Values differ
+[xUnit.net 00:00:00.94]       Expected: 1
+[xUnit.net 00:00:00.94]       Actual:   2
+[xUnit.net 00:00:00.94]       Stack Trace:
+[xUnit.net 00:00:00.94]         /work/backend/Aicepeak.Api.Tests/FixtureTests.cs(11,0): at Aicepeak.Api.Tests.FixtureTests.Fails_WithMessage()
+[xUnit.net 00:00:00.94]            at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+[xUnit.net 00:00:00.95]            at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+[xUnit.net 00:00:00.95]       fixture skip
+[xUnit.net 00:00:00.97]   Finished:    Aicepeak.Api.Tests (ID = '1fe423a5925d2c5f839af677f4de5aad83d86689aecbd6eae1edb794670fc125')
+Test 'Aicepeak.Api.Tests.FixtureTests.Skipped' was skipped in the test run.
+</StdOut>
+    </Output>
+    <RunInfos>
+      <RunInfo computerName="vm" outcome="Error" timestamp="2026-11-12T15:56:50.9719406+00:00">
+        <Text>[xUnit.net 00:00:00.94]     Aicepeak.Api.Tests.FixtureTests.Fails_WithMessage [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="vm" outcome="Warning" timestamp="2026-11-12T15:56:50.9774791+00:00">
+        <Text>[xUnit.net 00:00:00.95]     Aicepeak.Api.Tests.FixtureTests.Skipped [SKIP]</Text>
+      </RunInfo>
+    </RunInfos>
+  </ResultSummary>
+</TestRun>

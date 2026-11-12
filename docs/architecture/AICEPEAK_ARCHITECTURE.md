@@ -64,11 +64,15 @@ Open: which line items use Bayesian regression, TimesFM or both (ADR-0010, decis
 - Excel export runs in the backend with ClosedXML; EPPlus is not used because commercial use needs a paid licence. Moving the export to Python remains allowed.
 - PostgreSQL has no built-in automatic history of row changes. Whether data edits need an audit trail is open; if they do, it is built with triggers (decision 11).
 
-## Checks still to build
+## Product checks
 
-Product work orders stay blocked until these exist (`product_checks_ready: false`):
+The deterministic test stage builds and tests the backend and the browser client in the sandbox ([ADR-0011](../decisions/0011-product-checks.md)); the maintainers set `product_checks_ready: true` with it:
 
-- .NET build and tests, including tests against a real PostgreSQL database.
-- TypeScript build and tests for the browser client.
-- The Monte Carlo reproducibility test.
+- .NET build (warnings as errors) and tests, without the tests against a real PostgreSQL database (`Category=Database`).
+- TypeScript lint, build and tests for the browser client.
+
+Still to build:
+
+- The tests against a real PostgreSQL database in the pipeline (Testcontainers needs the Docker socket, which the sandbox does not provide; open in ADR-0011).
+- The Monte Carlo reproducibility test, once the forecast engine exists.
 - If TimesFM is adopted: lint, type check and tests for its container, including the known-good output comparison.

@@ -139,7 +139,7 @@ The implementation has local regression tests for configuration drift, inherited
 
 ## Test image
 
-The deterministic checks do not use the author image above. They run in a separate trusted **test image**, [test.Dockerfile](test.Dockerfile), which holds no credentials and no provider CLIs. Both the test job (`tools/factory/engine.py test`) and `tools/factory/sandbox-verify.sh` use it.
+The deterministic checks do not use the author image above. They run in a separate trusted **test image**, [test.Dockerfile](test.Dockerfile), which holds no credentials and no provider CLIs. Both the test job (`tools/factory/engine.py test`) and `tools/factory/sandbox-verify.sh` use it. In the test job every step runs in it: the factory checks, the backend build and tests and the frontend lint, tests and build ([ADR-0011](../docs/decisions/0011-product-checks.md)); `sandbox-verify.sh` runs the factory checks.
 
 - **Contents:**
   - the .NET 10 SDK (`mcr.microsoft.com/dotnet/sdk:10.0.404-noble`, digest `sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb`; Ubuntu 24.04, linux/amd64 and linux/arm64; source: the MCR tag list and the [.NET 10 release metadata](https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json));

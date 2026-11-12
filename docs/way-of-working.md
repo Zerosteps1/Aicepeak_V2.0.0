@@ -200,7 +200,7 @@ Maintainers and their agents can work on several PRs at once. Parallel PRs break
 
 ## Verify locally
 
-**Product code** (`backend/`, `frontend/`): before you stage or submit, run from the repository root
+**Product code** (`backend/`, `frontend/`): the pipeline's test stage builds and tests both in the sandbox and lists every test case in the run's job summary; failing tests and errors also appear as annotations in the PR ([ADR-0011](decisions/0011-product-checks.md)). Before you stage or submit, run from the repository root
 
 ```sh
 dotnet format backend/Aicepeak.slnx

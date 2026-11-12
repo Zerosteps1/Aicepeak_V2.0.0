@@ -11,11 +11,14 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble@sha256:fe0fd4e93bd2fbb47c883b7a
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends python3 git ca-certificates libatomic1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Transfer node from node image to microsoft dotnet image
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 COPY tools.lock.json install_tools.py /opt/factory-tools/
+
 RUN python3 /opt/factory-tools/install_tools.py --lock /opt/factory-tools/tools.lock.json --destination /usr/local/bin
 
 # The sandbox runs with a read-only root and a tmpfs /tmp: every home and cache lives there.

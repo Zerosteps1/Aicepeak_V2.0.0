@@ -20,6 +20,7 @@ import branches
 import bypass
 import contracts
 import engine
+import evidence
 import github_api
 import issues
 import verify
@@ -190,9 +191,9 @@ class EngineBoundaries(unittest.TestCase):
         settings=json.loads((ROOT/'factory/github-settings.json').read_text())
         self.assertNotIn('ANTHROPIC_API_KEY',settings['environment_secrets']+settings['promotion_environment_secrets'])
 
-    def publish(self,tests_ok=True):
+    def publish(self,tests_ok=True,**extra):
         snapshot=self.capture_snapshot()
-        tests={'repository':'fixture/repo','head_sha':snapshot['head_sha'],'policy_sha':POLICY,'run_id':snapshot['run_id'],'ok':tests_ok,'exit_code':0 if tests_ok else 1,'summary':'trusted output'}
+        tests={'repository':'fixture/repo','head_sha':snapshot['head_sha'],'policy_sha':POLICY,'run_id':snapshot['run_id'],'ok':tests_ok,'exit_code':0 if tests_ok else 1,'summary':'trusted output',**extra}
         env={'SNAPSHOT_JSON':json.dumps(snapshot),'TESTS_JSON':json.dumps(tests),'TEST_JOB_RESULT':'success' if tests_ok else 'failure'}
         with patch.dict(os.environ,env), patch.object(engine,'installation',return_value=self.transport), patch.object(engine,'verify_run') as run:
             engine.publish_stage(self.config)
@@ -209,6 +210,41 @@ class EngineBoundaries(unittest.TestCase):
         self.assertEqual([c['conclusion'] for c in deterministic],['success'])
         self.assertIn('local_review.py --pr 1',self.transport.comments[-1]['body'])
         self.assertEqual(self.transport.labels,{'awaiting-senior-review'})
+
+    def test_publish_annotates_failing_tests_and_errors_on_the_deterministic_check(self):
+        record=evidence.record([evidence.step('factory','passed',1.0,0),
+                                evidence.step('backend-build','failed',2.0,1,errors=[{'path':'backend/Broken.cs','line':4,'message':'CS0029: x'}]),
+                                evidence.step('backend-test','skipped',note='not run: backend-build failed')])
+        snapshot,_=self.publish(tests_ok=False,steps=record['steps'])
+        [check]=[c for c in self.transport.checks.values() if c['name']=='factory/deterministic']
+        self.assertEqual(check['conclusion'],'failure')
+        self.assertEqual(check['output']['title'],engine.DETERMINISTIC_TITLE)
+        self.assertEqual(check['output']['summary'],'trusted output')
+        self.assertEqual(check['output']['annotations'],[{'path':'backend/Broken.cs','start_line':4,'end_line':4,
+            'annotation_level':'failure','title':'backend-build','message':'CS0029: x'}])
+
+    def test_passing_evidence_adds_no_annotations(self):
+        self.publish(tests_ok=True,steps=evidence.record([evidence.step('factory','passed',1.0,0)])['steps'])
+        self.assertFalse(any('annotations' in c.get('output',{}) for c in self.transport.checks.values()))
+
+    def test_old_evidence_without_steps_is_published_as_before(self):
+        self.publish(tests_ok=True)
+        [check]=[c for c in self.transport.checks.values() if c['name']=='factory/deterministic']
+        self.assertEqual((check['conclusion'],check['output']),('success',{'title':engine.DETERMINISTIC_TITLE,'summary':'trusted output'}))
+
+    def test_invalid_step_evidence_fails_the_gate(self):
+        self.publish(tests_ok=True,steps=[{'name':'evil','status':'passed'}])
+        [check]=[c for c in self.transport.checks.values() if c['name']=='factory/deterministic']
+        self.assertEqual(check['conclusion'],'failure')
+
+    def test_a_refused_annotation_request_never_affects_the_gate(self):
+        class Refusing:
+            def request(self,method,path,data=None):raise Blocked('GitHub PATCH: HTTP 422')
+        with contextlib.redirect_stderr(io.StringIO()) as log:
+            engine.annotate(Refusing(),{'repository':'fixture/repo'},{'id':5},{'title':'t','summary':'s'},
+                            [{'path':'a.cs','start_line':1,'end_line':1,'annotation_level':'failure','title':'x','message':'m'}])
+        self.assertIn('annotations not published',log.getvalue())
+        engine.annotate(Refusing(),{'repository':'fixture/repo'},{'id':5},{},[])  # nothing to send, no request
 
     def test_failed_tests_complete_review_without_requesting_it(self):
         snapshot,_=self.publish(tests_ok=False)
@@ -496,6 +532,42 @@ class EngineBoundaries(unittest.TestCase):
             self.assertEqual(captured['tests']['image'],line)
             self.assertTrue(captured['tests']['summary'].startswith(line+'\n'))
             self.assertTrue(captured['tests']['ok'])
+
+    def test_the_test_stage_writes_the_job_summary_and_emits_every_step(self):
+        snapshot={'draft':False,'repository':'fixture/repo','head_sha':HEAD,'policy_sha':POLICY,'run_id':'1'}
+        results=[evidence.step('factory','passed',40.0,0,tail='PASS: a'),
+                 evidence.step('backend-deps','passed',3.0,0),evidence.step('backend-build','passed',20.0,0),
+                 evidence.step('backend-test','failed',9.0,1,cases=[{'name':'T.Fails','status':'failed','message':'boom'},
+                                                                    {'name':'T.Passes','status':'passed'}]),
+                 *(evidence.step(name,'not present') for name in ('frontend-deps','frontend-lint','frontend-test','frontend-build'))]
+        captured={}
+
+        def checkout(repo,sha,destination,token=None):
+            (destination/'.git').mkdir(parents=True)
+            return destination
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary=Path(tmp)/'summary.md'
+            with patch.dict(os.environ,{'SNAPSHOT_JSON':json.dumps(snapshot),'GITHUB_STEP_SUMMARY':str(summary)}), \
+                    patch.object(engine,'GitHub',return_value=SimpleNamespace(token='t')), patch.object(engine,'current'), \
+                    patch.object(engine,'git_checkout',side_effect=checkout), \
+                    patch.object(engine.images,'ensure_test_image',return_value=('sha256:'+'c'*64,'aicepeak-factory-test:0123456789abcdef',False,0.0)), \
+                    patch.object(engine.stage_steps,'run_all',return_value=results) as run_all, \
+                    patch.object(engine,'emit',side_effect=lambda name,value:captured.update({name:value})), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(Blocked,'deterministic candidate checks failed'):
+                engine.test_stage(self.config)
+            text=summary.read_text()
+        self.assertEqual(run_all.call_args.args[2],engine.ROOT)
+        self.assertIn('| ✅ | T.Passes |',text)
+        self.assertIn('<details><summary>❌ T.Fails</summary>',text)
+        tests=captured['tests']
+        self.assertEqual((tests['ok'],tests['exit_code']),(False,1))
+        self.assertEqual([item['name'] for item in tests['steps']],list(evidence.STEPS))
+        self.assertTrue(tests['summary'].startswith('test image aicepeak-factory-test:0123456789abcdef: present\n'))
+        self.assertIn('| backend-test | ❌ | 9 s | 1 of 2 tests failed |',tests['summary'])
+        self.assertIn('https://github.com/fixture/repo/actions/runs/1',tests['summary'])
+        self.assertTrue(evidence.valid(tests))
+        self.assertLess(len(json.dumps(tests).encode()),evidence.MAX_RECORD+8000)
 
     def test_a_failing_test_image_build_blocks_the_test_stage(self):
         snapshot={'draft':False,'repository':'fixture/repo','head_sha':HEAD,'policy_sha':POLICY,'run_id':'1'}

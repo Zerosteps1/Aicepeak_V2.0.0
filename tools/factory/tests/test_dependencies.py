@@ -13,6 +13,7 @@ import dependencies
 ID = 'sha256:' + 'c' * 64
 INTEGRITY = 'sha512-' + 'A' * 86 + '=='
 HASH = 'B' * 86 + '=='
+FIXTURES = ROOT / 'tools/factory/tests/fixtures/product'
 
 
 def lock(**packages):
@@ -26,8 +27,8 @@ PACKAGE = json.dumps({'name': 'app', 'scripts': {'postinstall': 'curl evil'}, 'd
 
 
 class NpmCheck(unittest.TestCase):
-    def test_the_real_frontend_lock_passes(self):
-        dependencies.npm_check((ROOT / 'frontend/package.json').read_bytes(), (ROOT / 'frontend/package-lock.json').read_bytes())
+    def test_a_recorded_frontend_lock_passes(self):
+        dependencies.npm_check((FIXTURES / 'npm-manifest.json').read_bytes(), (FIXTURES / 'npm-lock.json').read_bytes())
 
     def test_registry_packages_with_sha512_pass(self):
         dependencies.npm_check(PACKAGE, lock())
@@ -96,8 +97,9 @@ class NugetPackages(unittest.TestCase):
         (self.root / path).parent.mkdir(parents=True, exist_ok=True)
         (self.root / path).write_text(text)
 
-    def test_the_real_backend_lock_files_are_read(self):
-        packages = dependencies.nuget_packages(ROOT)
+    def test_a_recorded_backend_lock_file_is_read(self):
+        shutil.copy2(FIXTURES / 'nuget-lock.json', self.root / 'backend/packages.lock.json')
+        packages = dependencies.nuget_packages(self.root)
         self.assertIn(('npgsql.entityframeworkcore.postgresql', '10.0.3'), packages)
         self.assertNotIn(('aicepeak.api', ''), packages)
         self.assertEqual(len(packages), len(set(packages)))

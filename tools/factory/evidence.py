@@ -335,8 +335,8 @@ def job_summary(steps, image_line):
         failed = [c for c in item['cases'] if c['status'] == 'failed']
         for entry in failed:
             where = f"\n{entry['path']}:{entry['line']}" if entry.get('path') and entry.get('line') else ''
-            if not add(f"\n<details><summary>❌ {cell(entry['name'], 1000)}</summary>\n\n<pre>{pre(entry['message'])}\n\n"
-                       f"{pre(entry['details'])}{pre(where)}</pre>\n</details>"):
+            if not add(f"\n<details><summary>❌ {cell(entry['name'], 1000)}</summary>\n\n<pre>{pre(entry.get('message', ''))}\n\n"
+                       f"{pre(entry.get('details', ''))}{pre(where)}</pre>\n</details>"):
                 return '\n'.join(parts) + marker
         if item['cases']:
             numbers = counts(item['cases'])

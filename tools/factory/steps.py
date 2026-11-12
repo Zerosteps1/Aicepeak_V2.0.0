@@ -26,7 +26,7 @@ BACKEND_ENV = {'NUGET_PACKAGES': '/nuget', 'DOTNET_CLI_TELEMETRY_OPTOUT': '1', '
                'DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE': '1', 'MSBUILDDISABLENODEREUSE': '1',
                'DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER': '1', 'NO_COLOR': '1', 'TERM': 'dumb'}
 FRONTEND_ENV = {'NO_COLOR': '1', 'FORCE_COLOR': '0', 'TERM': 'dumb', 'CI': 'true'}
-TIMEOUTS = {'factory': 900, 'frontend-deps': 300, 'backend-build': 600, 'backend-test': 600, 'frontend-lint': 300,
+TIMEOUTS = {'factory': 900, 'backend-deps': 600, 'frontend-deps': 300, 'backend-build': 600, 'backend-test': 600, 'frontend-lint': 300,
             'frontend-test': 300, 'frontend-build': 300}
 BACKEND = ('backend-deps', 'backend-build', 'backend-test')
 FRONTEND = ('frontend-deps', 'frontend-lint', 'frontend-test', 'frontend-build')
@@ -57,7 +57,7 @@ class Stage:
 
     def outcome(self, name, result, cases=(), errors=(), note=''):
         if result is None:
-            return evidence.step(name, 'timeout', note=BUDGET)
+            return evidence.step(name, 'timeout', note=note or BUDGET)
         code, seconds, tail = result
         status = 'timeout' if code is None else 'passed' if code == 0 else 'failed'
         return evidence.step(name, status, seconds, code, tail, cases, errors, note)
@@ -100,17 +100,30 @@ class Stage:
 
     def factory(self):
         argv = sandbox.argv(self.image_id, FACTORY, self.container('factory'),
-                            mounts=[(self.candidate, '/candidate', True), (self.policy, '/policy', True)], workdir='/candidate')
+                            mounts=[(self.candidate, '/candidate', True), (self.policy, '/policy', True)],
+                            env={'PYTHONUNBUFFERED': '1'}, workdir='/candidate')
         return self.outcome('factory', self.docker('factory', argv))
 
+    def area(self, name, markers, steps):
+        """None if the area can run; otherwise its rows. Only an absent area is 'not present': an area folder without
+        its markers, or a symlink in their place, fails, so removing a marker cannot hide the area's checks."""
+        if not os.path.lexists(self.candidate / name):
+            return [evidence.step(step, 'not present') for step in steps]
+        if sandbox.directory(self.candidate, name) and all(sandbox.regular(self.candidate, marker) for marker in markers):
+            return None
+        reason = f"{name}/ needs {' and '.join(markers)} as regular files"
+        return [evidence.step(steps[0], 'failed', tail=reason, note=reason),
+                *(evidence.step(step, 'skipped', note=NO_DEPENDENCIES) for step in steps[1:])]
+
     def backend(self):
-        if not sandbox.regular(self.candidate, 'backend/Aicepeak.slnx'):
-            return [evidence.step(name, 'not present') for name in BACKEND]
+        if (rows := self.area('backend', ('backend/Aicepeak.slnx',), BACKEND)) is not None:
+            return rows
         feeds = self.work / 'feeds'
         started = self.deadline.clock()
         try:
             packages = dependencies.nuget_packages(self.candidate)
-            dependencies.fetch_nuget(packages, feeds / 'nuget')
+            dependencies.fetch_nuget(packages, feeds / 'nuget', seconds=self.deadline.remaining(TIMEOUTS['backend-deps']),
+                                     clock=self.deadline.clock)
             dependencies.write_nuget_config(feeds)
         except dependencies.DependencyError as exc:
             return [evidence.step('backend-deps', 'failed', round(self.deadline.clock() - started, 1), tail=str(exc), note=str(exc)),
@@ -122,15 +135,14 @@ class Stage:
         mounts = [(work, '/work', False), (feeds, '/feeds', True), (packages_folder, '/nuget', False)]
         build = self.sandboxed('backend-build', BACKEND_BUILD, mounts, BACKEND_ENV, '/work/backend', 'backend')
         if build['status'] != 'passed':
-            return [deps, build, evidence.step('backend-test', 'skipped', note='not run: backend-build failed')]
+            return [deps, build, evidence.step('backend-test', 'skipped', note='not run: backend-build did not pass')]
         test = self.tested('backend-test', BACKEND_TEST, mounts, BACKEND_ENV, '/work/backend', 'backend', '.trx',
                            lambda data: evidence.parse_trx(data, self.candidate), evidence.DATABASE_NOTE)
         return [deps, build, test]
 
     def frontend(self):
-        if not (sandbox.directory(self.candidate, 'frontend') and sandbox.regular(self.candidate, 'frontend/package.json')
-                and sandbox.regular(self.candidate, 'frontend/package-lock.json')):
-            return [evidence.step(name, 'not present') for name in FRONTEND]
+        if (rows := self.area('frontend', ('frontend/package.json', 'frontend/package-lock.json'), FRONTEND)) is not None:
+            return rows
 
         def unavailable(reason, result=None):
             code, seconds, tail = result or (None, None, reason)
@@ -150,9 +162,9 @@ class Stage:
         (deps / 'package.json').write_bytes(manifest)
         (deps / 'package-lock.json').write_bytes(lock)
         result = self.docker('frontend-deps', dependencies.npm_fetch_argv(self.image_id, deps, self.container('frontend-deps'), self.user))
-        if result is None:
-            return [evidence.step('frontend-deps', 'timeout', note=BUDGET),
-                    *(evidence.step(name, 'skipped', note=NO_DEPENDENCIES) for name in FRONTEND[1:])]
+        if result is None or result[0] is None:
+            timed_out = self.outcome('frontend-deps', result, note='' if result is None else 'npm ci timed out')
+            return [timed_out, *(evidence.step(name, 'skipped', note=NO_DEPENDENCIES) for name in FRONTEND[1:])]
         if result[0] != 0 or not sandbox.directory(deps, 'node_modules'):
             return unavailable('npm ci failed', result if result[0] != 0 else (1, *result[1:]))
         work = self.copy('frontend')

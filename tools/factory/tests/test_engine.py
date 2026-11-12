@@ -505,6 +505,7 @@ class EngineBoundaries(unittest.TestCase):
             return destination
 
         def docker(argv,**kwargs):
+            if argv[0]!='docker':return subprocess.CompletedProcess(argv,0)  # cleanup of the work tree
             runs.append(argv)
             return subprocess.CompletedProcess(argv,0,'PASS: all\n','')
 
@@ -568,6 +569,41 @@ class EngineBoundaries(unittest.TestCase):
         self.assertIn('https://github.com/fixture/repo/actions/runs/1',tests['summary'])
         self.assertTrue(evidence.valid(tests))
         self.assertLess(len(json.dumps(tests).encode()),evidence.MAX_RECORD+8000)
+
+    def test_deep_trees_written_by_pr_code_do_not_break_cleanup_or_hide_the_evidence(self):
+        snapshot={'draft':False,'repository':'fixture/repo','head_sha':HEAD,'policy_sha':POLICY,'run_id':'1'}
+        captured={}
+
+        def checkout(repo,sha,destination,token=None):
+            (destination/'.git').mkdir(parents=True)
+            return destination
+
+        def deep(image_id,candidate,policy,work,deadline):
+            Path(work).mkdir(parents=True)
+            descriptor=os.open(work,os.O_RDONLY)
+            for _ in range(3000):
+                os.mkdir('d',dir_fd=descriptor)
+                child=os.open('d',os.O_RDONLY,dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor=child
+            os.close(descriptor)
+            return [evidence.step('factory','passed',1.0,0)]
+
+        with patch.dict(os.environ,{'SNAPSHOT_JSON':json.dumps(snapshot)}), \
+                patch.object(engine,'GitHub',return_value=SimpleNamespace(token='t')), patch.object(engine,'current'), \
+                patch.object(engine,'git_checkout',side_effect=checkout), \
+                patch.object(engine.images,'ensure_test_image',return_value=('sha256:'+'c'*64,'aicepeak-factory-test:0123456789abcdef',False,0.0)), \
+                patch.object(engine.stage_steps,'run_all',side_effect=deep), \
+                patch.object(engine,'emit',side_effect=lambda name,value:captured.update({name:value})), \
+                contextlib.redirect_stderr(io.StringIO()):
+            engine.test_stage(self.config)
+        self.assertTrue(captured['tests']['ok'])
+
+    def test_an_unwritable_job_summary_never_loses_the_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ,{'GITHUB_STEP_SUMMARY':str(Path(tmp)/'missing'/'summary.md')}), \
+                contextlib.redirect_stderr(io.StringIO()) as log:
+            engine.job_summary('text')
+        self.assertIn('job summary not written',log.getvalue())
 
     def test_a_failing_test_image_build_blocks_the_test_stage(self):
         snapshot={'draft':False,'repository':'fixture/repo','head_sha':HEAD,'policy_sha':POLICY,'run_id':'1'}

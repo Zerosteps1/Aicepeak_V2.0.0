@@ -230,7 +230,7 @@ cd backend && ./start --migrate
 
 After changing the EF model, add a migration with `dotnet ef migrations add <Name> --output-dir Data/Migrations` (from `backend/`).
 
-**Dependencies and lock files.** The pipeline restores packages only from committed lock files, offline in the sandbox ([ADR-0011](decisions/0011-product-checks.md)). After adding or updating a NuGet package, run `dotnet restore backend/Aicepeak.slnx --force-evaluate` and commit the changed `packages.lock.json` files with it. npm packages come only from registry.npmjs.org through `frontend/package-lock.json`; git, file or URL dependencies and a project `.npmrc` are refused, and install scripts never run.
+**Dependencies and lock files.** The pipeline restores packages only from committed lock files, offline in the sandbox ([ADR-0011](decisions/0011-product-checks.md)). After adding or updating a NuGet package, run `dotnet restore backend/Aicepeak.slnx --force-evaluate` and commit the changed `packages.lock.json` files with it. npm packages come only from registry.npmjs.org through `frontend/package-lock.json`: git, file or URL dependencies are refused, a project `.npmrc` is not used, and install scripts never run.
 
 **Development, two terminals:**
 

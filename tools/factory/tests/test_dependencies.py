@@ -32,7 +32,8 @@ class NpmCheck(unittest.TestCase):
 
     def test_registry_packages_with_sha512_pass(self):
         dependencies.npm_check(PACKAGE, lock())
-        dependencies.npm_check(PACKAGE, lock(**{'node_modules/a/node_modules/b': {'version': '1.0.0', 'inBundle': True}}))
+        parent = {'version': '1', 'resolved': dependencies.NPM_REGISTRY + 'a/-/a-1.tgz', 'integrity': INTEGRITY}
+        dependencies.npm_check(PACKAGE, lock(**{'node_modules/a': parent, 'node_modules/a/node_modules/b': {'version': '1.0.0', 'inBundle': True}}))
 
     def test_non_registry_sources_and_weak_integrity_are_refused(self):
         good = {'version': '1', 'resolved': dependencies.NPM_REGISTRY + 'x/-/x-1.tgz', 'integrity': INTEGRITY}
@@ -48,6 +49,24 @@ class NpmCheck(unittest.TestCase):
         for key in ('node_modules/../../etc', 'src/x', 'node_modules/x/../../y'):
             with self.subTest(key=key), self.assertRaisesRegex(dependencies.DependencyError, 'package path'):
                 dependencies.npm_check(PACKAGE, lock(**{key: good}))
+
+    def test_bundled_entries_are_only_accepted_nested_under_a_registry_package_and_without_a_source(self):
+        good = {'version': '1', 'resolved': dependencies.NPM_REGISTRY + 'p/-/p-1.tgz', 'integrity': INTEGRITY}
+        dependencies.npm_check(PACKAGE, lock(**{'node_modules/p': good, 'node_modules/p/node_modules/b': {'version': '1.0.0', 'inBundle': True}}))
+        for name, packages in (
+                ('top-level', {'node_modules/evil': {'version': '1', 'resolved': 'https://evil.example/e.tgz', 'inBundle': True}}),
+                ('git source', {'node_modules/p': good,
+                                'node_modules/p/node_modules/b': {'version': '1', 'resolved': 'git+https://evil/x.git', 'inBundle': True}}),
+                ('integrity', {'node_modules/p': good,
+                               'node_modules/p/node_modules/b': {'version': '1', 'integrity': INTEGRITY, 'inBundle': True}}),
+                ('no parent', {'node_modules/p/node_modules/b': {'version': '1', 'inBundle': True}})):
+            with self.subTest(name=name), self.assertRaisesRegex(dependencies.DependencyError, 'bundled'):
+                dependencies.npm_check(PACKAGE, lock(**packages))
+
+    def test_messages_never_carry_raw_lock_keys(self):
+        with self.assertRaises(dependencies.DependencyError) as raised:
+            dependencies.npm_check(PACKAGE, lock(**{'node_modules/\ud800x': {'version': '1'}}))
+        str(raised.exception).encode('utf-8')  # a lone surrogate in a key cannot break the UTF-8 job summary
 
     def test_package_json_may_not_point_outside_the_registry(self):
         for field, spec in (('dependencies', 'git+https://github.com/x/y.git'), ('devDependencies', 'github:x/y'),
@@ -190,6 +209,30 @@ class NugetFetch(unittest.TestCase):
         opener = FakeOpener(http_error('u', 503))
         with self.assertRaisesRegex(dependencies.DependencyError, 'nuget.org unavailable'):
             dependencies.fetch_nuget([('a', '1.0.0')], self.feed, opener=opener, sleep=lambda s: None)
+
+    def test_a_truncated_download_is_retried_and_then_named_an_outage(self):
+        class Short(FakeResponse):
+            headers = {'Content-Length': '100'}
+        opener = FakeOpener(b'x')
+        opener.open = lambda url, timeout: (opener.urls.append(url), Short(b'only part'))[1]
+        with self.assertRaisesRegex(dependencies.DependencyError, 'nuget.org unavailable'):
+            dependencies.fetch_nuget([('a', '1.0.0')], self.feed, opener=opener, sleep=lambda s: None)
+        self.assertEqual(len(opener.urls), 3)
+
+    def test_the_feed_limit_stops_downloads_early_and_the_time_budget_is_kept(self):
+        opener = FakeOpener(b'x' * 6)
+        with self.assertRaisesRegex(dependencies.DependencyError, 'size limit'):
+            dependencies.fetch_nuget([(f'p{n}', '1.0.0') for n in range(20)], self.feed, opener=opener, feed_bytes=10, workers=1)
+        self.assertLess(len(opener.urls), 20)
+        now = [0.0]
+        def slow(url, timeout):
+            now[0] += 100
+            return FakeResponse(b'x')
+        opener = FakeOpener(b'x')
+        opener.open = slow
+        with self.assertRaisesRegex(dependencies.DependencyError, 'time budget'):
+            dependencies.fetch_nuget([(f'p{n}', '1.0.0') for n in range(10)], self.feed, opener=opener, seconds=250,
+                                     clock=lambda: now[0], workers=1)
 
     def test_the_offline_config_has_only_the_local_feed_and_no_audit_source(self):
         path = dependencies.write_nuget_config(self.feed)

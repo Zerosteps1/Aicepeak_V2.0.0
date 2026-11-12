@@ -38,5 +38,6 @@ ADR-0010 chose the stack and left `product_checks_ready` at `false` until the .N
 - **What the PR still controls:** the tests, the lint configuration and the locked package versions remain under the PR's control; review covers them. A PR could remove or add the `Category=Database` trait; the test counts in the job summary make that visible.
 - **Lock files:** after a package change, `dotnet restore backend/Aicepeak.slnx --force-evaluate` and the updated `packages.lock.json` belong in the same change. Otherwise `backend-deps` or `backend-build` fails (`NU1004`, `NU1101`).
 - **Vulnerability audit offline:** NuGet's vulnerability audit cannot run offline (`NuGetAudit=false` in the sandbox). Dependabot covers advisories for now.
-- **Runtime and resources:** measured locally, all steps take about 2 minutes on top of today's factory checks. The tests job's `timeout-minutes` rises from 25 to 35.
+- **Runtime and resources:** measured locally, all steps take about 2 minutes on top of today's factory checks. The tests job's `timeout-minutes` rises from 25 to 35. The NuGet fetch is bounded in size (1.5 GiB) and time.
+- **Disk space:** the writable copies are ordinary folders on the runner's disk. A PR that fills the disk makes its own run fail (no evidence, gate blocked); it cannot turn the gate green. A size-limited filesystem for the copies is a possible later hardening.
 - **Takes effect on promotion:** the steps take effect once this code reaches the config branch `production`.

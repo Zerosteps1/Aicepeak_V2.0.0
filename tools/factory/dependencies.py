@@ -7,8 +7,10 @@ npm: the host checks package.json and package-lock.json (registry sources with s
 NuGet: the host reads backend/**/packages.lock.json and downloads every pinned package by exact id and version from the
 nuget.org flat container into a flat folder feed. The sandbox restores offline from that feed in locked mode, where
 NuGet checks each package against the lock file's content hash."""
+import http.client
 import json
 import os
+import threading
 import re
 import time
 import urllib.error
@@ -82,14 +84,19 @@ def npm_check(package_json, package_lock):
         if not NPM_PATH.fullmatch(key) or '..' in key.split('/'):
             raise DependencyError(f'unexpected package path in package-lock.json: {key[:80]!r}')
         if not isinstance(entry, dict) or entry.get('link'):
-            raise DependencyError(f'package-lock.json {key}: link entries are not allowed')
+            raise DependencyError(f'package-lock.json {key!r}: link entries are not allowed')
         if entry.get('inBundle'):
-            continue  # extracted from its parent's verified tarball
+            # Extracted from its parent's verified tarball: npm downloads it on its own only if no parent bundles it,
+            # so it must sit inside a parent entry and carry no source of its own.
+            parent = key.rsplit('/node_modules/', 1)[0]
+            if '/node_modules/' not in key or parent not in packages or any(field in entry for field in ('resolved', 'integrity', 'link')):
+                raise DependencyError(f'package-lock.json {key!r}: bundled entries must be nested in their parent and have no source')
+            continue
         resolved = entry.get('resolved')
         if not isinstance(resolved, str) or not resolved.startswith(NPM_REGISTRY) or '?' in resolved or '#' in resolved:
-            raise DependencyError(f'package-lock.json {key}: resolved must be a registry.npmjs.org tarball')
+            raise DependencyError(f'package-lock.json {key!r}: resolved must be a registry.npmjs.org tarball')
         if not isinstance(entry.get('integrity'), str) or not INTEGRITY.fullmatch(entry['integrity']):
-            raise DependencyError(f'package-lock.json {key}: integrity must be sha512')
+            raise DependencyError(f'package-lock.json {key!r}: integrity must be sha512')
 
 
 def npm_fetch_argv(image_id, deps, name, user):
@@ -159,23 +166,46 @@ def opener():
     return urllib.request.build_opener(NoRedirect())
 
 
+class Budget:
+    """Shared limits of one fetch: total bytes and wall-clock time, checked by every download."""
+    def __init__(self, feed_bytes, seconds, clock):
+        self.left, self.end, self.clock, self.lock = feed_bytes, clock() + seconds, clock, threading.Lock()
+
+    def timeout(self, limit):
+        remaining = self.end - self.clock()
+        if remaining <= 0:
+            raise DependencyError('NuGet fetch exceeded the time budget')
+        return min(limit, remaining)
+
+    def take(self, size):
+        with self.lock:
+            self.left -= size
+            if self.left < 0:
+                raise DependencyError('NuGet packages exceed the feed size limit')
+
+
 def download(url, target, opener, max_bytes, timeout):
     with opener.open(url, timeout=timeout) as response:
         if getattr(response, 'status', 200) != 200:
             raise DependencyError(f'unexpected status {response.status} for {url}')
         data = response.read(max_bytes + 1)
+        expected = (getattr(response, 'headers', None) or {}).get('Content-Length')
     if len(data) > max_bytes:
         raise DependencyError(f'{url} is too large')
+    if expected is not None and str(expected).isdigit() and int(expected) != len(data):
+        raise ConnectionError('truncated download')
     target.write_bytes(data)
     return len(data)
 
 
-def fetch_package(package, feed, opener, max_bytes, timeout, sleep, attempts=3):
+def fetch_package(package, feed, opener, max_bytes, timeout, sleep, budget, attempts=3):
     name, version = package
     url = NUGET_FLAT + '/'.join(urllib.parse.quote(part) for part in (name, version, f'{name}.{version}.nupkg'))
     for attempt in range(attempts):
         try:
-            return download(url, Path(feed) / f'{name}.{version}.nupkg', opener, max_bytes, timeout)
+            size = download(url, Path(feed) / f'{name}.{version}.nupkg', opener, max_bytes, budget.timeout(timeout))
+            budget.take(size)
+            return size
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 raise DependencyError(f'{name} {version} is not on nuget.org') from None
@@ -183,21 +213,20 @@ def fetch_package(package, feed, opener, max_bytes, timeout, sleep, attempts=3):
                 raise DependencyError(f'unexpected redirect for {name} {version}') from None
             if exc.code < 500 or attempt == attempts - 1:
                 raise DependencyError(f'nuget.org unavailable: HTTP {exc.code} for {name} {version}') from None
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.HTTPException) as exc:
             if attempt == attempts - 1:
                 raise DependencyError(f'nuget.org unavailable: {type(exc).__name__} for {name} {version}') from None
         sleep(2 ** attempt)
 
 
-def fetch_nuget(packages, feed, opener=None, max_bytes=MAX_PACKAGE_BYTES, timeout=60, sleep=time.sleep, workers=4):
-    """Download every package into the flat folder `feed`. Integrity is NuGet's: the sandbox restores in locked mode."""
+def fetch_nuget(packages, feed, opener=None, max_bytes=MAX_PACKAGE_BYTES, timeout=60, sleep=time.sleep, workers=4,
+                feed_bytes=MAX_FEED_BYTES, seconds=600, clock=time.monotonic):
+    """Download every package into the flat folder `feed`, within a total size and time budget; the first failure stops
+    the rest. Integrity is NuGet's: the sandbox restores in locked mode."""
     Path(feed).mkdir(parents=True, exist_ok=True)
-    opener = opener or globals()['opener']()
+    opener, budget = opener or globals()['opener'](), Budget(feed_bytes, seconds, clock)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        sizes = list(pool.map(lambda package: fetch_package(package, feed, opener, max_bytes, timeout, sleep), packages))
-    if sum(sizes) > MAX_FEED_BYTES:
-        raise DependencyError('NuGet packages exceed the feed size limit')
-    return sum(sizes)
+        return sum(pool.map(lambda package: fetch_package(package, feed, opener, max_bytes, timeout, sleep, budget), packages))
 
 
 def write_nuget_config(feeds):

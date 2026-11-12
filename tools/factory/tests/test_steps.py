@@ -76,6 +76,7 @@ class Stage(unittest.TestCase):
         self.fetched = []
 
     def fetch(self, packages, feed, **kwargs):
+        getattr(self, 'fetch_kwargs', {}).update(kwargs)
         self.fetched.append(packages)
         Path(feed).mkdir(parents=True, exist_ok=True)
         return 0
@@ -150,7 +151,7 @@ class Stage(unittest.TestCase):
         self.assertEqual(results['backend-build']['status'], 'failed')
         self.assertEqual(results['backend-build']['errors'][0]['path'], 'backend/Broken.cs')
         self.assertEqual((results['backend-test']['status'], results['backend-test']['note']),
-                         ('skipped', 'not run: backend-build failed'))
+                         ('skipped', 'not run: backend-build did not pass'))
         self.assertEqual(docker.step_argv('backend-test'), [])
 
     def test_failed_tests_fail_the_step_even_with_exit_code_zero(self):
@@ -167,14 +168,27 @@ class Stage(unittest.TestCase):
         self.assertEqual(results['frontend-test']['status'], 'failed')
         self.assertIn('no test results', results['frontend-test']['note'])
 
-    def test_missing_or_symlinked_areas_are_not_present(self):
+    def test_only_absent_areas_are_not_present(self):
         shutil.rmtree(self.candidate / 'backend')
-        shutil.move(self.candidate / 'frontend', self.tmp / 'elsewhere')
-        (self.candidate / 'frontend').symlink_to(self.tmp / 'elsewhere', target_is_directory=True)
+        shutil.rmtree(self.candidate / 'frontend')
         docker = FakeDocker()
         results = self.run_steps(docker)
         self.assertEqual([item['status'] for item in results], ['passed'] + ['not present'] * 7)
         self.assertEqual([argv[argv.index('--name') + 1].split('-', 2)[2] for argv in docker.calls], ['factory'])
+        self.assertEqual(self.fetched, [])
+
+    def test_an_area_without_its_markers_or_behind_a_symlink_fails_instead_of_disappearing(self):
+        (self.candidate / 'backend/Aicepeak.slnx').unlink()
+        shutil.move(self.candidate / 'frontend', self.tmp / 'elsewhere')
+        (self.candidate / 'frontend').symlink_to(self.tmp / 'elsewhere', target_is_directory=True)
+        docker = FakeDocker()
+        results = self.by_name(self.run_steps(docker))
+        self.assertEqual(results['backend-deps']['status'], 'failed')
+        self.assertIn('backend/Aicepeak.slnx', results['backend-deps']['note'])
+        self.assertEqual(results['frontend-deps']['status'], 'failed')
+        self.assertIn('frontend', results['frontend-deps']['note'])
+        self.assertEqual({results[name]['status'] for name in ('backend-build', 'backend-test', 'frontend-lint', 'frontend-test',
+                                                                'frontend-build')}, {'skipped'})
         self.assertEqual(self.fetched, [])
 
     def test_dependency_problems_fail_their_row_and_skip_the_area(self):
@@ -217,6 +231,20 @@ class Stage(unittest.TestCase):
 
         self.run_steps(Recording(results=green_results()))
         self.assertEqual(seen, [['package-lock.json', 'package.json']])
+
+    def test_an_npm_fetch_timeout_is_a_timeout(self):
+        results = self.by_name(self.run_steps(FakeDocker(timeouts=('frontend-deps',))))
+        self.assertEqual(results['frontend-deps']['status'], 'timeout')
+        self.assertEqual(results['frontend-test']['status'], 'skipped')
+
+    def test_the_factory_step_writes_unbuffered_and_the_nuget_fetch_gets_the_budget(self):
+        docker = FakeDocker(results=green_results())
+        seen = {}
+        self.fetch_kwargs = seen
+        self.run_steps(docker)
+        [factory] = docker.step_argv('factory')
+        self.assertIn('PYTHONUNBUFFERED=1', factory)
+        self.assertTrue(0 < seen['seconds'] <= 900)
 
     def test_timeouts_and_an_exhausted_budget_give_timeout_rows(self):
         docker = FakeDocker(timeouts=('frontend-test',), results=green_results())

@@ -72,6 +72,18 @@ class Parsers(unittest.TestCase):
             self.root, 'backend')
         self.assertEqual(errors, [{'path': None, 'line': None, 'message': 'NU1101: Unable to find package DotNetEnv.'}])
 
+    def test_absurd_line_numbers_drop_the_location_instead_of_crashing(self):
+        for line in ('0', '9' * 8, '9' * 5000):
+            with self.subTest(line=line[:10]):
+                errors = evidence.parse_errors(f'/work/backend/Broken.cs({line},1): error CS0029: x\n', self.root, 'backend')
+                self.assertEqual([(e['path'], e['line']) for e in errors], [(None, None)])
+                trx = (FIXTURES / 'backend.trx').read_bytes().replace(b':line 11', b':line ' + line.encode())
+                failed = [c for c in evidence.parse_trx(trx, self.root)['cases'] if c['status'] == 'failed']
+                self.assertEqual((failed[0]['path'], failed[0]['line']), (None, None))
+                junit = (FIXTURES / 'vitest-junit.xml').read_bytes().replace(b'fixture.test.ts:9:15', b'fixture.test.ts:' + line.encode() + b':15')
+                failed = [c for c in evidence.parse_junit(junit, self.root, 'frontend')['cases'] if c['status'] == 'failed']
+                self.assertEqual((failed[0]['path'], failed[0]['line']), (None, None))
+
     def test_paths_outside_the_candidate_never_become_annotation_paths(self):
         (self.root / 'backend/link.cs').symlink_to(self.root / 'backend/Broken.cs')
         (self.root / 'frontend/linked').symlink_to(self.root / 'frontend/src', target_is_directory=True)
@@ -204,6 +216,26 @@ class Rendering(unittest.TestCase):
             with self.subTest(text=text[:40]):
                 for forbidden in ('<script>', '</pre><', '@owner', '@x', '@team', '#1', '](http', '| injected |', '`c'):
                     self.assertNotIn(forbidden, text)
+
+    def test_bare_www_and_email_autolinks_are_broken(self):
+        for text in (evidence.cell('see www.evil.example and owner@evil.example'),
+                     evidence.render(evidence.record([evidence.step('backend-test', 'failed', 1.0, 1, cases=[
+                         {'name': 'www.evil.example', 'status': 'failed', 'message': 'mail owner@evil.example'}])]), IMAGE_LINE, RUN)):
+            self.assertNotRegex(text, r'(?i)www\.')
+            self.assertNotIn('&commat;evil', text)
+
+    def test_evidence_and_summary_fit_emit_as_emit_measures_them(self):
+        hostile = 'ä✅\ud800' * 2000
+        cases = [{'name': hostile + str(n), 'status': 'failed', 'message': hostile, 'path': 'a.cs', 'line': 1} for n in range(200)]
+        errors = [{'path': 'b.cs', 'line': n + 1, 'message': hostile} for n in range(200)]
+        steps = [evidence.step(name, 'failed', 1.0, 1, tail=hostile * 50, cases=cases, errors=errors, note=hostile)
+                 for name in evidence.STEPS]
+        record = evidence.record(steps)
+        self.assertLess(evidence.emitted_size(record), evidence.MAX_RECORD)
+        summary = evidence.render(record, IMAGE_LINE, RUN)
+        self.assertLess(evidence.emitted_size(summary), evidence.MAX_SUMMARY_BYTES)
+        self.assertTrue(evidence.valid(record))
+        evidence.job_summary(steps, IMAGE_LINE).encode('utf-8')  # no lone surrogate survives
 
     def test_huge_job_summaries_are_cut_with_a_marker(self):
         cases = [{'name': f'Test{n} ' + 'n' * 200, 'status': 'passed', 'seconds': 0.1} for n in range(20000)]

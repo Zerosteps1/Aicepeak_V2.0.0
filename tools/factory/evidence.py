@@ -25,6 +25,7 @@ MAX_NAME = 200
 MAX_TAIL = 4000
 MAX_RECORD = 30000
 MAX_CHECK_SUMMARY = 6000
+MAX_SUMMARY_BYTES = 20000  # the check summary as emit() measures it (JSON, ASCII-escaped)
 MAX_JOB_SUMMARY = 1_000_000
 CONTROL = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f]')
 UNSAFE_PATH = re.compile(r'[\x00-\x1f\x7f\\]')
@@ -43,7 +44,18 @@ class EvidenceError(ValueError):
 
 
 def clean(text):
-    return CONTROL.sub('', str(text))
+    """Untrusted text without terminal escapes, control characters or lone surrogates (which break UTF-8 writes)."""
+    return CONTROL.sub('', str(text)).encode('utf-8', 'replace').decode('utf-8')
+
+
+def emitted_size(value):
+    """Bytes of `value` as engine.emit() writes it."""
+    return len(json.dumps(value, separators=(',', ':'), ensure_ascii=True).encode())
+
+
+def line_number(text):
+    """A plausible 1-based line number from tool output, or None (absurd values drop the location)."""
+    return int(text) if text and text.isdigit() and len(text) <= 7 and 0 < int(text) < 10_000_000 else None
 
 
 def cut(text, limit):
@@ -55,7 +67,9 @@ def cell(text, limit=MAX_MESSAGE):
     """One line of untrusted text for Markdown: whitespace folded, special characters as named entities, bare URLs
     broken so they are not linked."""
     text = ' '.join(cut(text, limit).split())
-    return ''.join(ESCAPE.get(char, char) for char in text).replace('://', ':&sol;&sol;')
+    text = ''.join(ESCAPE.get(char, char) for char in text).replace('://', ':&sol;&sol;')
+    # GFM also links bare www. hosts and e-mail addresses; a zero-width space breaks both.
+    return re.sub(r'(?i)(www)\.', '\\1\u200b.', text).replace('&commat;', '&commat;\u200b')
 
 
 def pre(text):
@@ -143,10 +157,10 @@ def parse_trx(data, candidate):
             text_of(info.find(TRX + 'StackTrace') if info is not None else None)
         path = line = None
         for frame in STACK_FRAME.finditer(trace):
-            path = repo_path(candidate, frame['path'])
-            if path:
-                line = int(frame['line'])
+            path, line = repo_path(candidate, frame['path']), line_number(frame['line'])
+            if path and line:
                 break
+            path = line = None
         cases.append(case(result.get('testName', '?'), status, trx_seconds(result.get('duration')),
                           '' if status == 'passed' else message, trace, path, line))
     return {'cases': cases, 'counts': counts(cases)}
@@ -172,7 +186,7 @@ def parse_junit(data, candidate, base):
             status, message = 'failed', problem.get('message') or details.split('\n', 1)[0]
             frame = re.search(r'❯ ' + re.escape(file) + r':(\d+):\d+', details) if file else None
             path = repo_path(candidate, file, base) if file else None
-            line = int(frame[1]) if frame and path else None
+            line = line_number(frame[1]) if frame and path else None
             path = path if line else None
         cases.append(case(f'{file} > {name}' if file else name, status, seconds, message, details, path, line))
     return {'cases': cases, 'counts': counts(cases)}
@@ -183,15 +197,14 @@ def parse_errors(text, candidate, base):
     errors, seen = [], set()
     for raw in clean(text).splitlines():
         if match := DIAGNOSTIC.match(raw):
-            path, message = repo_path(candidate, match['file'], base), f"{match['code']}: {match['msg']}"
-            line = int(match['line']) if path else None
+            path, line, message = repo_path(candidate, match['file'], base), line_number(match['line']), f"{match['code']}: {match['msg']}"
         elif match := OXLINT.match(raw):
-            path, message = repo_path(candidate, match['file'], base), match['msg']
-            line = int(match['line']) if path else None
+            path, line, message = repo_path(candidate, match['file'], base), line_number(match['line']), match['msg']
         elif match := FILELESS.match(raw):
             path, line, message = None, None, f"{match['code']}: {match['msg']}"
         else:
             continue
+        path, line = (path, line) if path and line else (None, None)
         key = (path, line, message)
         if key not in seen:
             seen.add(key)
@@ -207,7 +220,7 @@ def step(name, status, seconds=None, exit_code=None, tail='', cases=(), errors=(
     if status == 'passed' and any(item.get('status') == 'failed' for item in cases):
         status = 'failed'
     return {'name': name, 'status': status, 'seconds': seconds, 'exit_code': exit_code, 'tail': clean(tail),
-            'cases': cases, 'errors': list(errors), 'note': note}
+            'cases': cases, 'errors': list(errors), 'note': cut(note, 500)}
 
 
 def bounded(item, keep_tail):
@@ -228,17 +241,25 @@ def bounded(item, keep_tail):
 
 
 def record(steps):
-    """The evidence the test job emits: every step, bounded to MAX_RECORD bytes (tails shrink first)."""
+    """The evidence the test job emits: every step, under MAX_RECORD bytes as emit() measures them. Tails shrink
+    first, then the number and length of entries, then the entries go (counted in `omitted`)."""
+    ok = all(item['status'] in OK for item in steps)
     for keep_tail in (MAX_TAIL, 1000, 0):
-        result = {'ok': all(item['status'] in OK for item in steps), 'steps': [bounded(item, keep_tail) for item in steps]}
-        if len(json.dumps(result).encode()) < MAX_RECORD:
+        result = {'ok': ok, 'steps': [bounded(item, keep_tail) for item in steps]}
+        if emitted_size(result) < MAX_RECORD:
             return result
-    for item in result['steps']:
-        dropped = len(item['failures']) + len(item['errors'])
-        item['failures'], item['errors'] = item['failures'][:5], item['errors'][:5]
-        dropped -= len(item['failures']) + len(item['errors'])
-        if dropped:
-            item['omitted'] = item.get('omitted', 0) + dropped
+    for keep, length in ((5, 100), (0, 0)):
+        for item in result['steps']:
+            dropped = max(0, len(item['failures']) - keep) + max(0, len(item['errors']) - keep)
+            item['failures'], item['errors'] = item['failures'][:keep], item['errors'][:keep]
+            for entry in item['failures'] + item['errors']:
+                entry['message'] = cut(entry['message'], length)
+                entry.update({'name': cut(entry['name'], length)} if 'name' in entry else {})
+            item['note'] = cut(item['note'], 200)
+            if dropped:
+                item['omitted'] = item.get('omitted', 0) + dropped
+        if emitted_size(result) < MAX_RECORD:
+            break
     return result
 
 
@@ -308,8 +329,10 @@ def render(tests, image_line, run_url):
             if more := max(0, len(entries) - 10) + item.get('omitted', 0):
                 body.append(f'- … {more} more in the job summary')
     text = '\n'.join(head + body)
-    if len(text) > MAX_CHECK_SUMMARY:
-        text = text[:MAX_CHECK_SUMMARY - 60].rsplit('\n', 1)[0] + '\n\n… cut; see the job summary.'
+    limit = MAX_CHECK_SUMMARY
+    while len(text) > limit or emitted_size(text) > MAX_SUMMARY_BYTES:
+        text = '\n'.join(head + body)[:limit - 60].rsplit('\n', 1)[0] + '\n\n… cut; see the job summary.'
+        limit = int(limit * 0.8)
     return text
 
 

@@ -326,7 +326,7 @@ def test_stage(config):
     started = time.monotonic()
     gh = GitHub()
     current(gh, snapshot, config)
-    with tempfile.TemporaryDirectory(prefix='factory-test-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='factory-test-', ignore_cleanup_errors=True) as tmp:
         candidate = git_checkout(snapshot['repository'], snapshot['head_sha'], Path(tmp)/'candidate', gh.token)
         # Credentials and .git never cross the container boundary.
         shutil.rmtree(candidate/'.git')
@@ -340,7 +340,8 @@ def test_stage(config):
         # Every step runs sandboxed in the test image within one time budget (tools/factory/steps.py); a failing step
         # does not stop the others. Their output never reaches this job's log.
         deadline = sandbox.Deadline(config['limits']['timeout_seconds'])
-        results = stage_steps.run_all(image_id, candidate, ROOT, Path(tmp)/'steps', deadline)
+        try:results = stage_steps.run_all(image_id, candidate, ROOT, Path(tmp)/'steps', deadline)
+        finally:remove_tree(Path(tmp))
         job_summary(evidence.job_summary(results, image_line))
     record = evidence.record(results)
     # Exit status is observed by trusted host orchestration, never read from a PR-created success file.
@@ -353,10 +354,21 @@ def test_stage(config):
 
 
 def job_summary(text):
-    """The run's job summary (all test cases and failure details), when the runner provides one."""
+    """The run's job summary (all test cases and failure details), when the runner provides one. Never fails the
+    stage: the evidence is emitted either way."""
     path = os.environ.get('GITHUB_STEP_SUMMARY')
-    if path:
-        with open(path, 'a', encoding='utf-8') as summary:summary.write(text)
+    if not path:return
+    try:
+        with open(path, 'a', encoding='utf-8', errors='replace') as summary:summary.write(text)
+    except OSError as exc:print(f'job summary not written: {type(exc).__name__}', file=sys.stderr)
+
+
+def remove_tree(path):
+    """Delete what the steps wrote: PR code can leave unreadable folders or trees too deep for Python 3.12's recursive
+    rmtree; chmod/rm walk iteratively and never follow symlinks."""
+    for command in (['chmod', '-R', 'u+rwX', '--', str(path)], ['rm', '-rf', '--one-file-system', '--', str(path)]):
+        try:subprocess.run(command, capture_output=True, timeout=600)
+        except (OSError, subprocess.SubprocessError):pass
 
 
 def annotate(gh, snapshot, check, output, notes):

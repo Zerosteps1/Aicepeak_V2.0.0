@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import sys
 sys.dont_write_bytecode = True
+from typing import Any
 import urllib.error
 import urllib.request
 
@@ -361,22 +362,29 @@ def accept(gh, config, number, issue):
     comments = comments_of(gh, config, number)
     sha = issues.text_sha256(issue)
     approvals = issues.records(comments, config, number, issues.APPROVAL)
+    
     if approvals and approvals[-1]['data']['text_sha256'] == sha:
         return f'Work order #{number} is already approved; nothing changed.'
+    
     reviews = issues.records(comments, config, number, issues.REVIEW)
     require(reviews, 'there is no factory proposal yet: comment `/review` first')
     review = reviews[-1]
-    require(review['data']['text_sha256'] == sha, 'the title or the description changed after the newest factory '
-            'review: comment `/review` again, then `/accept` the new proposal')
+    if not config.get("force"):
+        require(review['data']['text_sha256'] == sha, 'the title or the description changed after the newest factory '
+                'review: comment `/review` again, then `/accept` the new proposal')
+    
     spec = issues.draft_spec(issue.get('body'))
-    if spec['kind'] == 'product':
-        require(issues.product_allowed(config), issues.PRODUCT_BLOCKED)
+    if not config.get("force"):
+        if spec['kind'] == 'product':
+            require(issues.product_allowed(config), issues.PRODUCT_BLOCKED)
+    
     accepted = {}
     for comment in comments:
         if comment['id'] > review['id'] and issues.command(comment, config, number, 'accept') == 'accept':
             user = comment['user']
             accepted.setdefault(user['id'], {'login': user['login'], 'id': user['id'], 'comment': comment['id']})
     require(accepted, 'this `/accept` came before the newest factory proposal: comment `/accept` again')
+    
     needed = branches.work_order_approvals(config)
     logins = ', '.join(f"`{entry['login']}`" for entry in accepted.values())
     if len(accepted) < needed:
@@ -421,7 +429,22 @@ def accept_stage(args, config):
     if message:
         post(gh, config, number, message)
 
-
+def accept_stage_force(args: argparse.Namespace, config: Any):
+    on_config_branch(config)
+    require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'a re-run never repeats a command; comment /accept again')
+    valid(config)
+    number = args.issue
+    gh = installation(config, 'publisher', ISSUE_PERMISSIONS)
+    issue = issues.identity(gh.request('GET', f"/repos/{config['repository']}/issues/{number}"), config, number)
+    trigger(gh, config, number, args.comment_id, 'accept')
+    try:
+        config["force"] = True
+        message = accept(gh, config, number, issue)
+    except Blocked as exc:
+        post(gh, config, number, f'`/accept` refused: {prose(exc, 500)}.')
+        raise
+    if message:
+        post(gh, config, number, message)
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('stage', choices=['review', 'publish', 'accept'])
@@ -431,7 +454,7 @@ def main(argv=None):
     config = load_config()
     try:
         require(args.issue > 0 and args.comment_id > 0, 'invalid issue or comment identifier')
-        {'review': review_stage, 'publish': publish_stage, 'accept': accept_stage}[args.stage](args, config)
+        {'review': review_stage, 'publish': publish_stage, 'accept': accept_stage, 'accept-force': accept_stage_force}[args.stage](args, config)
     except (Blocked, KeyError, ValueError, OSError) as exc:
         print('BLOCKED: ' + str(exc), file=sys.stderr)
         return 1

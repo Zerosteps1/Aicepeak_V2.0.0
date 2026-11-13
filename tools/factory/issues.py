@@ -14,7 +14,10 @@ import branches
 from contracts import FILE_TASK, ISSUE_TASK, KINDS, TASK_BLOCK, Blocked, maintainer, require, safe_path, task_spec, validate
 
 PRODUCT_BLOCKED = 'product work orders stay blocked until the north star and product checks are ready (factory/config.json)'
-COMMAND = re.compile(r'/(review|accept)(?=\s|$)')
+COMMAND = re.compile(r'/(review|accept|accept-force)(?=\s|$)')
+# `/accept-force` accepts the newest proposal for an issue edited after it once no `/review` is left
+# (limits.max_issue_reviews); an approval may name comments of either word.
+ACCEPTS = ('accept', 'accept-force')
 
 # Publisher-App records: the marker line, then one JSON line inside an HTML comment, then text for humans.
 REVIEW = '<!-- factory-issue-review:v1 -->'
@@ -154,7 +157,7 @@ def records(comments, config, number, marker):
 
 
 def command(comment, config, number, word=None):
-    """'review' or 'accept' for a configured maintainer's unedited command comment on this issue, else None."""
+    """The command word for a configured maintainer's unedited command comment on this issue, else None."""
     if not maintainer(comment.get('user'), config) or comment.get('issue_url') != issue_url(config, number):
         return None
     if not comment.get('created_at') or comment.get('created_at') != comment.get('updated_at'):
@@ -185,7 +188,7 @@ def approved(gh, config, number):
         except Blocked:
             comment = {}
         user = comment.get('user') or {}
-        require(command(comment, config, number, 'accept') == 'accept'
+        require(command(comment, config, number) in ACCEPTS
                 and (user.get('id'), user.get('login')) == (entry['id'], entry['login']),
                 f'an /accept of work order #{number} was edited or deleted, or its author is no maintainer any more; '
                 'comment /accept again')

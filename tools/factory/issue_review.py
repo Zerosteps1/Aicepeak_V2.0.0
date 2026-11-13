@@ -8,6 +8,8 @@ Each stage runs in its own factory.yml job on the config branch, dispatched for 
 - accept (`/accept`): publisher App. Once enough maintainer accounts accepted the newest proposal of an unchanged
   issue, it writes the proposed allowed_paths and status approved into the factory-task block and posts the
   approval record that tools/factory/issues.py verifies.
+- accept-force (`/accept-force`): the same, for an issue edited after its newest proposal once no `/review` is left
+  (limits.max_issue_reviews); without it the review limit would leave such an issue unapprovable.
 Issue text and model output are data, never instructions. Everything posted is escaped and bounded.
 """
 import argparse
@@ -17,7 +19,6 @@ from pathlib import Path
 import re
 import sys
 sys.dont_write_bytecode = True
-from typing import Any
 import urllib.error
 import urllib.request
 
@@ -157,7 +158,8 @@ def comments_of(gh, config, number):
 def require_budget(config, comments, number):
     done = len(issues.records(comments, config, number, issues.REVIEW))
     most = config['limits']['max_issue_reviews']
-    require(done < most, f'issue #{number} already has {done} factory reviews (limits.max_issue_reviews is {most})')
+    require(done < most, f'issue #{number} already has {done} factory reviews (limits.max_issue_reviews is {most}); '
+            'comment `/accept-force` to accept the newest proposal for the issue as it is')
     return done
 
 
@@ -355,40 +357,43 @@ def publish_stage(args, config):
 
 # --- accept: App edit of the factory-task block -------------------------------------------------------------------
 
-def accept(gh, config, number, issue):
+def accept(gh, config, number, issue, word='accept'):
     """The message to post when it does not approve, None once it posted the approval record, or Blocked with the
-    reason; the description changes only when it approves."""
+    reason; the description changes only when it approves. Each word counts only its own comments, so a forced
+    approval names exactly the accounts that accepted the unreviewed edit."""
     require(issue.get('state') == 'open', f'issue #{number} is closed; reopen it first')
     comments = comments_of(gh, config, number)
     sha = issues.text_sha256(issue)
     approvals = issues.records(comments, config, number, issues.APPROVAL)
-    
     if approvals and approvals[-1]['data']['text_sha256'] == sha:
         return f'Work order #{number} is already approved; nothing changed.'
-    
     reviews = issues.records(comments, config, number, issues.REVIEW)
     require(reviews, 'there is no factory proposal yet: comment `/review` first')
     review = reviews[-1]
-    if not config.get("force"):
-        require(review['data']['text_sha256'] == sha, 'the title or the description changed after the newest factory '
-                'review: comment `/review` again, then `/accept` the new proposal')
-    
+    done, most = len(reviews), config['limits']['max_issue_reviews']
+    edited = review['data']['text_sha256'] != sha
+    if word == 'accept-force':
+        require(done >= most, f'`/accept-force` is only for an issue whose review limit is reached ({done} of {most} '
+                'factory reviews): comment `/review` again, then `/accept`')
+    elif edited and done >= most:
+        raise Blocked(f'the title or the description changed after the newest factory review and the review limit is '
+                      f'reached ({done} of {most}): comment `/accept-force` to accept that proposal for the edited issue')
+    else:
+        require(not edited, 'the title or the description changed after the newest factory review: comment `/review` '
+                'again, then `/accept` the new proposal')
     spec = issues.draft_spec(issue.get('body'))
-    if not config.get("force"):
-        if spec['kind'] == 'product':
-            require(issues.product_allowed(config), issues.PRODUCT_BLOCKED)
-    
+    if spec['kind'] == 'product':
+        require(issues.product_allowed(config), issues.PRODUCT_BLOCKED)
     accepted = {}
     for comment in comments:
-        if comment['id'] > review['id'] and issues.command(comment, config, number, 'accept') == 'accept':
+        if comment['id'] > review['id'] and issues.command(comment, config, number, word) == word:
             user = comment['user']
             accepted.setdefault(user['id'], {'login': user['login'], 'id': user['id'], 'comment': comment['id']})
-    require(accepted, 'this `/accept` came before the newest factory proposal: comment `/accept` again')
-    
+    require(accepted, f'this `/{word}` came before the newest factory proposal: comment `/{word}` again')
     needed = branches.work_order_approvals(config)
     logins = ', '.join(f"`{entry['login']}`" for entry in accepted.values())
     if len(accepted) < needed:
-        return (f'`/accept` recorded from {logins}: {len(accepted)} of {needed} maintainer accounts. The issue is not '
+        return (f'`/{word}` recorded from {logins}: {len(accepted)} of {needed} maintainer accounts. The issue is not '
                 'approved yet.')
     wanted = {'status': 'approved', 'kind': spec['kind'], 'allowed_paths': review['data']['allowed_paths']}
     task_spec('```factory-task\n' + json.dumps(wanted) + '\n```')  # the gate's own rules, before anything changes
@@ -401,60 +406,52 @@ def accept(gh, config, number, issue):
             and issues.without_block(after.get('body')) == issues.without_block(fresh.get('body'))
             and issues.draft_spec(after.get('body')) == wanted,
             'the issue changed during /accept, so it is not approved: comment `/review` again')
+    unreviewed = (' The title or the description changed after that proposal; it was accepted with `/accept-force` '
+                  'because the review limit was reached.') if edited else ''
     post(gh, config, number, issues.record_body(issues.APPROVAL, {
-        'issue': number, 'text_sha256': issues.text_sha256(after), 'reviewed_sha256': sha, 'review': review['id'],
-        'kind': spec['kind'], 'allowed_paths': wanted['allowed_paths'],
+        # reviewed_sha256 names the text the factory reviewed, so a forced approval shows that it covers an edit.
+        'issue': number, 'text_sha256': issues.text_sha256(after), 'reviewed_sha256': review['data']['text_sha256'],
+        'review': review['id'], 'kind': spec['kind'], 'allowed_paths': wanted['allowed_paths'],
         'accepted_by': sorted(accepted.values(), key=lambda entry: entry['comment']),
         'run_id': int(os.environ['GITHUB_RUN_ID'])},
-        f'### Work order #{number} approved\n\nAccepted by {logins}. The factory set `status` to `approved` and '
-        '`allowed_paths` to the accepted proposal in the description (see its edit history). Start it with '
-        f'`factory start workorder {number}`. Any later edit of the title or the description withdraws the approval '
-        'until it is accepted again (`/review`, then `/accept`).'))
+        f'### Work order #{number} approved\n\nAccepted by {logins}.{unreviewed} The factory set `status` to '
+        '`approved` and `allowed_paths` to the accepted proposal in the description (see its edit history). Start it '
+        f'with `factory start workorder {number}`. Any later edit of the title or the description withdraws the '
+        'approval until it is accepted again (`/review`, then `/accept`).'))
     return None
 
 
-def accept_stage(args, config):
+def accept_stage(args, config, word='accept'):
     on_config_branch(config)
-    require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'a re-run never repeats a command; comment /accept again')
+    require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', f'a re-run never repeats a command; comment /{word} again')
     valid(config)
     number = args.issue
     gh = installation(config, 'publisher', ISSUE_PERMISSIONS)
     issue = issues.identity(gh.request('GET', f"/repos/{config['repository']}/issues/{number}"), config, number)
-    trigger(gh, config, number, args.comment_id, 'accept')
+    trigger(gh, config, number, args.comment_id, word)
     try:
-        message = accept(gh, config, number, issue)
+        message = accept(gh, config, number, issue, word)
     except Blocked as exc:
-        post(gh, config, number, f'`/accept` refused: {prose(exc, 500)}.')
+        post(gh, config, number, f'`/{word}` refused: {prose(exc, 500)}.')
         raise
     if message:
         post(gh, config, number, message)
 
-def accept_stage_force(args: argparse.Namespace, config: Any):
-    on_config_branch(config)
-    require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'a re-run never repeats a command; comment /accept again')
-    valid(config)
-    number = args.issue
-    gh = installation(config, 'publisher', ISSUE_PERMISSIONS)
-    issue = issues.identity(gh.request('GET', f"/repos/{config['repository']}/issues/{number}"), config, number)
-    trigger(gh, config, number, args.comment_id, 'accept-force')
-    try:
-        config["force"] = True
-        message = accept(gh, config, number, issue)
-    except Blocked as exc:
-        post(gh, config, number, f'`/accept` refused: {prose(exc, 500)}.')
-        raise
-    if message:
-        post(gh, config, number, message)
+
+STAGES = {'review': review_stage, 'publish': publish_stage, 'accept': accept_stage,
+          'accept-force': lambda args, config: accept_stage(args, config, 'accept-force')}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('stage', choices=['review', 'publish', 'accept', 'accept-force'])
+    parser.add_argument('stage', choices=list(STAGES))
     parser.add_argument('--issue', type=int, required=True)
     parser.add_argument('--comment-id', type=int, required=True)
     args = parser.parse_args(argv)
     config = load_config()
     try:
         require(args.issue > 0 and args.comment_id > 0, 'invalid issue or comment identifier')
-        {'review': review_stage, 'publish': publish_stage, 'accept': accept_stage, 'accept-force': accept_stage_force}[args.stage](args, config)
+        STAGES[args.stage](args, config)
     except (Blocked, KeyError, ValueError, OSError) as exc:
         print('BLOCKED: ' + str(exc), file=sys.stderr)
         return 1

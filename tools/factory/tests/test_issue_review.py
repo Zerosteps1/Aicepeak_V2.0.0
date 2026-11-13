@@ -326,6 +326,64 @@ class Accept(Base):
                 self.accept(comment)
         self.assertEqual(issues.draft_spec(self.issue['body'])['status'], 'draft')
 
+    def run_main(self, stage, comment, config=None):
+        stderr = io.StringIO()
+        with patch.object(issue_review, 'installation', return_value=self.hub), \
+                patch.object(issue_review, 'load_config', return_value=config or self.config), \
+                contextlib.redirect_stderr(stderr):
+            code = issue_review.main([stage, '--issue', '57', '--comment-id', str(comment['id'])])
+        return code, stderr.getvalue()
+
+    def exhaust(self, paths=('docs/',), kind='factory'):
+        """Every review limits.max_issue_reviews allows: no /review can follow, so only /accept-force is left."""
+        for _ in range(self.config['limits']['max_issue_reviews']):
+            self.hub.review(paths=paths, kind=kind)
+
+    def test_accept_force_approves_the_newest_proposal_of_an_edited_issue_once_the_review_limit_is_reached(self):
+        self.exhaust(paths=('tools/factory/export.py', 'docs/'))
+        reviewed = issues.text_sha256(self.issue)
+        self.issue['body'] += '\nVerification: python3 -m unittest'
+        with self.assertRaisesRegex(Blocked, 'review limit is reached .*comment `/accept-force`'):
+            self.accept(self.hub.comment(57, '/accept'))
+        command = self.hub.comment(57, '/accept-force')
+        self.assertEqual(self.run_main('accept-force', command), (0, ''))
+        order = issues.approved(self.hub, self.config, 57)  # what every consumer checks
+        self.assertEqual(order['spec'], {'status': 'approved', 'kind': 'factory',
+                                         'allowed_paths': ['tools/factory/export.py', 'docs/']})
+        record = issues.records(self.hub.comments, self.config, 57, issues.APPROVAL)[-1]['data']
+        self.assertEqual(record['reviewed_sha256'], reviewed)  # the text the factory reviewed, not the edited one
+        self.assertEqual(record['accepted_by'], [{'login': self.hub.maintainer['login'], 'id': self.hub.maintainer['id'],
+                                                  'comment': command['id']}])
+        self.assertIn('`/accept-force`', self.hub.posts[-1])
+
+    def test_accept_force_is_refused_below_the_review_limit_and_keeps_the_product_gate(self):
+        cases = [('below the limit', lambda: (self.hub.review(), self.issue.update(body=self.issue['body'] + '\nmore')),
+                  'only for an issue whose review limit is reached (1 of 5 factory reviews)'),
+                 ('product blocked', lambda: (self.config.update(product_checks_ready=False),
+                                              self.issue.update(body=self.issue['body'].replace('"kind":"factory"', '"kind":"product"')),
+                                              self.exhaust(kind='product')), 'product work orders stay blocked')]
+        for name, change, reason in cases:
+            with self.subTest(name=name):
+                self.setUp()
+                change()
+                before = copy.deepcopy(self.issue)
+                code, stderr = self.run_main('accept-force', self.hub.comment(57, '/accept-force'))
+                self.assertEqual(code, 1)
+                self.assertIn(reason, stderr)
+                self.assertEqual(self.issue, before)
+                self.assertTrue(self.hub.posts[-1].startswith('`/accept-force` refused: '))
+                self.assertEqual(issues.records(self.hub.comments, self.config, 57, issues.APPROVAL), [])
+
+    def test_each_accept_stage_takes_only_its_own_command(self):
+        self.exhaust()
+        self.assertEqual(issues.command(self.hub.comment(57, '/accept-force'), self.config, 57), 'accept-force')
+        for stage, body in (('accept-force', '/accept'), ('accept', '/accept-force'), ('accept-force', '/accept-forced')):
+            with self.subTest(stage=stage, body=body):
+                code, stderr = self.run_main(stage, self.hub.comment(57, body))
+                self.assertEqual(code, 1)
+                self.assertIn('no unedited maintainer command', stderr)
+        self.assertEqual(issues.draft_spec(self.issue['body'])['status'], 'draft')
+
     def test_an_edit_during_accept_approves_nothing(self):
         self.hub.review()
         original = self.hub.request

@@ -253,6 +253,7 @@ class DispatcherTests(unittest.TestCase):
     def test_issue_commands_of_maintainers_on_maintainer_issues_dispatch_the_issue_jobs(self):
         declared = inputs((ROOT / '.github/workflows/factory.yml').read_text())
         for body, word in (('/review', 'review'), ('/accept', 'accept'), ('/accept looks right', 'accept'),
+                           ('/accept-force', 'accept-force'), ('/accept-forced', None),
                            ('looks good', None), ('/reviewer', None), ('/bypass now', None), (' /accept', None)):
             with self.subTest(body=body):
                 posts = self.run_dispatcher('issue_comment', self.issue_comment(57, body))

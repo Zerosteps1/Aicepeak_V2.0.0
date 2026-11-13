@@ -1,0 +1,365 @@
+/* Aicepeak · Anmelden (interaktiv)
+   Paper & Glass: square paper for data, frosted glass for the menu bar, assistant and sign-in card.
+   State lives on .app as data attributes, set by app.js:
+     data-theme      light | dark
+     data-phase      out | auth | in        (signed out · signing in · signed in)
+     data-assistant  closed | open
+   All animation is CSS transitions keyed off those attributes. */
+
+/* ---------- Tokens ---------- */
+
+.app {
+  /* Animation tweaks (app.js can override zoom and blur) */
+  --app-zoom: 0.83;
+  --app-blur: 16px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+  --main-delay: 5000ms;          /* how long the open assistant overlaps the content */
+
+  --accent: #4C9BF0;
+  --on-accent: #0F1B2A;
+  --font-title: 'Russo One', sans-serif;
+  --font-body: Inter, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+.app[data-theme="light"] {
+  color-scheme: light;
+  --accent: #4C9BF0;
+  --paper: #F3F2EE; --ink: #161616; --muted: #5C5B57;
+  --line: #C9C7C1; --line-soft: #DAD8D3;
+  --sunken: #E9E8E3; --column: #ECEBE6; --raised: #FAFAF8;
+  --review: #A9661C; --review-ink: #8A4F10; --link: #1F6AC4;
+  /* airy glass */
+  --glass: rgba(246, 245, 242, 0.65);
+  --glass-blur: blur(24px) saturate(170%) brightness(1.08);
+  --glass-line: rgba(22, 22, 22, 0.12);
+  --glass-divider: rgba(22, 22, 22, 0.14);
+  --glass-shadow: 0 16px 32px -24px rgba(22, 22, 22, 0.28);
+  --glass-hover: rgba(255, 255, 255, 0.75);
+  --ctrl: #FFFFFF; --field: #FFFFFF;
+  /* sign-in */
+  --veil: rgba(243, 242, 238, 0.35);
+  --card-bg: rgba(238, 236, 232, 0.74);
+  --card-border: rgba(255, 255, 255, 0.8);
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 40px 80px -36px rgba(20, 20, 20, 0.5);
+  --btn-bg: #C9C7C1; --btn-ink: #161616; --btn-hover: #ADAAA3;
+}
+
+.app[data-theme="dark"] {
+  color-scheme: dark;
+  --accent: #5AA6F5;
+  --paper: #151514; --ink: #ECEBE7; --muted: #A3A19B;
+  --line: #3A3936; --line-soft: #2C2B29;
+  --sunken: #1E1E1C; --column: #232321; --raised: #262624;
+  --review: #D19A4A; --review-ink: #E6B26B; --link: #7DB6F7;
+  --glass: rgba(36, 36, 34, 0.6);
+  --glass-blur: blur(22px) saturate(140%);
+  --glass-line: rgba(255, 255, 255, 0.12);
+  --glass-divider: rgba(255, 255, 255, 0.14);
+  --glass-shadow: 0 16px 32px -20px rgba(0, 0, 0, 0.6);
+  --glass-hover: rgba(255, 255, 255, 0.14);
+  --ctrl: rgba(255, 255, 255, 0.06); --field: rgba(255, 255, 255, 0.08);
+  --veil: rgba(21, 21, 20, 0.4);
+  --card-bg: rgba(20, 21, 24, 0.78);
+  --card-border: rgba(255, 255, 255, 0.12);
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 40px 80px -36px rgba(0, 0, 0, 0.9);
+  --btn-bg: #3A3936; --btn-ink: #ECEBE7; --btn-hover: #45433F;
+}
+
+/* ---------- Base ---------- */
+
+html, body { margin: 0; background: #151514; }
+* { box-sizing: border-box; }
+button, input { font: inherit; }
+a { color: var(--ink); text-decoration: none; }
+a:hover { color: var(--link); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+input::placeholder { color: var(--muted); }
+svg { display: block; flex: none; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+.mono { font-family: var(--font-mono); font-size: 12px; }
+.muted { color: var(--muted); }
+
+.app {
+  position: relative;
+  height: 100vh;
+  min-height: 760px;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  transition: background-color 300ms ease;
+}
+
+/* ---------- App layer (zoomed out and blurred until signed in) ---------- */
+
+.app-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  transform-origin: 50% 40%;
+  transform: scale(var(--app-zoom));
+  filter: blur(var(--app-blur)) saturate(110%);
+  transition: transform 1200ms var(--ease-out), filter 1200ms var(--ease-out);
+}
+/* Signed in: no transform or filter, otherwise the glass inside cannot blur what is behind it. */
+.app[data-phase="in"] .app-layer { transform: none; filter: none; }
+
+.glow {
+  position: absolute; right: -120px; top: -140px;
+  width: 520px; height: 520px; border-radius: 50%;
+  background: radial-gradient(circle, var(--accent) 0%, rgba(76, 155, 240, 0) 62%);
+  opacity: 0.45; filter: blur(32px); pointer-events: none;
+}
+
+.top-row { position: relative; z-index: 2; display: flex; gap: 16px; }
+.top-row__spacer { flex: 0 0 380px; }   /* room for the assistant bar */
+
+/* ---------- Glass ---------- */
+
+.glass {
+  border: 1px solid var(--glass-line);
+  border-radius: 20px;
+  background: var(--glass);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow);
+}
+
+.g-btn {
+  border: 0; border-radius: 12px; background: transparent; color: var(--ink); cursor: pointer;
+}
+/* Hover on glass buttons is off, as in the design canvas (inline backgrounds overrode it there).
+   To turn it on: .g-btn:hover { background: var(--glass-hover); } */
+.icon-btn { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+
+/* Menu bar */
+.menubar {
+  flex: 1 1 0; min-width: 0; height: 64px;
+  padding: 0 12px 0 20px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+}
+.menubar__left { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.menubar__right { display: flex; align-items: center; gap: 4px; }
+.logo { display: block; height: auto; }
+.logo--bar { width: 26px; }
+.nav { display: flex; align-items: center; gap: 2px; }
+.nav__item {
+  height: 40px; padding: 0 12px; border-radius: 12px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; color: var(--muted);
+}
+.divider { width: 1px; height: 24px; background: var(--glass-divider); }
+.crumbs { display: flex; align-items: center; gap: 10px; font-size: 14px; white-space: nowrap; }
+.crumbs__current { color: var(--ink); font-weight: 500; }
+
+/* ---------- Assistant: a glass sheet that rolls down from its bar ---------- */
+
+.assistant {
+  position: absolute; top: 16px; right: 16px; z-index: 3;
+  width: 380px; height: 64px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  transition: height 640ms var(--ease-sheet);
+}
+.app[data-assistant="open"] .assistant { height: calc(100% - 32px); }
+
+.assistant__toggle {
+  flex: 0 0 62px;
+  padding: 0 12px 0 18px;
+  border-radius: 0;
+  border-bottom: 1px solid transparent;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  text-align: left;
+  transition: border-color 300ms ease;
+}
+.app[data-assistant="open"] .assistant__toggle { border-bottom-color: var(--glass-divider); }
+.assistant__titles { display: flex; flex-direction: column; gap: 3px; }
+.assistant__title { display: flex; align-items: center; gap: 8px; font-family: var(--font-title); font-size: 17px; }
+.assistant__context { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.signal-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.assistant__chevron {
+  width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+  transition: transform 640ms var(--ease-sheet);
+}
+.app[data-assistant="open"] .assistant__chevron { transform: rotate(180deg); }
+
+/* Body: fades out fast when closing, in after the sheet has started to roll down */
+.assistant__body {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  opacity: 0; transform: translateY(-12px);
+  transition: opacity 160ms ease 0ms, transform 520ms var(--ease-out) 0ms;
+}
+.app[data-assistant="open"] .assistant__body {
+  opacity: 1; transform: translateY(0);
+  transition: opacity 360ms ease 240ms, transform 520ms var(--ease-out) 240ms;
+}
+.assistant__messages {
+  flex: 1; display: flex; flex-direction: column; gap: 18px;
+  padding: 20px 18px; font-size: 14px; line-height: 1.55;
+}
+.assistant__messages p { margin: 0; }
+.assistant__group { display: flex; flex-direction: column; gap: 10px; }
+.assistant__items { display: flex; flex-direction: column; gap: 6px; }
+.assistant__item {
+  display: flex; justify-content: space-between; gap: 10px;
+  padding: 10px 12px; border-radius: 12px; background: var(--ctrl); font-size: 13px;
+}
+.assistant__meta { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.chips { padding: 0 18px 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { height: 34px; padding: 0 12px; background: var(--ctrl); font-size: 13px; }
+.composer {
+  margin: 0 12px 12px; padding: 6px 6px 6px 14px;
+  display: flex; align-items: center; gap: 8px;
+  border-radius: 14px; background: var(--field);
+}
+.composer__input {
+  flex: 1; min-width: 0; height: 42px;
+  border: 0; background: transparent; font-size: 14px; color: var(--ink);
+}
+.send {
+  width: 40px; height: 40px; border: 0; border-radius: 12px;
+  background: var(--accent); color: var(--on-accent);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+
+/* ---------- Main content (paper) ---------- */
+
+.main {
+  position: relative; z-index: 1;
+  flex: 1; min-width: 0;
+  padding: 40px 0 24px 18px;
+  display: flex; flex-direction: column; gap: 24px;
+  transition: padding-right 560ms var(--ease-sheet) 160ms;
+}
+/* Makes room for the open assistant only after --main-delay: the sheet overlaps the content on purpose. */
+.app[data-assistant="open"] .main {
+  padding-right: 396px;
+  transition: padding-right 560ms var(--ease-sheet) var(--main-delay);
+}
+
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+.page-head__text { display: flex; flex-direction: column; gap: 12px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted); }
+.page-title {
+  margin: 0; font-family: var(--font-title); font-weight: 400;
+  font-size: 40px; line-height: 1.05; letter-spacing: -0.01em;
+}
+.full-stop { color: var(--accent); }
+.page-meta { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+
+.btn-outline {
+  height: 40px; padding: 0 14px;
+  border: 1px solid var(--ink); background: transparent; color: var(--ink);
+  font-family: var(--font-mono); font-size: 12px;
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+}
+
+/* Projects table */
+.panel { border: 1px solid var(--line); overflow-x: auto; font-variant-numeric: tabular-nums; }
+.panel__head {
+  min-width: 820px; padding: 18px 20px;
+  display: flex; justify-content: space-between; align-items: center; gap: 16px;
+  background: var(--sunken); border-bottom: 1px solid var(--line);
+}
+.panel__titles { display: flex; flex-direction: column; gap: 4px; }
+.panel__title { margin: 0; font-size: 17px; font-weight: 600; }
+.panel__desc { font-size: 13px; color: var(--muted); }
+.paper-icon-btn {
+  width: 40px; height: 40px; padding: 0;
+  border: 1px solid var(--line); background: var(--raised); color: var(--ink);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+
+.table { min-width: 820px; }
+.table__row {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) repeat(2, minmax(96px, 0.8fr)) minmax(140px, 1.1fr) minmax(140px, 1fr) minmax(110px, 0.8fr);
+  align-items: center;
+  min-height: 55px;   /* 54px row + 1px divider */
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 14px;
+}
+.table__row:not(.table__row--head):hover { background: var(--column); }
+.table__row--head {
+  align-items: end; min-height: 0;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: 12px; color: var(--muted);
+}
+.table__row--head .cell { padding-top: 14px; padding-bottom: 14px; }
+.cell { padding: 0 12px; }
+.cell--first { padding-left: 20px; display: flex; align-items: center; gap: 10px; }
+.cell--last { padding-right: 20px; }
+.cell--num { text-align: right; }
+.row-mark { width: 6px; height: 6px; background: var(--muted); }
+.row-link { font-weight: 500; }
+
+.status { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 12px; }
+.status--review { padding: 4px 8px; border: 1px solid var(--review); color: var(--review-ink); }
+.status--done, .status--running { color: var(--muted); }
+.status--running::before {
+  content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+}
+
+/* ---------- Veil and sign-in card ---------- */
+
+.veil {
+  position: absolute; inset: 0; pointer-events: none;
+  background: var(--veil);
+  transition: opacity 900ms ease;
+}
+.app[data-phase="in"] .veil { opacity: 0; }
+
+.signin-layer {
+  position: absolute; inset: 0;
+  padding: 24px 16px;
+  display: flex; align-items: center; justify-content: center;
+  transition: opacity 520ms ease, transform 700ms var(--ease-out), filter 520ms ease, visibility 0s linear 0ms;
+}
+/* Signed in: the card fades and grows away, then leaves the accessibility tree. */
+.app[data-phase="in"] .signin-layer {
+  opacity: 0; transform: scale(1.08); filter: blur(6px);
+  visibility: hidden; pointer-events: none;
+  transition: opacity 520ms ease, transform 700ms var(--ease-out), filter 520ms ease, visibility 0s linear 700ms;
+}
+
+.signin-card {
+  position: relative; width: 100%; max-width: 440px;
+  padding: 36px; border-radius: 28px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  box-shadow: var(--card-shadow);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  display: flex; flex-direction: column; align-items: stretch; gap: 24px;
+}
+.logo--card { width: 32px; align-self: center; }
+.signin-title {
+  margin: 0; text-align: center;
+  font-family: var(--font-title); font-weight: 400; font-size: 48px; line-height: 1; letter-spacing: -0.01em;
+}
+.signin-btn {
+  height: 56px; padding: 0 8px 0 22px;
+  border: 0; border-radius: 16px;
+  background: var(--btn-bg); color: var(--btn-ink);
+  font-size: 15px; font-weight: 600;
+  display: flex; align-items: center; justify-content: space-between; cursor: pointer;
+}
+.signin-btn:hover { background: var(--btn-hover); }
+.signin-btn__arrow {
+  width: 40px; height: 40px; border-radius: 11px;
+  background: var(--accent); color: var(--on-accent);
+  display: flex; align-items: center; justify-content: center;
+}
+.signin-note { margin: 0; text-align: center; font-size: 13px; line-height: 1.5; color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .app, .app * { transition: none !important; }
+}

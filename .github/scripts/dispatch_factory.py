@@ -93,7 +93,7 @@ def issue_command(config, event):
     if (not authorized(comment.get("user", {}), config) or comment.get("user", {}).get("id") != event["sender"]["id"]
             or comment.get("issue_url") != "https://api.github.com" + PREFIX + "/issues/" + str(issue_number)):
         raise RuntimeError("Issue-comment identity or issue association failed")
-    match = re.match(r"/(review|accept)(?=\s|$)", comment.get("body") or "")
+    match = re.match(r"/(review|accept|accept-force)(?=\s|$)", comment.get("body") or "")
     if not match:
         print("Ignored ordinary issue comment")
         return None

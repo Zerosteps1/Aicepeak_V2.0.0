@@ -85,7 +85,8 @@ def command(body):
 
 
 def issue_command(config, event):
-    """(issue, word, comment ID) for a maintainer's new /review or /accept on a maintainer's issue, else None.
+    """(issue, word, comment ID) for a maintainer's new /review, /accept or /accept-force on a maintainer's issue,
+    else None.
 
     Work-order issues (tools/factory/issues.py): the trusted factory.yml jobs re-verify everything again."""
     issue_number = number(event["issue"]["number"])

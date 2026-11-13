@@ -64,7 +64,8 @@ HOST_SKIP=('node_modules',)
 
 
 def structural(root, trusted, skip=()):
-    for path in root.rglob('*'):
+    # Sorted, because directory listing order differs between filesystems: the same tree must fail with the same error.
+    for path in sorted(root.rglob('*')):
         if '.git' in path.parts or '__pycache__' in path.parts or '.factory-runtime' in path.parts:continue
         if any(part in skip for part in path.relative_to(root).parts):continue
         if path.is_symlink():raise ValueError('symlink in candidate: '+str(path))

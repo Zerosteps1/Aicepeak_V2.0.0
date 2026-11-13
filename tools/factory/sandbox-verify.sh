@@ -27,8 +27,12 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT TERM
 mkdir "$work/candidate"
+# Tracked files deleted in the working tree are still listed; they are dropped here, because macOS's rsync
+# (openrsync) has no --ignore-missing-args.
 git -C "$root" ls-files -z --cached --others --exclude-standard \
-  | rsync -a --from0 --files-from=- --ignore-missing-args --exclude .DS_Store --exclude __pycache__ "$root/" "$work/candidate/"
+  | python3 -E -s -B -c 'import os, sys; os.chdir(sys.argv[1]); sys.stdout.buffer.write(b"".join(
+        p + b"\0" for p in sys.stdin.buffer.read().split(b"\0") if p and os.path.lexists(p)))' "$root" \
+  | rsync -a --from0 --files-from=- --exclude .DS_Store --exclude __pycache__ "$root/" "$work/candidate/"
 if [ $# -gt 0 ]; then
   # The pattern travels as an argument, never as shell text.
   set -- sh -c 'FACTORY_CANDIDATE=/candidate exec python3 -I -B -m unittest discover -s /candidate/tools/factory/tests -p "$1"' sh "$1"

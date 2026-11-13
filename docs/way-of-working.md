@@ -27,7 +27,7 @@ The flow is an issue from the "Factory work order" template → `/review` and `/
    /accept
    ```
 
-   Once as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) have accepted the newest proposal of the unchanged issue, the factory writes the proposed paths and `status: approved` into the `factory-task` block (shown as the App in the description's edit history) and posts the approval. Any later edit of the title or the description withdraws the approval until you `/review` and `/accept` again. A `status` set to `approved` by hand counts for nothing.
+   Once as many maintainer accounts as `work_order_approvals` in `factory/config.json` names (today 1) have accepted the newest proposal of the unchanged issue, the factory writes the proposed paths and `status: approved` into the `factory-task` block (shown as the App in the description's edit history) and posts the approval. Any later edit of the title or the description withdraws the approval until you `/review` and `/accept` again. A `status` set to `approved` by hand counts for nothing. Once the issue has used all `limits.max_issue_reviews` reviews and you edited it after the newest proposal, comment `/accept-force` instead: it accepts that proposal for the edited issue, and only then.
 
    To withdraw a work order later, see [stop or cancel a task](#stop-or-cancel-a-task).
 

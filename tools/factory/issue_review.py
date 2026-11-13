@@ -447,7 +447,7 @@ def accept_stage_force(args: argparse.Namespace, config: Any):
         post(gh, config, number, message)
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('stage', choices=['review', 'publish', 'accept'])
+    parser.add_argument('stage', choices=['review', 'publish', 'accept', 'accept-force'])
     parser.add_argument('--issue', type=int, required=True)
     parser.add_argument('--comment-id', type=int, required=True)
     args = parser.parse_args(argv)

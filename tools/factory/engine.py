@@ -19,6 +19,10 @@ from urllib.parse import quote
 import branches
 from branches import load_config
 import bypass
+import evidence
+import images
+import sandbox
+import steps as stage_steps
 import issues
 from contracts import (Blocked, allowed_patch, assert_current, authentic_check, binding, digest, gates,
                        handoff, is_control, maintainer, require, safe_path, validate_review)
@@ -322,26 +326,57 @@ def test_stage(config):
     started = time.monotonic()
     gh = GitHub()
     current(gh, snapshot, config)
-    with tempfile.TemporaryDirectory(prefix='factory-test-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='factory-test-', ignore_cleanup_errors=True) as tmp:
         candidate = git_checkout(snapshot['repository'], snapshot['head_sha'], Path(tmp)/'candidate', gh.token)
         # Credentials and .git never cross the container boundary.
         shutil.rmtree(candidate/'.git')
-        image = subprocess.run(['docker','build','--quiet','-f',str(ROOT/'factory/Dockerfile'),str(ROOT/'factory')], capture_output=True, text=True, timeout=600)
-        require(image.returncode == 0, 'trusted test image build failed')
-        image_id = image.stdout.strip().splitlines()[-1]
+        # The trusted test image (factory/test.Dockerfile from this config-branch checkout), built only when its
+        # content-derived tag is missing; never restored from a cache another run could have written.
+        try:image_id, tag, built, seconds = images.ensure_test_image(ROOT)
+        except (images.ImageError, OSError, subprocess.SubprocessError) as exc:raise Blocked('trusted test image build failed') from exc
         require(re.fullmatch(r'sha256:[0-9a-f]{64}', image_id), 'invalid built image identity')
-        cmd = ['docker','run','--rm','--init','--network','none','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges',
-               '--pids-limit','256','--memory','2g','--cpus','2','--tmpfs','/tmp:rw,nosuid,nodev,size=256m',
-               '--mount',f'type=bind,src={candidate},dst=/candidate,readonly',
-               '--mount',f'type=bind,src={ROOT},dst=/policy,readonly','--workdir','/candidate',image_id,
-               'python3','/policy/tools/factory/verify.py','--root','/candidate','--trusted-root','/policy','--ci']
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=config['limits']['timeout_seconds'])
+        image_line = f'test image {tag}: ' + (f'built in {seconds} s' if built else 'present')
+        print(image_line, file=sys.stderr)
+        # Every step runs sandboxed in the test image within one time budget (tools/factory/steps.py); a failing step
+        # does not stop the others. Their output never reaches this job's log.
+        deadline = sandbox.Deadline(config['limits']['timeout_seconds'])
+        try:results = stage_steps.run_all(image_id, candidate, ROOT, Path(tmp)/'steps', deadline)
+        finally:remove_tree(Path(tmp))
+        job_summary(evidence.job_summary(results, image_line))
+    record = evidence.record(results)
     # Exit status is observed by trusted host orchestration, never read from a PR-created success file.
-    evidence = {'repository':snapshot['repository'],'head_sha':snapshot['head_sha'],'policy_sha':snapshot['policy_sha'],
-                'run_id':snapshot['run_id'],'ok':result.returncode==0,'exit_code':result.returncode,
-                'duration_seconds':round(time.monotonic()-started,2),'summary':(result.stdout+result.stderr)[-12000:]}
-    emit('tests', evidence)
-    if result.returncode:raise Blocked('deterministic candidate checks failed')
+    tests = {'repository':snapshot['repository'],'head_sha':snapshot['head_sha'],'policy_sha':snapshot['policy_sha'],
+             'run_id':snapshot['run_id'],'ok':record['ok'],'exit_code':0 if record['ok'] else 1,
+             'duration_seconds':round(time.monotonic()-started,2),'image':image_line,'steps':record['steps'],
+             'summary':evidence.render(record, image_line, run_url(snapshot))}
+    emit('tests', tests)
+    if not record['ok']:raise Blocked('deterministic candidate checks failed')
+
+
+def job_summary(text):
+    """The run's job summary (all test cases and failure details), when the runner provides one. Never fails the
+    stage: the evidence is emitted either way."""
+    path = os.environ.get('GITHUB_STEP_SUMMARY')
+    if not path:return
+    try:
+        with open(path, 'a', encoding='utf-8', errors='replace') as summary:summary.write(text)
+    except OSError as exc:print(f'job summary not written: {type(exc).__name__}', file=sys.stderr)
+
+
+def remove_tree(path):
+    """Delete what the steps wrote: PR code can leave unreadable folders or trees too deep for Python 3.12's recursive
+    rmtree; chmod/rm walk iteratively and never follow symlinks."""
+    for command in (['chmod', '-R', 'u+rwX', '--', str(path)], ['rm', '-rf', '--one-file-system', '--', str(path)]):
+        try:subprocess.run(command, capture_output=True, timeout=600)
+        except (OSError, subprocess.SubprocessError):pass
+
+
+def annotate(gh, snapshot, check, output, notes):
+    """Failing tests and compiler/lint errors as annotations in the PR diff, after the gate is published: a refused
+    request loses only the markers, never the gate."""
+    if not notes or not isinstance(check, dict) or type(check.get('id')) is not int:return
+    try:gh.request('PATCH', f"/repos/{snapshot['repository']}/check-runs/{check['id']}", {'output':{**output,'annotations':notes[:50]}})
+    except (Blocked, ValueError) as exc:print(f'annotations not published: {exc}', file=sys.stderr)
 
 
 def run_url(snapshot):
@@ -377,6 +412,7 @@ def publish_stage(config):
         verify_run(gh, snapshot, config, {config['test_job']:['success','failure']})
         require(tests.get('head_sha') == snapshot['head_sha'] and tests.get('policy_sha') == snapshot['policy_sha'] and tests.get('run_id') == snapshot['run_id'], 'test evidence binding missing')
         require(os.environ.get('TEST_JOB_RESULT') == ('success' if tests.get('ok') else 'failure'), 'test job contradicts evidence')
+        require(evidence.valid(tests), 'invalid test evidence')
         fresh = True
     except (Blocked, KeyError, ValueError) as exc:
         fresh, reason = False, str(exc)
@@ -407,10 +443,11 @@ def publish_stage(config):
             'output':{'title':'blocked','summary':(reason or 'Deterministic checks failed; no senior review requested.')[:6000],'text':json.dumps(saved)}})
     if kept is None or hidden:
         # A hidden kept bypass is published again, bound to this run, so that it is the newest run on the commit.
-        gh.request('POST', f"/repos/{snapshot['repository']}/check-runs", {
+        output = bypass.record(kept) if kept else {'title':DETERMINISTIC_TITLE,'summary':tests.get('summary',reason or 'No test evidence')[:6000]}
+        check = gh.request('POST', f"/repos/{snapshot['repository']}/check-runs", {
             'name':branches.DETERMINISTIC,'head_sha':snapshot['head_sha'],'status':'completed','external_id':binding(snapshot),
-            'details_url':run_url(snapshot), **({'conclusion':'success','output':bypass.record(kept)} if kept else
-            {'conclusion':deterministic,'output':{'title':DETERMINISTIC_TITLE,'summary':tests.get('summary',reason or 'No test evidence')[:6000]}})})
+            'details_url':run_url(snapshot), 'conclusion':'success' if kept else deterministic, 'output':output})
+        if not kept and fresh and not stale:annotate(gh, snapshot, check, output, evidence.annotations(tests))
     base = snapshot['base_ref']
     if full:
         state = f'awaiting local review: `{command}`' if pending else 'not requested'

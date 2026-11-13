@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aicepeak · Anmelden</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Russo+One&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+
+<!-- State attributes are set by app.js: data-theme, data-phase (out | auth | in), data-assistant (closed | open) -->
+<div class="app" id="app" data-theme="dark" data-phase="out" data-assistant="closed">
+
+  <!-- The app, zoomed out and blurred until sign-in -->
+  <div class="app-layer" id="app-layer" aria-hidden="true">
+    <div class="glow" aria-hidden="true"></div>
+
+    <div class="top-row">
+      <header class="menubar glass">
+        <div class="menubar__left">
+          <img class="logo logo--bar" src="assets/logo.png" alt="Aicepeak">
+          <nav class="nav" aria-label="Hauptnavigation">
+            <a class="nav__item" href="#">
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 7V4h9l3 3v11h-4"></path><path d="M4 8h10l2 2v10H4z"></path></svg>
+              Dokumente
+            </a>
+            <a class="nav__item" href="#">
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="2"></rect><path d="M4 9.5h16M4 14.5h16"></path></svg>
+              Positionen
+            </a>
+            <a class="nav__item" href="#">
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="1.6"></circle><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M6 6a8.5 8.5 0 0 0 0 12M18 6a8.5 8.5 0 0 1 0 12"></path></svg>
+              Themen
+            </a>
+          </nav>
+          <span class="divider" aria-hidden="true"></span>
+          <nav class="crumbs" aria-label="Pfad">
+            <span class="crumbs__current" aria-current="page">Projekte</span>
+          </nav>
+        </div>
+        <div class="menubar__right">
+          <button type="button" class="g-btn icon-btn" aria-label="Benachrichtigungen">
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"></path><path d="M10 20.5h4"></path></svg>
+          </button>
+          <button type="button" class="g-btn icon-btn" data-action="sign-out" aria-label="Abmelden" title="Abmelden">
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 4h5v16h-5"></path><path d="M10 8l-4 4 4 4M6 12h10"></path></svg>
+          </button>
+        </div>
+      </header>
+      <div class="top-row__spacer" aria-hidden="true"></div>
+    </div>
+
+    <!-- Assistant: a glass sheet that rolls down from its bar -->
+    <section class="assistant glass" aria-label="Assistent">
+      <button type="button" class="g-btn assistant__toggle" data-action="toggle-assistant" aria-expanded="false" aria-controls="as-body">
+        <span class="assistant__titles">
+          <span class="assistant__title"><span class="signal-dot" aria-hidden="true"></span>Assistent</span>
+          <span class="assistant__context">Kontext · Projekte</span>
+        </span>
+        <span class="assistant__chevron" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 9l6 6 6-6"></path></svg>
+        </span>
+      </button>
+
+      <div class="assistant__body" id="as-body" aria-hidden="true">
+        <div class="assistant__messages">
+          <div class="assistant__group">
+            <p>Zwei Projekte brauchen Ihre Aufmerksamkeit:</p>
+            <div class="assistant__items">
+              <a class="assistant__item" href="#"><span>Alpine Paper · 2027</span><span class="muted">2 Rückfragen</span></a>
+              <a class="assistant__item" href="#"><span>Nordwerk Verpackung · 2027</span><span class="muted">Extraktion läuft</span></a>
+            </div>
+          </div>
+          <span class="assistant__meta">Stand · heute</span>
+        </div>
+        <div class="chips">
+          <button type="button" class="g-btn chip">Rückfragen klären</button>
+          <button type="button" class="g-btn chip">Neues Projekt anlegen</button>
+        </div>
+        <form class="composer" id="composer">
+          <label class="sr-only" for="as-input">Nachricht an den Assistenten</label>
+          <input class="composer__input" id="as-input" type="text" placeholder="Frage zu Ihren Projekten …">
+          <button type="submit" class="send" aria-label="Senden">
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h13M13 6l6 6-6 6"></path></svg>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Main content -->
+    <main class="main">
+      <div class="page-head">
+        <div class="page-head__text">
+          <span class="eyebrow">Aicepeak / Projekte</span>
+          <h1 class="page-title">Ihre Projekte<span class="full-stop">.</span></h1>
+          <p class="page-meta">3 Projekte · 1 mit offenen Rückfragen</p>
+        </div>
+        <button type="button" class="btn-outline">
+          Neues Projekt
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 5v14M5 12h14"></path></svg>
+        </button>
+      </div>
+
+      <section class="panel" aria-labelledby="pj-title">
+        <div class="panel__head">
+          <div class="panel__titles">
+            <h2 class="panel__title" id="pj-title">Projekte</h2>
+            <span class="panel__desc">Ein Projekt öffnen, um seine Positionen zu sehen.</span>
+          </div>
+          <button type="button" class="paper-icon-btn" aria-label="Projekt suchen" title="Projekt suchen">
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg>
+          </button>
+        </div>
+
+        <div class="table" role="table" aria-labelledby="pj-title">
+          <div class="table__row table__row--head" role="row">
+            <span class="cell cell--first" role="columnheader">Projekt</span>
+            <span class="cell cell--num" role="columnheader">Dokumente</span>
+            <span class="cell cell--num" role="columnheader">Positionen</span>
+            <span class="cell" role="columnheader">Stand</span>
+            <span class="cell" role="columnheader">Status</span>
+            <span class="cell cell--last cell--num" role="columnheader">Geändert</span>
+          </div>
+
+          <!-- Example data -->
+          <div class="table__row" role="row">
+            <span class="cell cell--first" role="cell"><span class="row-mark" aria-hidden="true"></span><a class="row-link" href="#">Alpine Paper · 2027</a></span>
+            <span class="cell cell--num" role="cell">3</span>
+            <span class="cell cell--num" role="cell">24</span>
+            <span class="cell mono muted" role="cell">Entwurf · Version 04</span>
+            <span class="cell" role="cell"><span class="status status--review">2 Rückfragen</span></span>
+            <span class="cell cell--last cell--num muted" role="cell">Heute</span>
+          </div>
+          <div class="table__row" role="row">
+            <span class="cell cell--first" role="cell"><span class="row-mark" aria-hidden="true"></span><a class="row-link" href="#">Alpine Paper · 2026</a></span>
+            <span class="cell cell--num" role="cell">5</span>
+            <span class="cell cell--num" role="cell">31</span>
+            <span class="cell mono muted" role="cell">Final · Version 07</span>
+            <span class="cell" role="cell"><span class="status status--done"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>Geprüft</span></span>
+            <span class="cell cell--last cell--num muted" role="cell">14.01.2026</span>
+          </div>
+          <div class="table__row" role="row">
+            <span class="cell cell--first" role="cell"><span class="row-mark" aria-hidden="true"></span><a class="row-link" href="#">Nordwerk Verpackung · 2027</a></span>
+            <span class="cell cell--num" role="cell">1</span>
+            <span class="cell cell--num" role="cell">–</span>
+            <span class="cell mono muted" role="cell">Import</span>
+            <span class="cell" role="cell"><span class="status status--running">Extraktion läuft</span></span>
+            <span class="cell cell--last cell--num muted" role="cell">Gestern</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Soft veil over the app while signed out -->
+  <div class="veil" aria-hidden="true"></div>
+
+  <!-- Sign-in card -->
+  <div class="signin-layer" id="signin-layer">
+    <form class="signin-card" id="signin-form" role="dialog" aria-modal="true" aria-labelledby="li-title">
+      <img class="logo logo--card" src="assets/logo.png" alt="Aicepeak">
+      <h1 class="signin-title" id="li-title">Anmelden<span class="full-stop">.</span></h1>
+      <button type="submit" class="signin-btn" id="signin-btn">
+        <span id="signin-label">Mit Microsoft anmelden</span>
+        <span class="signin-btn__arrow" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path></svg>
+        </span>
+      </button>
+      <p class="signin-note">Kein Zugang? Ihre IT-Administration schaltet Sie in Microsoft Entra ID frei.</p>
+    </form>
+  </div>
+</div>
+
+</body>
+</html>

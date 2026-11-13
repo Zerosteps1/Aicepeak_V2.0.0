@@ -301,7 +301,8 @@ class Accept(Base):
         cases = [('no proposal', lambda: None, 'no factory proposal yet'),
                  ('edited after review', lambda: (self.hub.review(), self.issue.update(body=self.issue['body'] + '\nmore')),
                   'changed after the newest factory review'),
-                 ('product blocked', lambda: (self.issue.update(body=self.issue['body'].replace('"kind":"factory"', '"kind":"product"')),
+                 ('product blocked', lambda: (self.config.update(product_checks_ready=False),
+                                              self.issue.update(body=self.issue['body'].replace('"kind":"factory"', '"kind":"product"')),
                                               self.hub.review(kind='product')), 'product work orders stay blocked'),
                  ('closed', lambda: (self.hub.review(), self.issue.update(state='closed')), 'is closed')]
         for name, change, reason in cases:

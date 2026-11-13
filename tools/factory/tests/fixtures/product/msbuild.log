@@ -1,0 +1,13 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+/work/backend/Broken.cs(4,16): error CS0029: Cannot implicitly convert type 'string' to 'int' [/work/backend/Aicepeak.Api.csproj]
+/work/backend/Broken.cs(2,1): error IDE0055: Fix formatting (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0055) [/work/backend/Aicepeak.Api.csproj]
+
+Build FAILED.
+
+/work/backend/Broken.cs(4,16): error CS0029: Cannot implicitly convert type 'string' to 'int' [/work/backend/Aicepeak.Api.csproj]
+/work/backend/Broken.cs(2,1): error IDE0055: Fix formatting (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/style-rules/ide0055) [/work/backend/Aicepeak.Api.csproj]
+    0 Warning(s)
+    2 Error(s)
+
+Time Elapsed 00:00:01.52

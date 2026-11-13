@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="nuget.config" />
+  </Folder>
+  <Project Path="Aicepeak.Api.csproj" />
+  <Project Path="Aicepeak.Api.Tests/Aicepeak.Api.Tests.csproj" />
+</Solution>

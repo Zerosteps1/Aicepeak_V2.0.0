@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="14" failures="1" errors="0" time="0.206115639">
+    <testsuite name="src/App.test.tsx" timestamp="2026-11-12T15:57:13.081Z" hostname="vm" tests="1" failures="0" errors="0" skipped="0" time="0.083748404">
+        <testcase classname="src/App.test.tsx" name="App &gt; shows the heading and the backend health" time="0.082125551">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/api/health.test.ts" timestamp="2026-11-12T15:57:13.083Z" hostname="vm" tests="5" failures="0" errors="0" skipped="0" time="0.011321592">
+        <testcase classname="src/api/health.test.ts" name="getHealthStatus &gt; requests the health endpoint of the API without caching" time="0.006150371">
+        </testcase>
+        <testcase classname="src/api/health.test.ts" name="getHealthStatus &gt; returns 204 when the backend is healthy" time="0.001101125">
+        </testcase>
+        <testcase classname="src/api/health.test.ts" name="getHealthStatus &gt; returns 503 instead of throwing when the backend is unhealthy" time="0.001175062">
+        </testcase>
+        <testcase classname="src/api/health.test.ts" name="getHealthStatus &gt; rejects when the backend cannot be reached" time="0.000940634">
+        </testcase>
+        <testcase classname="src/api/health.test.ts" name="getHealthStatus &gt; forwards the abort signal" time="0.000440686">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/features/health/HealthStatus.test.tsx" timestamp="2026-11-12T15:57:13.084Z" hostname="vm" tests="5" failures="0" errors="0" skipped="0" time="0.101997039">
+        <testcase classname="src/features/health/HealthStatus.test.tsx" name="HealthStatus &gt; shows that it is checking, then the HTTP status 204" time="0.078145863">
+        </testcase>
+        <testcase classname="src/features/health/HealthStatus.test.tsx" name="HealthStatus &gt; shows the HTTP status 503 when the backend is unhealthy" time="0.007336249">
+        </testcase>
+        <testcase classname="src/features/health/HealthStatus.test.tsx" name="HealthStatus &gt; shows that the backend is unreachable when the request fails" time="0.006414688">
+        </testcase>
+        <testcase classname="src/features/health/HealthStatus.test.tsx" name="HealthStatus &gt; shows that the backend is unreachable when a proxy answers 502 Bad Gateway" time="0.005334965">
+        </testcase>
+        <testcase classname="src/features/health/HealthStatus.test.tsx" name="HealthStatus &gt; aborts the request when unmounted" time="0.003069311">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/fixture.test.ts" timestamp="2026-11-12T15:57:13.085Z" hostname="vm" tests="3" failures="1" errors="0" skipped="1" time="0.009048604">
+        <testcase classname="src/fixture.test.ts" name="fixture &gt; passes" time="0.001772597">
+        </testcase>
+        <testcase classname="src/fixture.test.ts" name="fixture &gt; fails with a message" time="0.005750877">
+            <failure message="expected 1 to be 2 // Object.is equality" type="AssertionError">
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ src/fixture.test.ts:9:15
+            </failure>
+        </testcase>
+        <testcase classname="src/fixture.test.ts" name="fixture &gt; is skipped" time="0">
+            <skipped/>
+        </testcase>
+    </testsuite>
+</testsuites>

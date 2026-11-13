@@ -1,0 +1,38 @@
+# Editor and formatting settings, read by IDEs (Rider, Visual Studio, VS Code with EditorConfig/C# Dev Kit),
+# `dotnet format` and the .NET build (formatting is enforced there, see backend/Directory.Build.props).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+# Two trailing spaces are a line break in Markdown.
+trim_trailing_whitespace = false
+
+[{*.py,backend/start}]
+indent_size = 4
+
+[*.cs]
+indent_size = 4
+
+# Java-style braces: an opening brace stays at the end of the line; else, catch and finally follow the closing brace.
+csharp_new_line_before_open_brace = none
+csharp_new_line_before_else = false
+csharp_new_line_before_catch = false
+csharp_new_line_before_finally = false
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+csharp_new_line_between_query_expression_clauses = true
+
+# Formatting violations are build warnings, and warnings fail the build. Fix them with: dotnet format backend/Aicepeak.slnx
+dotnet_diagnostic.IDE0055.severity = warning
+
+# EF Core generates migrations in its own style; they are never formatted or checked.
+[backend/Data/Migrations/*.cs]
+generated_code = true
+dotnet_diagnostic.IDE0055.severity = none

@@ -76,10 +76,11 @@ def inspect(root, runner):
                        "detail": detail, "continuation": "" if passed else continuation})
 
     add("python", sys.version_info >= (3, 11), "Python >= 3.11 required.", "Install Python 3.11 or newer.")
-    files = ("AGENTS.md", "factory/config.json", "factory/policy.md", "factory/Dockerfile",
+    files = ("AGENTS.md", "factory/config.json", "factory/policy.md", "factory/Dockerfile", "factory/test.Dockerfile",
              "factory/github-settings.json", "factory/tools.lock.json", "factory/review.schema.json",
              ".github/workflows/factory.yml", ".github/CODEOWNERS", "tools/factory/clients.py",
-             "tools/factory/engine.py", "tools/factory/local_review.py", "tools/factory/verify.py", "tools/factory/settings.py")
+             "tools/factory/engine.py", "tools/factory/images.py", "tools/factory/local_review.py", "tools/factory/verify.py",
+             "tools/factory/settings.py")
     missing = [name for name in files if not regular_file(root, name)]
     add("checkout", not missing, "Missing or unsafe files: " + ", ".join(missing) if missing else "Factory files present.",
         "Check out the complete reviewed factory revision.")

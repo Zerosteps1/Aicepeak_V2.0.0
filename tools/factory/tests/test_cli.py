@@ -1766,13 +1766,15 @@ class HelpAndInstallTests(unittest.TestCase):
             self.assertEqual(pipeline.docker_ready(), 'unix:///d')
         wait.assert_called_once_with(pipeline.clients.IMAGE)
 
-    def test_sandbox_script_runs_the_author_image_without_network_or_writes(self):
+    def test_sandbox_script_runs_the_test_image_without_network_or_writes(self):
         script = ROOT / 'tools/factory/sandbox-verify.sh'
         text = script.read_text()
         self.assertTrue(script.stat().st_mode & 0o111)
         self.assertEqual(subprocess.run(['sh', '-n', str(script)], capture_output=True).returncode, 0)
         for expected in ('--network none', '--read-only', '--cap-drop ALL', 'no-new-privileges', ',readonly"',
-                         '--exclude .git', 'tools/factory/clients.py', 'verify.py --root /candidate --trusted-root /candidate --ci',
+                         'ls-files -z --cached --others --exclude-standard', 'tools/factory/images.py" test-tag',
+                         'tools/factory/images.py" ensure-test', '"$image_id" "$@"',
+                         'verify.py --root /candidate --trusted-root /candidate --ci',
                          'sh "$1"'):
             self.assertIn(expected, text)
 

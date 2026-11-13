@@ -137,6 +137,21 @@ The implementation has local regression tests for configuration drift, inherited
 
 `package.json` and `package-lock.json` are standard npm manifests for dependency-update tooling. The complete npm v3 lock includes both CLIs and all 14 optional native packages with vendor-published tarball SHA512 integrity; provenance is recorded in this document and `evidence.md`. The Dockerfile uses `npm ci`; no checksums are invented. Version-update PRs must also update the CLI assertions, image tag and reviewed compatibility tests; updates do not activate themselves. The [Dockerfile](Dockerfile) currently pins `node:26.12.0-bookworm-slim` at digest `sha256:742a0fe7320e09e0321222b68165e6ac731d30470e7ea7f98f9bfc3a6e1034fe`; the matching source is the [official Node tag metadata](https://hub.docker.com/v2/repositories/library/node/tags/26.12.0-bookworm-slim). Gabriel's successful host build resolved this exact image reference; the earlier author reported the digest pin. No new digest was selected here. Apt still resolves OS packages at build time; a trusted release build must record the package inventory and resulting image ID for archival reproducibility. Workers use the selected local image ID. Keep the strict broker allowlist and required MCP initialization under a real authenticated smoke test before activation.
 
+## Test image
+
+The deterministic checks do not use the author image above. They run in a separate trusted **test image**, [test.Dockerfile](test.Dockerfile), which holds no credentials and no provider CLIs. Both the test job (`tools/factory/engine.py test`) and `tools/factory/sandbox-verify.sh` use it. In the test job every step runs in it: the factory checks, the backend build and tests and the frontend lint, tests and build ([ADR-0011](../docs/decisions/0011-product-checks.md)); `sandbox-verify.sh` runs the factory checks.
+
+- **Contents:**
+  - the .NET 10 SDK (`mcr.microsoft.com/dotnet/sdk:10.0.404-noble`, digest `sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb`; Ubuntu 24.04, linux/amd64 and linux/arm64; source: the MCR tag list and the [.NET 10 release metadata](https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json));
+  - Node 26.12.0, copied from the same digest-pinned `node:26.12.0-bookworm-slim` image as the author image;
+  - Python 3 and Git from apt, plus the `actionlint` and `gitleaks` releases pinned in [tools.lock.json](tools.lock.json), installed with SHA-256 checks by [install_tools.py](install_tools.py).
+- **Build-time self-checks:** the build asserts the exact `dotnet --version` and `node --version` and runs every check tool once.
+- **Runtime:** it runs as `USER 1000:1000` on a read-only root; `HOME`, the NuGet and the npm caches live under `/tmp`, which the sandbox mounts as tmpfs.
+- **Tag:** `tools/factory/images.py` derives the tag from a SHA-256 over `test.Dockerfile` and every file it copies from `factory/`, `aicepeak-factory-test:<first 16 hex digits>`, and records the full hash in the image label `org.aicepeak.factory.test-inputs`. `python3 tools/factory/images.py test-tag` prints the tag.
+- **Build-if-missing:** before each run the image with that tag and label is looked up, built from the trusted `factory/` context only when it is missing, and then started by its `sha256:` image ID. A change to the Dockerfile or a copied file therefore names a new image; an unchanged one is reused.
+- **No cross-run cache:** the workflow keeps `cache-mode: none`, and nothing restores or pushes images (no `actions/cache`, no registry cache). A cache that one run writes and a trusted job restores could be poisoned. On GitHub-hosted runners the test image is therefore built in every run (measured locally: about 30 s once the base images, about 360 MB compressed for the SDK, are pulled); reuse pays off on maintainer devices.
+- **Apt:** apt still resolves OS packages at build time, as for the author image.
+
 ## Official references
 
 - [Codex 0.164.0 configuration schema](https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/core/config.schema.json): pinned role/config fields.

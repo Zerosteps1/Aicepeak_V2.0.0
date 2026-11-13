@@ -128,7 +128,9 @@ jobs:
     name: Deterministic tests
     needs: snapshot
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Test image build (up to 10 min) plus the steps' shared budget (limits.timeout_seconds) and a margin: a cancelled
+    # job blocks publish, which accepts only success or failure.
+    timeout-minutes: 35
     permissions:
       contents: read
       pull-requests: read

@@ -31,7 +31,8 @@ class DoctorBoundaries(unittest.TestCase):
             result=doctor.inspect(ROOT,'codex')
         self.assertNotIn('SENSITIVE_DO_NOT_PRINT',json.dumps(result))
         self.assertEqual(result['factory']['live_status'],'unverified')
-        self.assertEqual(result['product']['status'],'blocked')
+        ready=json.loads((ROOT/'factory/config.json').read_text()).get('product_checks_ready') is True
+        self.assertEqual(result['product']['status'],'locally_configured_unverified' if ready else 'blocked')
 
 
     def test_reviewer_host_reports_presence_without_values_or_api_key_paths(self):

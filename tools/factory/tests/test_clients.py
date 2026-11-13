@@ -1082,7 +1082,6 @@ class PinnedClients(unittest.TestCase):
         with mock.patch.object(sys, "argv", ["clients.py", "image"]), contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(clients.main(), 0)
         self.assertEqual(output.getvalue(), clients.IMAGE + "\n")
-        self.assertIn('"$root/tools/factory/clients.py" image', (ROOT / "tools/factory/sandbox-verify.sh").read_text())
 
 
 if __name__ == "__main__":

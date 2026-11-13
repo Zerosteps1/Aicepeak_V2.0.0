@@ -200,7 +200,20 @@ Maintainers and their agents can work on several PRs at once. Parallel PRs break
 
 ## Verify locally
 
-In the sandbox, like the pipeline: `tools/factory/sandbox-verify.sh` from the checkout you changed ([dev-setup](dev-setup.md#test-changes-in-the-sandbox)). On the host:
+**Product code** (`backend/`, `frontend/`): the pipeline's test stage builds and tests both in the sandbox and lists every test case in the run's job summary; failing tests and errors also appear as annotations in the PR ([ADR-0011](decisions/0011-product-checks.md)). Before you stage or submit, run from the repository root
+
+```sh
+dotnet format backend/Aicepeak.slnx
+dotnet build backend/Aicepeak.slnx -warnaserror
+dotnet test backend/Aicepeak.slnx
+npm --prefix frontend run lint
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+`backend/` holds the API project and the solution, so `dotnet build`, `dotnet test` and `dotnet format` name `Aicepeak.slnx`; `dotnet run`, `dotnet watch` and `dotnet ef` run inside `backend/`. The database tests need Docker; without it add `--filter "Category!=Database"` to `dotnet test`. The build fails on formatting violations, which `dotnet format` fixes. Setup, local start and the code style are in [dev-setup](dev-setup.md#running-aicepeak-locally).
+
+**Factory code:** in the sandbox, like the pipeline: `tools/factory/sandbox-verify.sh` from the checkout you changed ([dev-setup](dev-setup.md#test-changes-in-the-sandbox)). On the host:
 
 Full local verification of the control checkout (needs `actionlint` and `gitleaks`; `factory doctor` prints the command that installs them), run from the control checkout without leaving files behind:
 
@@ -208,6 +221,8 @@ Full local verification of the control checkout (needs `actionlint` and `gitleak
 python3 tools/factory/verify.py --root .
 python3 -I -B -m unittest discover -s tools/factory/tests
 ```
+
+On the host, `verify.py` leaves installed dependencies (`node_modules`) out of its file checks; with `--ci`, as in the pipeline and `sandbox-verify.sh`, it checks every file. Gitleaks' default rules ignore `node_modules` in both cases.
 
 The structural check of your candidate, using only the control checkout's verifier:
 

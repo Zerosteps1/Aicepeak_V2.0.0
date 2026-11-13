@@ -23,12 +23,53 @@ def run(command, **kwargs):
     return result.stdout
 
 
-def structural(root, trusted):
+# TypeScript reads its tsconfig files as JSONC (comments, trailing commas); every other .json file stays strict JSON.
+TSCONFIG=re.compile(r'tsconfig(\.[A-Za-z0-9_-]+)*\.json')
+
+
+def jsonc(text):
+    """Strict JSON from JSONC: drop // and /* */ comments and trailing commas outside strings."""
+    out,i,n=[],0,len(text)
+    while i<n:
+        c=text[i]
+        if c=='"':
+            j=i+1
+            while j<n and text[j]!='"':j+=2 if text[j]=='\\' else 1
+            out.append(text[i:j+1]);i=j+1
+        elif text.startswith('//',i):
+            i=text.find('\n',i);i=n if i<0 else i
+        elif text.startswith('/*',i):
+            end=text.find('*/',i+2)
+            if end<0:raise ValueError('unterminated comment in JSONC')
+            i=end+2
+        elif c==',':
+            j=i+1
+            while j<n and (text[j].isspace() or text.startswith('//',j) or text.startswith('/*',j)):
+                if text.startswith('//',j):j=text.find('\n',j);j=n if j<0 else j
+                elif text.startswith('/*',j):
+                    end=text.find('*/',j+2)
+                    if end<0:raise ValueError('unterminated comment in JSONC')
+                    j=end+2
+                else:j+=1
+            if j<n and text[j] in '}]':i+=1
+            else:out.append(c);i+=1
+        else:out.append(c);i+=1
+    return ''.join(out)
+
+
+# Installed dependencies, skipped by the file walk only on a maintainer's machine. With --ci (the pipeline,
+# sandbox-verify.sh) the walk skips nothing: a PR could otherwise hide files from it in a folder of that name. Gitleaks'
+# own default rules ignore node_modules in every run.
+HOST_SKIP=('node_modules',)
+
+
+def structural(root, trusted, skip=()):
     for path in root.rglob('*'):
         if '.git' in path.parts or '__pycache__' in path.parts or '.factory-runtime' in path.parts:continue
+        if any(part in skip for part in path.relative_to(root).parts):continue
         if path.is_symlink():raise ValueError('symlink in candidate: '+str(path))
         if not path.is_file():continue
-        if path.suffix=='.json':json.loads(path.read_text())
+        if path.suffix=='.json':json.loads(jsonc(path.read_text()) if TSCONFIG.fullmatch(path.name) else path.read_text())
         elif path.suffix=='.toml':tomllib.loads(path.read_text())
         elif path.suffix=='.py':ast.parse(path.read_text(),filename=str(path))
         elif path.suffix=='.md':
@@ -91,10 +132,10 @@ def unit_tests(root, trusted):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,default=Path('.'));p.add_argument('--trusted-root',type=Path)
-    p.add_argument('--ci',action='store_true');p.add_argument('--actionlint',default='actionlint');p.add_argument('--structure-only',action='store_true')
+    p.add_argument('--ci',action='store_true',help='check everything, as the pipeline does; without it node_modules is skipped');p.add_argument('--actionlint',default='actionlint');p.add_argument('--structure-only',action='store_true')
     args=p.parse_args();root=args.root.resolve();trusted=(args.trusted_root or root).resolve()
     try:
-        structural(root,trusted)
+        structural(root,trusted,skip=() if args.ci else HOST_SKIP)
         print('PASS: JSON/TOML/Python syntax, branch model, model/limit contract, native adapter drift, internal links and smoke fixture')
         if args.structure_only:return 0
         for tool in (args.actionlint,'gitleaks'):

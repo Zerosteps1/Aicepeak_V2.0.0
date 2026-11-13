@@ -436,7 +436,7 @@ def accept_stage_force(args: argparse.Namespace, config: Any):
     number = args.issue
     gh = installation(config, 'publisher', ISSUE_PERMISSIONS)
     issue = issues.identity(gh.request('GET', f"/repos/{config['repository']}/issues/{number}"), config, number)
-    trigger(gh, config, number, args.comment_id, 'accept')
+    trigger(gh, config, number, args.comment_id, 'accept-force')
     try:
         config["force"] = True
         message = accept(gh, config, number, issue)

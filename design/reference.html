@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="de" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aicepeak Paper &amp; Glass · Referenz</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Russo+One&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components.css">
+<style>
+  /* Reference page layout only — not part of the system. */
+  body { padding: 0; }
+  .ref-top { position: sticky; top: 0; z-index: 10; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 24px; background: var(--paper); border-bottom: 1px solid var(--line); }
+  .ref-top h1 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: 20px; }
+  .ref-wrap { max-width: 1240px; margin: 0 auto; padding: 32px 24px 80px; display: flex; flex-direction: column; gap: 56px; }
+  .ref-sec { display: flex; flex-direction: column; gap: 16px; }
+  .ref-sec > h2 { margin: 0; font-family: var(--font-mono); font-size: 12px; font-weight: 400; letter-spacing: 0.06em; color: var(--ink-muted); }
+  .ref-note { margin: 0; font-size: 13px; color: var(--ink-muted); max-width: 760px; }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); border: 1px solid var(--line); }
+  .sw { display: flex; flex-direction: column; border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+  .sw__chip { height: 56px; border-bottom: 1px solid var(--line-soft); }
+  .sw__name { padding: 8px 10px 2px; font-family: var(--font-mono); font-size: 12px; }
+  .sw__val { padding: 0 10px 10px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); word-break: break-all; }
+  .types { display: flex; flex-direction: column; border: 1px solid var(--line); }
+  .ty { display: grid; grid-template-columns: 180px 1fr; gap: 16px; align-items: baseline; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
+  .ty:last-child { border-bottom: 0; }
+  .ty__n { font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); }
+  .stage { position: relative; overflow: hidden; padding: 16px; background: var(--paper); border: 1px solid var(--line); }
+  .stage__band { position: absolute; left: 0; right: 0; top: 46%; height: 48px; background: var(--signal); }
+  .stage__glow { position: absolute; width: 420px; height: 420px; right: -100px; top: -140px; border-radius: 50%; background: radial-gradient(circle, var(--glow) 0%, transparent 62%); opacity: .45; filter: blur(32px); }
+  .stage > .rel { position: relative; z-index: 1; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+  .signin-stage { position: relative; height: 520px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 1px solid var(--line); background: var(--paper); }
+  .signin-stage__app { position: absolute; inset: 0; padding: 16px; transform: scale(.83); transform-origin: 50% 40%; filter: blur(16px) saturate(110%); }
+  .signin-stage__app .b { height: 64px; border-radius: 20px; background: var(--glass); border: 1px solid var(--glass-line); }
+  .signin-stage__app .t { margin: 40px 18px 0; width: 280px; height: 40px; background: var(--ink); opacity: .8; }
+  .signin-stage__app .tb { margin: 24px 18px 0; height: 220px; border: 1px solid var(--line); background: var(--paper-sunken); }
+  .signin-stage__card { position: relative; z-index: 2; width: 100%; display: flex; justify-content: center; padding: 0 16px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="aicepeak-paper-glass.js"></script>
+<script>
+(function () {
+  var P = window.AicepeakPaperGlass, h = React.createElement, f = P.formatNumber;
+  var LOGO = 'aicepeak-mark.png';
+
+  var COLORS = ['paper', 'paper-sunken', 'paper-column', 'paper-raised', 'line', 'line-soft', 'line-strong', 'ink', 'ink-muted', 'ink-subtle',
+    'selection', 'signal', 'on-signal', 'link', 'selected', 'positive', 'negative', 'review', 'review-ink', 'review-fill',
+    'button-neutral', 'glass', 'glass-airy', 'glass-card', 'veil'];
+  var TYPES = [['page-title', 'Jede Position. Aus Ihren Dokumenten.'], ['sign-in-title', 'Anmelden.'], ['panel-title', 'Assistent'],
+    ['section-title', 'Gewinn- und Verlustrechnung'], ['search-input', 'Projekt suchen …'], ['kpi-value', '6 616 T€'], ['tile-value', '7 020 T€'],
+    ['body', 'Am stärksten wirkt Nachfrage auf die Umsatzerlöse.'], ['body-strong', '6 616'], ['small', 'Eine Position öffnen, um Verlauf, Quellen und Themen zu sehen.'],
+    ['label', '7 Positionen · aus 3 Dokumenten extrahiert'], ['eyebrow', 'Alpine Paper / Positionen 2027'], ['label-sm', 'Quellen · 6 Artikel · 3 Themen']];
+
+  function Section(title, note) {
+    var kids = Array.prototype.slice.call(arguments, 2);
+    return h('section', { className: 'ref-sec' }, h('h2', null, title), note ? h('p', { className: 'ref-note' }, note) : null, kids);
+  }
+  function Swatches() {
+    var cs = getComputedStyle(document.documentElement);
+    return h('div', { className: 'swatches' }, COLORS.map(function (n) {
+      return h('div', { key: n, className: 'sw' }, h('div', { className: 'sw__chip', style: { background: 'var(--' + n + ')' } }),
+        h('span', { className: 'sw__name' }, n), h('span', { className: 'sw__val' }, cs.getPropertyValue('--' + n).trim()));
+    }));
+  }
+  function Types() {
+    return h('div', { className: 'types' }, TYPES.map(function (t) {
+      return h('div', { key: t[0], className: 'ty' }, h('span', { className: 'ty__n' }, t[0]), h('span', { className: t[0] }, t[1]));
+    }));
+  }
+  function Bar(glass) {
+    return h(P.GlassBar, { glass: glass, logoSrc: LOGO,
+      nav: [{ label: 'Dokumente', icon: 'documents' }, { label: 'Positionen', icon: 'positions', current: true }, { label: 'Themen', icon: 'topics' }],
+      breadcrumbs: [{ label: 'Alpine Paper' }, { label: 'Positionen 2027' }],
+      actions: [h(P.IconButton, { key: 'b', icon: 'bell', label: 'Benachrichtigungen' }), h(P.Button, { key: 'c', dot: true, variant: 'glass' }, 'Chat')] });
+  }
+  function ForecastTable() {
+    var data = [
+      { name: 'Umsatzerlöse', i25: 38900, i26: 40200, base: 42800, d: 640, topics: ['Nachfrage'] },
+      { name: 'Stromkosten', i25: -2050, i26: -2250, base: -2400, d: -164, topics: ['Strompreis', 'Nachfrage'], selected: true },
+      { name: 'Sonstige betriebliche Aufwendungen', i25: -6700, i26: -6900, base: -7200, d: 0, topics: [], review: true }
+    ];
+    return h(P.DataTable, {
+      id: 'ref-guv', title: 'Gewinn- und Verlustrechnung', description: 'Eine Position öffnen, um Verlauf, Quellen und Themen zu sehen.',
+      unit: 'T€ · gerundet', searchLabel: 'Position suchen',
+      columns: [
+        { key: 'name', label: 'Position', width: 'minmax(180px, 1.8fr)' }, { key: 'trend', label: 'Verlauf', width: '96px' },
+        { key: 'ist', label: 'Ist 2026', numeric: true, highlight: true }, { key: 'base', label: 'Basis 2027', sub: 'ohne Signale', numeric: true },
+        { key: 'delta', label: 'News-Δ', sub: 'Ergebniswirkung', numeric: true },
+        { key: 'fc', label: 'Forecast 2027', sub: 'inkl. Auswahl', numeric: true, highlight: true, width: 'minmax(96px, 1fr)' },
+        { key: 'topics', label: 'Themen', width: '72px' }, { key: 'status', label: 'Status', width: '112px' }],
+      rows: data.map(function (x) { var fc = x.base + x.d; return { key: x.name, selected: x.selected, cells: {
+        name: h(P.LineItemName, null, x.name),
+        trend: h(P.DotMatrix, { values: [x.i25, x.i26, x.base, fc], label: 'Verlauf: ' + [x.i25, x.i26, x.base, fc].map(f).join(', ') }),
+        ist: f(x.i26), base: f(x.base), delta: h(P.Delta, { value: x.d }), fc: f(fc),
+        topics: h(P.TopicsLink, { topics: x.topics }), status: h(P.StatusTag, { status: x.review ? 'review' : 'done' }) } }; }),
+      total: { cells: { name: 'EBITDA', ist: '5 550', base: '6 420', delta: h(P.Delta, { value: 196 }), fc: '6 616' } } });
+  }
+  var PROJECTS = [
+    ['Forecast 2027', '01.01.2027 – 31.12.2027', 'review', '2 Rückfragen', 'Heute, 10:42', 6616],
+    ['Szenario Strompreis +20 %', '01.01.2027 – 31.12.2027', 'running', 'Extraktion läuft', 'Heute, 09:15', -340],
+    ['Mittelfristplanung 2027–2029', '01.01.2027 – 31.12.2029', 'done', null, 'Gestern', 7020],
+    ['Quartalsforecast Q1 2027', '01.01.2027 – 31.03.2027', 'review', '1 Rückfrage', '10.11.2026', 1620],
+    ['Investitionsplan Papiermaschine 3', '01.01.2027 – 31.12.2028', 'done', null, '02.11.2026', -1150]
+  ];
+  function ProjectsTable(props) {
+    var st = React.useState(''), q = st[0], setQ = st[1];
+    var rows = PROJECTS.filter(function (p) { return !q || (p[0] + ' ' + p[1]).toLowerCase().indexOf(q.toLowerCase()) >= 0; });
+    return h(P.DataTable, { id: 'ref-pj-' + props.theme, minWidth: 900,
+      search: { label: 'Alle aktiven Projekte', placeholder: 'Projekt suchen …', hint: 'Name, Jahr oder Zeitraum', count: rows.length + ' Projekte', value: q, onChange: setQ },
+      columns: [
+        { key: 'name', label: 'Projekt', width: 'minmax(300px, 2.4fr)' }, { key: 'mark', label: 'EBITDA', width: '88px' },
+        { key: 'period', label: 'Zeitraum', width: 'minmax(230px, 1.3fr)' }, { key: 'status', label: 'Status', width: 'minmax(170px, 1fr)' },
+        { key: 'changed', label: 'Geändert', numeric: true, width: 'minmax(130px, 0.8fr)' }],
+      rows: rows.map(function (p) { return { key: p[0], cells: {
+        name: h(P.LineItemName, null, p[0]), mark: h(P.ProjectMark, { id: p[0], value: p[5] }), period: p[1],
+        status: h(P.StatusTag, { status: p[2] }, p[3]), changed: h('span', { style: { color: 'var(--ink-muted)' } }, p[4]) } }; }) });
+  }
+  function Assistant(glass, id, extra) {
+    return h(P.AssistantPanel, Object.assign({ glass: glass, inputId: id, context: 'Kontext · Positionen · Alpine Paper 2027',
+      suggestions: ['Rückfragen klären', 'Forecast erklären'], placeholder: 'Frage zu den Positionen …', style: { width: 380 } }, extra || {}),
+      h(P.AssistantMessage, null, h('p', null, 'Ich habe 7 GuV-Positionen aus 3 Dokumenten extrahiert. Zwei brauchen noch eine Rückfrage:'),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          h(P.AssistantItem, { label: 'Materialaufwand', note: 'Einheit unklar' }), h(P.AssistantItem, { label: 'Sonstige betr. Aufwendungen', note: 'Summe weicht ab' }))),
+      h(P.UserMessage, null, 'Welche Positionen bewegen die Themen am stärksten?'),
+      h(P.AssistantMessage, { sources: 'Quellen · 6 Artikel · 3 Themen' }, h('p', null, 'Am stärksten wirkt ', h('strong', null, 'Nachfrage'), ' auf die Umsatzerlöse (+640 T€).')));
+  }
+  function Rolled(props) {
+    var st = React.useState(false), open = st[0], setOpen = st[1];
+    return Assistant('standard', 'ref-roll-' + props.theme, { collapsible: true, expanded: open, onToggle: function () { setOpen(!open); }, style: { width: 380, height: 620 }, context: 'Kontext · Projekte' });
+  }
+  function SignIn() {
+    var st = React.useState(false), busy = st[0], setBusy = st[1];
+    return h('div', { className: 'signin-stage' },
+      h('div', { className: 'signin-stage__app', 'aria-hidden': 'true' }, h('div', { className: 'stage__glow' }), h('div', { className: 'b' }), h('div', { className: 't' }), h('div', { className: 'tb' })),
+      h('div', { className: 'pg-veil' }),
+      h('div', { className: 'signin-stage__card' }, h(P.SignInCard, { logoSrc: LOGO, busy: busy,
+        onSignIn: function () { setBusy(true); setTimeout(function () { setBusy(false); }, 1600); },
+        note: 'Kein Zugang? Ihre IT-Administration schaltet Sie in Microsoft Entra ID frei.' })));
+  }
+
+  function App() {
+    var st = React.useState(document.documentElement.getAttribute('data-theme')), theme = st[0], setTheme = st[1];
+    React.useEffect(function () { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
+    var other = theme === 'light' ? 'dark' : 'light';
+    return h(React.Fragment, null,
+      h('header', { className: 'ref-top' }, h('h1', null, 'Aicepeak Paper & Glass', h('span', { style: { color: 'var(--signal)' } }, '.')),
+        h(P.Button, { variant: 'paper', onClick: function () { document.documentElement.setAttribute('data-theme', other); setTheme(other); } }, other === 'dark' ? 'Dunkel anzeigen' : 'Hell anzeigen')),
+      h('main', { className: 'ref-wrap', key: theme },
+        Section('Farben', 'Jede Farbe hat genau eine Bedeutung. Werte zeigen das aktuelle Theme.', h(Swatches)),
+        Section('Schrift', 'Russo One nur für Titel, Inter zum Lesen und für Zahlen, JetBrains Mono für Meta. Kein Versal-Satz.', h(Types)),
+        Section('Glas · Leiste', 'Standard und airy. Glas braucht etwas dahinter: das Signalband und den Schein.',
+          h('div', { className: 'stage' }, h('div', { className: 'stage__band' }), h('div', { className: 'stage__glow' }),
+            h('div', { className: 'rel', style: { display: 'flex', flexDirection: 'column', gap: 16 } }, Bar('standard'), Bar('airy')))),
+        Section('Seitenkopf, Tabs, KPI', null,
+          h(P.PageHeader, { eyebrow: 'Alpine Paper / Positionen 2027', title: 'Jede Position. Aus Ihren Dokumenten', meta: 'Entwurf · Version 04 · 7 Positionen', status: '2 Positionen brauchen eine Rückfrage', action: h(P.Button, { variant: 'review' }, 'Rückfragen klären') }),
+          h(P.Tabs, { items: [{ label: 'GuV', count: 7, selected: true }, { label: 'Bilanz', count: 12 }, { label: 'Cashflow', count: 5 }] }),
+          h(P.KpiStrip, { bleed: false, base: { label: 'EBITDA Basis 2027', value: 6420 }, signal: { label: 'Forecast mit Signalen', value: 6616, delta: 196, unit: 'T€' } })),
+        Section('Tabelle', 'Positionen mit Verlauf (DotMatrix), Deltas und Status.', h(ForecastTable)),
+        Section('Projekteübersicht', 'Weiterarbeiten-Kacheln, Status-Tabs und eine Tabelle mit Suche im Kopf. Die Projektmarke: feste Form je Projekt, das EBITDA-Ergebnis füllt sie.',
+          h(P.PageHeader, { eyebrow: 'Alpine Paper / Projekte', title: 'Ihre Projekte', meta: '8 aktive Projekte · 2 mit offenen Rückfragen · 1 Import läuft', action: h(P.Button, { variant: 'paper', icon: 'plus' }, 'Neues Projekt') }),
+          h(P.ProjectTiles, null,
+            h(P.ProjectTile, { highlight: true, opened: 'Vor 20 Min.', title: 'Forecast 2027', note: 'Zuletzt bei Materialaufwand', status: 'review', statusText: '2 Rückfragen', value: 6616, unit: 'T€', mark: { id: 'Forecast 2027', value: 6616 } }),
+            h(P.ProjectTile, { opened: 'Vor 2 Std.', title: 'Szenario Strompreis +20 %', note: 'Import von 1 Dokument', status: 'running', statusText: 'Extraktion läuft', value: '56 %', unit: 'extrahiert', mark: { id: 'Szenario Strompreis +20 %', value: -340 } }),
+            h(P.ProjectTile, { opened: 'Gestern', title: 'Mittelfristplanung 2027–2029', note: 'Zuletzt bei Umsatzerlöse', status: 'done', value: 7020, unit: 'T€', mark: { id: 'Mittelfristplanung 2027–2029', value: 7020 } })),
+          h(P.Tabs, { label: 'Projekte nach Status', items: [{ label: 'Alle aktiven', count: 8, selected: true }, { label: 'Rückfragen offen', count: 2 }, { label: 'Import läuft', count: 1 }, { label: 'Bereit', count: 5 }] }),
+          h(ProjectsTable, { theme: theme })),
+        Section('Kleinteile', null,
+          h('div', { className: 'row', style: { alignItems: 'center' } },
+            h(P.StatusTag, { status: 'review' }), h(P.StatusTag, { status: 'done' }), h(P.StatusTag, { status: 'running' }, 'Extraktion läuft'),
+            h(P.Button, { variant: 'review' }, 'Rückfragen klären'), h(P.Button, { variant: 'paper', icon: 'plus' }, 'Neues Projekt'),
+            h(P.IconButton, { icon: 'search', label: 'Suchen', surface: 'paper' }),
+            h(P.DotMatrix, { values: [38900, 40200, 42800, 43440], label: 'Verlauf' }),
+            h(P.ProjectMark, { id: 'Budget 2027', value: 6420 }), h(P.ProjectMark, { id: 'Szenario Strompreis +20 %', value: -340 }),
+            h(P.Delta, { value: 640 }), h(P.Delta, { value: -164 }), h(P.Delta, { value: 0 }))),
+        Section('Assistent', 'Offen (standard, airy) und eingerollt: die Leiste ist der Schalter, das Blatt rollt über den Inhalt.',
+          h('div', { className: 'stage' }, h('div', { className: 'stage__band', style: { top: '30%' } }), h('div', { className: 'stage__glow' }),
+            h('div', { className: 'rel row' }, Assistant('standard', 'ref-a1-' + theme), Assistant('airy', 'ref-a2-' + theme), h(Rolled, { theme: theme })))),
+        Section('Anmeldung', 'Die einzige Glasfläche in der Bildmitte: über der verkleinerten, unscharfen App und dem Schleier.', h(SignIn))));
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+})();
+</script>
+</body>
+</html>

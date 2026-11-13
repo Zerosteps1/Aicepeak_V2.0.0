@@ -59,16 +59,16 @@ on:
         type: string
         default: ''
       issue:
-        description: Work-order issue number of a maintainer's /review or /accept on it; 0 for PR runs
+        description: Work-order issue number of a maintainer's /review or /accept or /accept-force on it; 0 for PR runs
         type: string
         default: '0'
       issue_command:
         description: The command on the work-order issue
         type: choice
-        options: [none, review, accept]
+        options: [none, review, accept, accept-force]
         default: none
       comment:
-        description: Comment ID of the maintainer's /review or /accept on the work-order issue
+        description: Comment ID of the maintainer's /review or /accept or /accept-force on the work-order issue
         type: string
         default: '0'
 
@@ -415,3 +415,22 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue }}
           COMMENT_ID: ${{ inputs.comment }}
         run: python3 tools/factory/issue_review.py accept --issue "$ISSUE_NUMBER" --comment-id "$COMMENT_ID"
+  
+  issue-accept-force:
+    name: Issue accept-force
+    if: ${{ inputs.issue != '0' && inputs.issue_command == 'accept-force' && inputs.pr == '0' && !inputs.wif_smoke && github.repository == 'Zerosteps1/Aicepeak_V2.0.0' }}
+    runs-on: ubuntu-24.04
+    environment: factory-control
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - env:
+          FACTORY_PUBLISHER_APP_PRIVATE_KEY: ${{ secrets.FACTORY_PUBLISHER_APP_PRIVATE_KEY }}
+          ISSUE_NUMBER: ${{ inputs.issue }}
+          COMMENT_ID: ${{ inputs.comment }}
+        run: python3 tools/factory/issue_review.py accept-force --issue "$ISSUE_NUMBER" --comment-id "$COMMENT_ID"

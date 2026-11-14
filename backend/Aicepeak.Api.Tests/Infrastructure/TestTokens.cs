@@ -23,8 +23,14 @@ public static class TestTokens {
 
     public static readonly Guid PersonalAccountsTenant = new("9188040d-6c67-4c5b-b112-36a304b66dad");
 
+    /// <summary>A work tenant that is not allowed; <see cref="OtherTenantKey"/> is bound to its issuer.</summary>
+    public static readonly Guid OtherTenant = new("5b0f7c3e-2d4a-4e61-9f8b-7c6d5e4f3a2b");
+
     /// <summary>The key whose public part <see cref="StubOidcHandler"/> serves.</summary>
     public static RsaSecurityKey SigningKey { get; } = CreateKey(KeyId);
+
+    /// <summary>A key that <see cref="StubOidcHandler"/> serves bound to <see cref="OtherTenant"/>'s issuer only.</summary>
+    public static RsaSecurityKey OtherTenantKey { get; } = CreateKey("other-tenant-key");
 
     public static RsaSecurityKey CreateKey(string keyId) => new(RSA.Create(2048)) { KeyId = keyId };
 

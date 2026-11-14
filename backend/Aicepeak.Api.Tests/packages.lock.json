@@ -621,6 +621,7 @@
           "DotNetEnv": "[3.2.0, )",
           "Microsoft.AspNetCore.Authentication.JwtBearer": "[10.0.15, )",
           "Microsoft.AspNetCore.OpenApi": "[10.0.15, )",
+          "Microsoft.IdentityModel.Validators": "[8.19.2, )",
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.3, )"
         }
       },
@@ -694,6 +695,18 @@
         "contentHash": "0vztB/x4zuR/KT82cgTiiw9DqigfT1FjBgq9FjEFvJUgeacjTG4e7hWD2PCRXzL2kWWl/vBAwtXddIRV3AIU6Q==",
         "dependencies": {
           "Microsoft.Extensions.Primitives": "10.0.15"
+        }
+      },
+      "Microsoft.IdentityModel.Validators": {
+        "type": "CentralTransitive",
+        "requested": "[8.19.2, )",
+        "resolved": "8.19.2",
+        "contentHash": "QkQWzd4McF5QZKuHB1r6tzP+Fh3BOPPDvMDl2BfpmoVstMQZwwJi72xkj005nRfXgVrQj80SeHwI8yrIj4Rkpw==",
+        "dependencies": {
+          "Microsoft.IdentityModel.Protocols": "8.19.2",
+          "Microsoft.IdentityModel.Protocols.OpenIdConnect": "8.19.2",
+          "Microsoft.IdentityModel.Tokens": "8.19.2",
+          "System.IdentityModel.Tokens.Jwt": "8.19.2"
         }
       },
       "Npgsql.EntityFrameworkCore.PostgreSQL": {

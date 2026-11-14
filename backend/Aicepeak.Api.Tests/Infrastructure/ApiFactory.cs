@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Aicepeak.Api.Tests.Infrastructure;
 
@@ -26,6 +27,9 @@ public sealed class ApiFactory(
     /// </summary>
     public ConcurrentQueue<Exception> AuthenticationFailures { get; } = new();
 
+    /// <summary>Everything the API logged.</summary>
+    public CapturingLoggerProvider Logs { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder) {
         builder.UseEnvironment(environment);
 
@@ -34,6 +38,7 @@ public sealed class ApiFactory(
         }
 
         builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(settings));
+        builder.ConfigureLogging(logging => logging.AddProvider(Logs));
 
         builder.ConfigureTestServices(services => {
             // Test-only endpoints, e.g. ThrowingTestController.

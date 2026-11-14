@@ -81,6 +81,8 @@ public sealed class EntraTokenValidationTests {
     [InlineData("ver-1.0", Rejections.NotV2)]
     [InlineData("no-ver", Rejections.NotV2)]
     [InlineData("azp-not-allowed", Rejections.ClientNotAllowed)]
+    [InlineData("personal-guest-live", Rejections.PersonalAccountGuest)]
+    [InlineData("personal-guest-sts", Rejections.PersonalAccountGuest)]
     public async Task AC10_TokenNotIssuedForThisApi_Returns401(string kind, string rejection) {
         var token = kind switch {
             "personal-account" => TestTokens.User(TestTokens.PersonalAccountsTenant),
@@ -93,6 +95,9 @@ public sealed class EntraTokenValidationTests {
             "ver-1.0" => TestTokens.User().With("ver", "1.0"),
             "no-ver" => TestTokens.User().Without("ver"),
             "azp-not-allowed" => TestTokens.User().With("azp", Guid.NewGuid().ToString()),
+            // A personal Microsoft account invited as a guest: tid is the work tenant, idp names the Microsoft account.
+            "personal-guest-live" => TestTokens.User().With("idp", "live.com"),
+            "personal-guest-sts" => TestTokens.User().With("idp", $"https://sts.windows.net/{TestTokens.PersonalAccountsTenant}/"),
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
 
@@ -134,6 +139,51 @@ public sealed class EntraTokenValidationTests {
     public async Task AC18_LifetimeInsideFiveMinuteSkew_PassesEveryTokenCheck(string kind) {
         // Rejected only at the tenant allowlist, because the database is unreachable (LoginDatabaseTests: 200).
         await AssertRejectedAsync(LifetimeToken(kind).Build(), Rejections.AllowlistUnavailable);
+    }
+
+    [Fact]
+    public async Task AC10_GuestFromAnotherWorkTenant_PassesEveryTokenCheck() {
+        var token = TestTokens.User().With("idp", $"https://sts.windows.net/{TestTokens.OtherTenant}/");
+
+        // Rejected only at the tenant allowlist, because the database is unreachable.
+        await AssertRejectedAsync(token.Build(), Rejections.AllowlistUnavailable);
+    }
+
+    [Fact]
+    public async Task AC07_TokenSignedWithAKeyBoundToAnotherTenant_Returns401() {
+        // A valid token of the allowed tenant, but signed with a key Entra publishes for another tenant's issuer only.
+        var token = TestTokens.User().SignedWith(TestTokens.OtherTenantKey);
+
+        await AssertRejectedAsync(token.Build(), nameof(SecurityTokenInvalidIssuerException));
+    }
+
+    [Fact]
+    public async Task AC07_TokenOfTheKeysOwnTenant_PassesTheSigningKeyIssuerCheck() {
+        // The same key is fine for its own tenant: rejected later, by the allowlist (database unreachable).
+        var token = TestTokens.User(TestTokens.OtherTenant).SignedWith(TestTokens.OtherTenantKey);
+
+        await AssertRejectedAsync(token.Build(), Rejections.AllowlistUnavailable);
+    }
+
+    [Theory]
+    [InlineData("wrong-aud", nameof(SecurityTokenInvalidAudienceException))]
+    [InlineData("azp-not-allowed", Rejections.ClientNotAllowed)]
+    public async Task RejectedToken_IsLoggedOnceWithItsReason_WithoutTheToken(string kind, string reason) {
+        await using var factory = CreateFactory();
+        var token = (kind == "wrong-aud"
+            ? TestTokens.User().With("aud", Guid.NewGuid().ToString())
+            : TestTokens.User().With("azp", Guid.NewGuid().ToString())).Build();
+
+        var response = await factory.CreateClient().SendAsync(HttpMethod.Get, ProtectedPath, token);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var entry = Assert.Single(factory.Logs.Entries, entry => entry.Category == "Aicepeak.Api.Auth");
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, entry.Level);
+        Assert.Contains(reason, entry.Message);
+        Assert.Contains(ProtectedPath, entry.Message);
+        Assert.DoesNotContain(factory.Logs.Entries, logged => logged.Message.Contains(token, StringComparison.Ordinal)
+            || logged.Message.Contains(token.Split('.')[1], StringComparison.Ordinal)
+            || logged.Message.Contains("Ada Lovelace", StringComparison.Ordinal));
     }
 
     [Fact]

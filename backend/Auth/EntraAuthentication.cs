@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.IdentityModel.Validators;
 
 namespace Aicepeak.Api.Auth;
 
@@ -14,6 +15,9 @@ namespace Aicepeak.Api.Auth;
 /// </summary>
 public static class EntraAuthentication {
     public const string MissingHeaderMessage = "Authentication header missing";
+
+    /// <summary>Category of the rejection log; outside <c>Microsoft.AspNetCore</c>, whose Information logs are filtered out.</summary>
+    public const string LogCategory = "Aicepeak.Api.Auth";
 
     private const string ScopeClaim = "scp";
 
@@ -56,7 +60,10 @@ public static class EntraAuthentication {
             RequireExpirationTime = true,
             ClockSkew = TimeSpan.FromMinutes(5),
         };
+        // The organizations keys serve every tenant; a key that Entra binds to an issuer must match the token's tid.
+        options.TokenValidationParameters.EnableAadSigningKeyIssuerValidation();
         options.Events = new JwtBearerEvents {
+            OnAuthenticationFailed = LogFailedValidation,
             OnTokenValidated = context => ValidateTokenAsync(context, entra),
             OnChallenge = ChallengeAsync,
         };
@@ -76,26 +83,48 @@ public static class EntraAuthentication {
         };
     }
 
+    /// <summary>Signature, lifetime, issuer or audience failed: logs the kind of failure, never the token.</summary>
+    private static Task LogFailedValidation(AuthenticationFailedContext context) {
+        Logger(context.HttpContext).LogWarning(
+            "Bearer token rejected on {Path}: {Failure}.", context.Request.Path, context.Exception.GetType().Name);
+        return Task.CompletedTask;
+    }
+
     /// <summary>Runs after signature, audience, issuer and lifetime passed.</summary>
     private static async Task ValidateTokenAsync(TokenValidatedContext context, EntraOptions entra) {
         var failure = CheckClaims(context.Principal!, entra, out var tid);
         if (failure is not null) {
-            context.Fail(failure);
+            Reject(context, failure);
             return;
         }
 
         try {
             var db = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
             if (!await db.AllowedTenants.AnyAsync(tenant => tenant.Tid == tid, context.HttpContext.RequestAborted)) {
-                context.Fail("The tenant is not allowed.");
+                Reject(context, "The tenant is not allowed.");
             }
         } catch (Exception exception) {
-            context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
-                .CreateLogger(typeof(EntraAuthentication))
-                .LogWarning(exception, "The tenant allowlist could not be read.");
-            context.Fail("The tenant allowlist could not be checked.");
+            Reject(context, "The tenant allowlist could not be checked.", exception);
         }
     }
+
+    /// <summary>
+    /// Fails a token that passed signature, lifetime, issuer and audience, and logs why with its (signed) tid and azp,
+    /// never the token or the user's name.
+    /// </summary>
+    private static void Reject(TokenValidatedContext context, string reason, Exception? exception = null) {
+        Logger(context.HttpContext).LogWarning(
+            exception,
+            "Bearer token rejected on {Path}: {Reason} (tid {Tid}, azp {Azp}).",
+            context.Request.Path,
+            reason,
+            context.Principal?.FindFirstValue("tid"),
+            context.Principal?.FindFirstValue("azp"));
+        context.Fail(reason);
+    }
+
+    private static ILogger Logger(HttpContext context) =>
+        context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger(LogCategory);
 
     private static string? CheckClaims(ClaimsPrincipal principal, EntraOptions entra, out Guid tid) {
         tid = Guid.Empty;
@@ -118,6 +147,11 @@ public static class EntraAuthentication {
 
         if (tid == PersonalAccountsTenant) {
             return "Personal Microsoft accounts are not allowed.";
+        }
+
+        // A personal account invited as a guest signs in through a work tenant; idp still names the Microsoft account.
+        if (SingleValue(principal, "idp") is { } idp && IsPersonalAccountProvider(idp)) {
+            return "Personal Microsoft accounts are not allowed as guests.";
         }
 
         var azp = SingleValue(principal, "azp");
@@ -144,6 +178,11 @@ public static class EntraAuthentication {
     }
 
     private static bool TryParseGuid(string? value, out Guid guid) => Guid.TryParseExact(value, "D", out guid);
+
+    /// <summary><c>live.com</c> or an STS URI of the personal accounts tenant (Entra access token claims reference).</summary>
+    private static bool IsPersonalAccountProvider(string idp) =>
+        string.Equals(idp, "live.com", StringComparison.OrdinalIgnoreCase)
+        || idp.Contains(PersonalAccountsTenant.ToString(), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Without an Authorization header: 401 with a short text. Otherwise the default bearer challenge.</summary>
     private static Task ChallengeAsync(JwtBearerChallengeContext context) {

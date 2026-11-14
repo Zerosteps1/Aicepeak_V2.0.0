@@ -7,6 +7,7 @@ public static class Rejections {
     public const string NoTidOrOid = "The token has no valid tid or oid.";
     public const string NoNbf = "The token has no nbf.";
     public const string PersonalAccount = "Personal Microsoft accounts are not allowed.";
+    public const string PersonalAccountGuest = "Personal Microsoft accounts are not allowed as guests.";
     public const string ClientNotAllowed = "The token was not issued to an allowed client.";
     public const string MissingScope = "The user token lacks the required scope.";
     public const string NotAnAppToken = "The app token lacks the required role or idtyp=app.";

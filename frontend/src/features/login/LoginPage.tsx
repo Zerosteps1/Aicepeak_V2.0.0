@@ -35,9 +35,9 @@ export function LoginPage({ background }: LoginPageProps) {
 
   return (
     <SignInTransition phase={phase} background={background} onDone={handleDone}>
-      <form className="pg-signin" role="dialog" aria-modal="true" aria-labelledby={titleId} onSubmit={handleSubmit}>
+      <form className={`pg-signin ${styles.card}`} role="dialog" aria-modal="true" aria-labelledby={titleId} onSubmit={handleSubmit}>
         <img className="pg-signin__logo" src={logoUrl} alt="Aicepeak" />
-        <h1 id={titleId} className="pg-signin__title sign-in-title">
+        <h1 id={titleId} className={`pg-signin__title sign-in-title ${styles.title}`}>
           Anmelden<span className="pg-stop">.</span>
         </h1>
         <button type="submit" className="pg-signin__btn" aria-busy={busy || undefined}>

@@ -7,8 +7,9 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
   position: relative;
+  // Exactly the visible viewport (dvh follows mobile browser bars); no minimum, the card layer scrolls instead.
   height: 100vh;
-  min-height: 760px;
+  height: 100dvh;
   overflow: hidden;
   background: var(--paper);
 }
@@ -39,14 +40,19 @@
   position: absolute;
   inset: 0;
   padding: 24px 16px;
+  // Centred while it fits; when the viewport is lower than the card, the card starts at the top and this layer
+  // scrolls (auto margins, unlike align-items: center, never push the card out of reach).
   display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow-y: auto;
   transition:
     opacity 520ms ease,
     transform 700ms var(--ease-out),
     filter 520ms ease,
     visibility 0s linear 0ms;
+}
+
+.card > * {
+  margin: auto;
 }
 
 // The card fades and grows away, then leaves the accessibility tree after 700 ms.

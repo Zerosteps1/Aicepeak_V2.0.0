@@ -28,7 +28,7 @@ import engine
 import issues
 import local_review
 import merge_safety
-from contracts import REPOSITORY, Blocked, digest, handoff, maintainer, require, safe_path, validate
+from contracts import REPOSITORY, Blocked, changed_text, digest, handoff, maintainer, require, safe_path, utf8, validate
 from github_api import GitHub, safe_route
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +41,10 @@ def human_env():
             'GH_PROMPT_DISABLED': '1', 'GH_NO_UPDATE_NOTIFIER': '1', 'PYTHONDONTWRITEBYTECODE': '1'}
 
 
+class NotFound(Blocked):
+    """gh got HTTP 404: callers that look up a number the maintainer typed can say what is missing."""
+
+
 class HumanGitHub(GitHub):
     """Reuse bounded pagination/text decoding, with human gh auth instead of raw tokens."""
     def __init__(self):
@@ -49,6 +53,8 @@ class HumanGitHub(GitHub):
     def command(self, arguments, data=None):
         result = subprocess.run(['gh', *arguments], input=data, cwd=ROOT, env=human_env(),
                                 capture_output=True, text=True, timeout=60)
+        if result.returncode and '(HTTP 404)' in result.stderr:
+            raise NotFound('GitHub CLI failed; check your own gh login and repository access')
         require(result.returncode == 0, 'GitHub CLI failed; check your own gh login and repository access')
         require(len(result.stdout.encode()) <= 8_000_000, 'GitHub response limit')
         return result.stdout.strip()
@@ -201,8 +207,14 @@ def order_source(config, policy, task, text):
             'url': f"https://github.com/{config['repository']}/issues/{number}"}
 
 
+def diff_size(names, config):
+    limit = config['limits']['max_changed_files']
+    require(names, 'empty diff: no file changed')
+    require(len(names) <= limit, f'oversized diff: {len(names)} changed files, at most {limit} (limits.max_changed_files)')
+
+
 def in_scope(names, spec, config):
-    require(0 < len(names) <= config['limits']['max_changed_files'], 'empty or oversized diff')
+    diff_size(names, config)
     for name in names:
         safe_path(name)
         require(any(name == p or (p.endswith('/') and name.startswith(p)) for p in spec['allowed_paths']),
@@ -214,9 +226,7 @@ def blob(root, sha, path, limit):
     info = git(root, 'ls-tree', sha, '--', path).decode().split()
     require(len(info) >= 3 and info[0] in ('100644', '100755') and info[1] == 'blob', 'unsupported source: ' + path)
     require(int(git(root, 'cat-file', '-s', info[2])) <= limit, 'source exceeds review budget: ' + path)
-    raw = git(root, 'cat-file', 'blob', info[2])
-    require(b'\0' not in raw, 'binary source cannot be reviewed: ' + path)
-    return raw.decode('utf-8')
+    return utf8(git(root, 'cat-file', 'blob', info[2]), 'binary or non-UTF-8 source cannot be reviewed: ' + path)
 
 
 def feature_branch(candidate, config):
@@ -258,7 +268,7 @@ def candidate_state(candidate, config, policy, task, context, base, base_sha, gh
         for label, revision, omitted in (('base', base_sha, 'A'), ('head', sha, 'D')):
             if status != omitted:
                 sources.append({'id': label + ':' + name, 'path': name, 'sha': revision,
-                                'text': blob(candidate, revision, name, limit)})
+                                'text': changed_text(lambda: blob(candidate, revision, name, limit))})
     for name in sorted(set(context + ([config['northstar_path']] if config['northstar_path'] else []))):
         safe_path(name)
         # Policy text comes from the trusted control checkout, never from the candidate's object store.
@@ -355,7 +365,7 @@ def pr_state(gh, pr, config, policy, base=None):
     if mode == 'production':
         # Production PRs carry no handoff and no work-order scope; their own check classifies them.
         transfer = None
-        require(0 < len(names) <= config['limits']['max_changed_files'], 'empty or oversized diff')
+        diff_size(names, config)
         for change in changes:
             safe_path(change['filename'])
             if change.get('previous_filename'):

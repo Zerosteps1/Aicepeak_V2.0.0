@@ -17,6 +17,18 @@ public static class TestSettings {
         ["DB_PWD"] = password,
     };
 
+    /// <summary>
+    /// The database settings plus every <c>ENTRA_*</c> key, always set, for <see cref="TestTokens"/> and
+    /// <see cref="StubOidcHandler"/>. An empty string means "missing".
+    /// </summary>
+    public static Dictionary<string, string?> WithEntra(IReadOnlyDictionary<string, string?> database) => new(database) {
+        ["ENTRA_AUDIENCE"] = TestTokens.Audience,
+        ["ENTRA_CLIENT_IDS"] = $"{TestTokens.OtherClientId}, {TestTokens.ClientId}",
+        ["ENTRA_SCOPE"] = TestTokens.Scope,
+        ["ENTRA_APP_ROLE"] = TestTokens.AppRole,
+        ["ENTRA_METADATA_ADDRESS"] = StubOidcHandler.MetadataAddress,
+    };
+
     /// <summary>Settings pointing at a local port nobody listens on, so connecting fails fast.</summary>
     public static Dictionary<string, string?> UnreachableDatabase(string password = "postgres") =>
         Database($"Host=127.0.0.1;Port={GetClosedPort()};Database=aicepeak;Timeout=3", "postgres", password);

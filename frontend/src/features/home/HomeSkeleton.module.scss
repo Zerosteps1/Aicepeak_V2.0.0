@@ -1,0 +1,21 @@
+.block {
+  background: var(--paper-sunken);
+}
+
+// The size of the page title.
+.title {
+  width: 220px;
+  height: 42px;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.line {
+  height: 11px;
+}

@@ -1,0 +1,43 @@
+// The sign-in animation lives only in this module and its component (AC-23).
+// This version has no transitions yet: zoom and blur are custom properties, so the animation is a change here only.
+.root {
+  --app-zoom: 0.95;
+  --app-blur: 16px;
+
+  position: relative;
+  height: 100vh;
+  min-height: 760px;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.background {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 40%;
+  transform: scale(var(--app-zoom));
+  filter: blur(var(--app-blur)) saturate(110%);
+}
+
+// Signed in: no transform or filter, otherwise the glass inside cannot blur what is behind it.
+.root[data-phase='in'] .background {
+  transform: none;
+  filter: none;
+}
+
+.root[data-phase='in'] .veil {
+  visibility: hidden;
+}
+
+.card {
+  position: absolute;
+  inset: 0;
+  padding: 24px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.root[data-phase='in'] .card {
+  visibility: hidden;
+}

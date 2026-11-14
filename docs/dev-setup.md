@@ -220,6 +220,8 @@ cp backend/.env.example backend/.env
 
 `.env` is git-ignored and never published; other environments set the variables directly. If a setting is missing or invalid the backend still starts, and its health endpoint reports the problem.
 
+Sign-in additionally needs the `ENTRA_*` settings in `backend/.env` and the `VITE_ENTRA_*` settings in `frontend/.env` (`cp frontend/.env.example frontend/.env`); see [Microsoft Entra sign-in](#microsoft-entra-sign-in). Without them the backend still starts, but every protected API request answers `401`.
+
 **Database.** Start Docker and the Postgres container and create or update the database schema with the EF Core migrations:
 
 ```sh
@@ -239,7 +241,9 @@ cd backend && dotnet watch     # API on http://localhost:5043 with C# hot reload
 cd frontend && npm ci && npm run dev   # app with hot reload on http://localhost:5173
 ```
 
-Open http://localhost:5173. Vite proxies `/api/*` to the backend. The page shows the HTTP status of `GET /api/v1/health/alive`: `204` when the database is reachable, `503` when it is not or the configuration is missing or invalid, and `unreachable (502)` when the backend is not running (the Vite proxy then answers 502 Bad Gateway). In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
+Open http://localhost:5173. Vite proxies `/api/*` to the backend. Without a session the app redirects to `/login`; after signing in with Microsoft it shows your user record (tenant ID, object ID and name) as JSON. The sign-out icon at the right of the menu bar returns to `/login`.
+
+The backend health endpoint answers without sign-in: `curl -i http://localhost:5043/api/v1/health/alive` returns `204` when the database is reachable and `503` when it is not or the configuration is missing or invalid. In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
 
 **Checks:**
 
@@ -256,7 +260,49 @@ npm --prefix frontend run build
 
 Without Docker, skip the database tests with `dotnet test backend/Aicepeak.slnx --filter "Category!=Database"`. `backend/` holds both the API project and the solution, so `dotnet build` and `dotnet test` need the solution file named; inside `backend/`, `dotnet run`, `dotnet watch` and `dotnet ef` use the API project.
 
-**Production build:** `dotnet publish backend/Aicepeak.Api.csproj -c Release -o <dir>` also runs `npm ci` and `npm run build` in `frontend/` and copies `frontend/dist` into `<dir>/wwwroot`; the backend then serves the app at `/`. Add `-p:SkipFrontendBuild=true` to skip the frontend.
+**Production build:** `dotnet publish backend/Aicepeak.Api.csproj -c Release -o <dir>` also runs `npm ci` and `npm run build` in `frontend/` and copies `frontend/dist` into `<dir>/wwwroot`; the backend then serves the app at `/`. Add `-p:SkipFrontendBuild=true` to skip the frontend. Vite writes the `VITE_ENTRA_*` values into the build, so set them (environment or `frontend/.env`) before publishing.
+
+## Microsoft Entra sign-in
+
+Users sign in with Microsoft Entra ID (AIC-12). The browser signs in with MSAL React (authorization code flow with PKCE, full-page redirect) and asks only for `openid profile`; MSAL adds `offline_access` itself. It then gets an Entra v2 access token for the API and calls `PUT /api/v1/login`, which creates the user record on the first sign-in, keyed by tenant ID (`tid`) and object ID (`oid`). The backend validates every token itself: signature, `aud`, `iss` (`https://login.microsoftonline.com/{tid}/v2.0`), `ver` 2.0, `azp`, lifetime with 5 minutes of clock skew, the required scope for users or app role plus `idtyp=app` for apps, and the tenant allowlist. Personal Microsoft accounts are always rejected. Sign-out clears only the app's local session; the browser's Microsoft session stays, so the next sign-in may not ask for a password.
+
+**App registration, once per environment.** In the [Microsoft Entra admin center](https://entra.microsoft.com), under **App registrations**, create one registration for the SPA and its API:
+
+1. **Supported account types:** accounts in any organizational directory (multitenant). Which tenants may use Aicepeak is decided by the allowlist below, not by the registration.
+2. **Authentication:** add the platform **Single-page application** with the redirect URIs `http://localhost:5173/login` and `https://<production host>/login`.
+3. **Manifest:** set `requestedAccessTokenVersion` (under `api`) to `2`. Without it Entra issues v1 tokens, and the backend rejects every sign-in.
+4. **Expose an API:** keep the Application ID URI `api://<client-id>` and add the scope `access_as_user` (who can consent: admins and users).
+5. **API permissions:** add **My APIs** › this registration › `access_as_user`.
+6. **App roles** (only for services that call the API without a user): add a role with allowed member type **Applications**, e.g. `Api.Access`.
+7. **Token configuration:** add the optional claim `idtyp` to the access token.
+8. **Consent:** an admin of every allowed tenant grants admin consent once: in the home tenant with **API permissions** › **Grant admin consent**, in other tenants by opening `https://login.microsoftonline.com/<tenant-id>/adminconsent?client_id=<client-id>`. Without consent the app cannot get the API token after sign-in, and the sign-in page shows an error.
+
+A separate registration for the API also works: then `ENTRA_AUDIENCE` is the API's client ID, `ENTRA_CLIENT_IDS` lists the SPA's client ID, and `VITE_ENTRA_API_SCOPE` names the API's scope.
+
+**Backend settings** (`backend/.env` in Development, environment variables elsewhere):
+
+| Setting | Value |
+| --- | --- |
+| `ENTRA_AUDIENCE` | The client ID (GUID) of the registration that exposes the API; v2 tokens carry it as `aud` |
+| `ENTRA_CLIENT_IDS` | Comma-separated client IDs allowed to call the API (`azp`): the SPA, plus any service apps |
+| `ENTRA_SCOPE` | The required delegated scope, `access_as_user` |
+| `ENTRA_APP_ROLE` | The app role required from service apps, e.g. `Api.Access` |
+| `ENTRA_METADATA_ADDRESS` | Optional; defaults to `https://login.microsoftonline.com/organizations/v2.0/.well-known/openid-configuration`. Must be `https` |
+
+**Frontend settings** (`frontend/.env`, from `frontend/.env.example`):
+
+| Setting | Value |
+| --- | --- |
+| `VITE_ENTRA_CLIENT_ID` | The SPA's client ID |
+| `VITE_ENTRA_API_SCOPE` | The full scope, `api://<client-id>/access_as_user`; a bare scope name would be read as a Microsoft Graph scope |
+
+**Tenant allowlist.** The table `allowed_tenants` (column `tid`) lists the tenant IDs whose users may sign in; the migration seeds `db760528-cb7c-455c-bd41-e50a38f6fd62`. Tokens from any other tenant get `401`. To allow another tenant in the local database:
+
+```sh
+docker exec -it aicepeak-pg psql -U postgres -d aicepeak -c "INSERT INTO allowed_tenants (tid) VALUES ('<tenant-id>');"
+```
+
+The backend tests never contact Microsoft: they sign tokens with a key generated at test time and serve the OIDC metadata from a local stub.
 
 ## Docker
 

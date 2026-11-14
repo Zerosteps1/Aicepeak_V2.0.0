@@ -92,6 +92,8 @@ Preconditions, checked before any model call:
 - Fewer than `limits.max_reviews_per_pr` review attempts were already claimed for the PR. Claims, dry-runs and failed attempts consume the limit. Reviews consume the maintainer's Codex seat window, which is shared with interactive use; there is no USD reservation.
 - Head, target branch and its tip, config tip, handoff and human feedback still match the snapshot, the check's `external_id` is the 7-field binding `repository:PR:head:policy:base_ref:run:attempt` (earlier 6-field receipts need a fresh run), and the complete prompt fits `limits.review_input_bytes`.
 
+The prompt holds the complete base and head text of every changed file. A changed file that is binary or not UTF-8 (an image, a font) is shown instead as `[binary or non-UTF-8 file, content not reviewed: <bytes> bytes, SHA-256 <hash>; …]`: the reviewer judges whether such a file belongs at that path, and its unread content is neither missing context nor a limitation. The advisory preflight of `factory submit` does the same. Policy, the north star and cited context stay text-only and block when they are not.
+
 Session design (`codex exec` from the pinned Codex CLI, today `codex-cli 0.164.0`; any other version stops the run):
 
 - Fresh temporary `CODEX_HOME` and `HOME` (with `TMPDIR` inside), deleted after the run: no personal configuration, instructions, memories or sessions. `--ignore-user-config`, `--ignore-rules`, `--strict-config` and `--ephemeral`; `cli_auth_credentials_store="ephemeral"` so the token is never saved as a login; `history.persistence="none"`; analytics, feedback and update checks off.

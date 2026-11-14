@@ -372,6 +372,29 @@ class MergeSafety(SessionRepos, unittest.TestCase):
                 with self.subTest(unsafe=unsafe), self.assertRaisesRegex(Blocked, 'unsafe API path'):
                     session.HumanGitHub().request('GET', unsafe)
 
+    def test_human_transport_tells_a_missing_resource_from_any_other_gh_failure(self):
+        def gh(stderr):
+            return patch.object(session.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                ['gh'], 1, stdout='{"message":"Not Found"}', stderr=stderr))
+        with gh('gh: Not Found (HTTP 404)\n'), self.assertRaises(session.NotFound):
+            session.HumanGitHub().request('GET', f'/repos/{REPOSITORY}/pulls/62')
+        for stderr in ('gh: Bad credentials (HTTP 401)\n', 'To get started with GitHub CLI, please run:  gh auth login\n'):
+            with self.subTest(stderr=stderr), gh(stderr), self.assertRaises(Blocked) as raised:
+                session.HumanGitHub().request('GET', f'/repos/{REPOSITORY}/pulls/62')
+            self.assertNotIsInstance(raised.exception, session.NotFound)
+            self.assertIn('check your own gh login', str(raised.exception))
+
+    def test_the_diff_size_message_names_the_count_and_the_limit(self):
+        limit = self.config['limits']['max_changed_files']
+        spec = {'allowed_paths': ['docs/']}
+        with self.assertRaisesRegex(Blocked, '^empty diff: no file changed$'):
+            session.in_scope([], spec, self.config)
+        names = [f'docs/{n}.md' for n in range(limit + 1)]
+        with self.assertRaisesRegex(Blocked, rf'^oversized diff: {limit + 1} changed files, at most {limit} '
+                                             r'\(limits\.max_changed_files\)$'):
+            session.in_scope(names, spec, self.config)
+        session.in_scope(names[:limit], spec, self.config)
+
 
     def test_production_and_ungated_targets_are_never_merged_here(self):
         self.fixture()

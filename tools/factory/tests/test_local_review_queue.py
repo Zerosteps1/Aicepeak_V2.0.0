@@ -338,7 +338,8 @@ class Coordination(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/factory.yml').read_text()
         self.assertIn("group: factory-${{ github.repository }}-${{ inputs.issue != '0' && format('issue-{0}', inputs.issue) "
                       "|| format('pr-{0}', fromJSON(inputs.pr)) }}", workflow)
-        self.assertIn('cancel-in-progress: false', workflow)
+        # Runs never cancel each other, so a claim and its finalization are not cut off; only a /bypass cancels.
+        self.assertIn("cancel-in-progress: ${{ inputs.bypass != '' }}", workflow)
         self.assertIn('name: Review coordination', workflow)
         self.assertIn('local_review_queue.py', job(workflow, 'review-coordinate'))
         self.assertNotIn('CODEX_ACCESS_TOKEN', workflow)

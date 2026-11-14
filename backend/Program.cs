@@ -1,3 +1,4 @@
+using Aicepeak.Api.Auth;
 using Aicepeak.Api.Configuration;
 using Aicepeak.Api.Data;
 using Aicepeak.Api.Frontend;
@@ -9,12 +10,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddDotEnvInDevelopment(builder.Environment);
 
 builder.Services.AddDatabase(builder.Configuration);
+builder.Services.AddEntraAuthentication(builder.Configuration);
 builder.Services.AddHealth();
 builder.Services.AddProblemDetails();
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
-// Microsoft Entra ID (later): AddAuthentication().AddMicrosoftIdentityWebApi(...)
-// and AddAuthorization with an authenticated-user fallback policy.
 
 var app = builder.Build();
 
@@ -28,11 +28,13 @@ if (!app.Environment.IsDevelopment()) {
 // The built frontend (wwwroot, copied on publish). Static files stay public.
 app.UseFrontendStaticFiles();
 app.UseRouting();
-// app.UseAuthentication(); // Microsoft Entra ID (later)
+app.UseAuthentication();
 app.UseAuthorization();
 
+// Health, the OpenAPI document (Development) and the frontend fallback are anonymous; API endpoints require a token.
 app.MapHealth();
-app.MapControllers();
+app.MapGroup("/api/v1").RequireAuthorization().MapLogin();
+app.MapControllers().RequireAuthorization();
 
 if (app.Environment.IsDevelopment()) {
     app.MapOpenApi();

@@ -26,9 +26,10 @@ on:
 # before acting, and the factory-promotion environment (publisher key only) admits only that branch.
 permissions: {}
 cache-mode: none
+# A /bypass check cancels a running one: its result for the bypassed head no longer matters.
 concurrency:
   group: factory-promotion-${{ github.repository }}-pr-${{ fromJSON(inputs.pr) }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ inputs.bypass != '' }}
 
 jobs:
   production:

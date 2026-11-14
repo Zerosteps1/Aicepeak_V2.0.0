@@ -1,0 +1,20 @@
+// Same metrics as the note below it; the colour marks the failed sign-in.
+.error {
+  margin: 0;
+  color: var(--primary-negative);
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+// Phones narrower than 360 px: the 48 px title and the button label would not fit beside the 36 px card padding.
+// From 360 px up the card is exactly as designed.
+@media (max-width: 359px) {
+  .card {
+    padding: 28px 16px;
+  }
+
+  .title {
+    font-size: 40px;
+  }
+}

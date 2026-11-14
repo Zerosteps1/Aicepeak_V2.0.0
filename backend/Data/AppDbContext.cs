@@ -6,6 +6,8 @@ namespace Aicepeak.Api.Data;
 public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options) {
     public DbSet<User> Users => Set<User>();
 
+    public DbSet<AllowedTenant> AllowedTenants => Set<AllowedTenant>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder) =>
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
 }

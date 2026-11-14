@@ -28,6 +28,13 @@ public sealed class PostgresFixture : IAsyncLifetime {
 
     public Task StopAsync() => _container.StopAsync();
 
+    /// <summary>A connection string with credentials for <paramref name="database"/> in this container.</summary>
+    public string ConnectionString(string database) => new NpgsqlConnectionStringBuilder(ConnectionStringWithoutCredentials) {
+        Database = database,
+        Username = Username,
+        Password = Password,
+    }.ConnectionString;
+
     public Dictionary<string, string?> Settings(string? database = null, string? password = null) {
         var builder = new NpgsqlConnectionStringBuilder(ConnectionStringWithoutCredentials);
         if (database is not null) {

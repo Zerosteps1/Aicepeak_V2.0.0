@@ -1,5 +1,12 @@
 @Aicepeak_Api_HostAddress = http://localhost:5043
+# An Entra v2 access token for the API, e.g. copied from the browser's network tab after signing in.
+@AccessToken =
 
 GET {{Aicepeak_Api_HostAddress}}/api/v1/health/alive
+
+###
+
+PUT {{Aicepeak_Api_HostAddress}}/api/v1/login
+Authorization: Bearer {{AccessToken}}
 
 ###

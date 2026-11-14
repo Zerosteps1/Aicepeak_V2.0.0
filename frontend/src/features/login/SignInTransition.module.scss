@@ -1,0 +1,77 @@
+// The sign-in animation lives only in this module and its component (AC-23).
+// Signing in, the app behind the card zooms in from --app-zoom and sharpens from --app-blur, the veil fades out and
+// the card fades and grows away (design/login/handoff.md). SignInTransition.tsx reads the durations from here.
+.root {
+  --app-zoom: 0.95;
+  --app-blur: 16px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  position: relative;
+  // Exactly the visible viewport (dvh follows mobile browser bars); no minimum, the card layer scrolls instead.
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.background {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 40%;
+  transform: scale(var(--app-zoom));
+  filter: blur(var(--app-blur)) saturate(110%);
+  transition:
+    transform 1200ms var(--ease-out),
+    filter 1200ms var(--ease-out);
+}
+
+// Signed in: no transform or filter, otherwise the glass inside cannot blur what is behind it.
+.root[data-phase='in'] .background {
+  transform: none;
+  filter: none;
+}
+
+// .pg-veil fades its opacity in 900 ms.
+.root[data-phase='in'] .veil {
+  opacity: 0;
+}
+
+.card {
+  position: absolute;
+  inset: 0;
+  padding: 24px 16px;
+  // Centred while it fits; when the viewport is lower than the card, the card starts at the top and this layer
+  // scrolls (auto margins, unlike align-items: center, never push the card out of reach).
+  display: flex;
+  overflow-y: auto;
+  transition:
+    opacity 520ms ease,
+    transform 700ms var(--ease-out),
+    filter 520ms ease,
+    visibility 0s linear 0ms;
+}
+
+.card > * {
+  margin: auto;
+}
+
+// The card fades and grows away, then leaves the accessibility tree after 700 ms.
+.root[data-phase='in'] .card {
+  opacity: 0;
+  transform: scale(1.08);
+  filter: blur(6px);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 520ms ease,
+    transform 700ms var(--ease-out),
+    filter 520ms ease,
+    visibility 0s linear 700ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root,
+  .root * {
+    transition: none !important;
+  }
+}

@@ -1,0 +1,200 @@
+/* Aicepeak Paper & Glass — design tokens
+   Derived from design/tokens.css (snapshot 13.11.2026): greys ordered on a scale, colours renamed; values unchanged.
+   Set data-theme="light" or "dark" on <html> (or any container). Light is the default when no data-theme is set.
+
+   Grey scale l0–l8, counted from the background side:
+     l0 = perfect white (light) / pitch black (dark), l1 = page background (paper), l2 = slight contrast …
+     l7 = text (ink), l8 = the opposite extreme. The semantic grey names below point to a step where the value
+     matches exactly; a few in-between greys keep their own value.
+
+   Colours: primary (blue), secondary (orange, alias primary-negative), warning (amber), positive (green).
+   Modifiers, the same for every colour:
+     (none)   the colour itself: fills, dots, borders
+     -ink     the text-safe version of the colour on paper
+     -dim     a quiet tint of the colour, as a background
+     on-x     text or marks on a fill of x;  on-x-muted  weaker text there,  on-x-dim  faint marks there */
+
+:root, [data-theme="light"] {
+  color-scheme: light;
+  /* Grey scale */
+  --l0: #ffffff;
+  --l1: #f3f2ee;
+  --l2: #e9e8e3;
+  --l3: #dad8d3;
+  --l4: #c9c7c1;
+  --l5: #adaaa3;
+  --l6: #5c5b57;
+  --l7: #161616;
+  --l8: #000000;
+  /* Greys by role */
+  --paper: var(--l1);
+  --paper-sunken: var(--l2);
+  --paper-column: #ecebe6;
+  --paper-raised: #fafaf8;
+  --line-soft: var(--l3);
+  --line: var(--l4);
+  --line-strong: var(--l5);
+  --line-over-primary: rgba(173,170,163,0.6);
+  --ink-subtle: #6a6965;
+  --ink-muted: var(--l6);
+  --ink: var(--l7);
+  --on-ink: var(--l1);
+  --on-ink-muted: #a7a5a0;
+  --active: var(--ink);
+  --on-active: var(--on-ink);
+  --on-active-muted: var(--on-ink-muted);
+  --button-neutral: var(--l4);
+  --button-neutral-hover: var(--l5);
+  /* Primary (blue) */
+  --primary: #4c9bf0;
+  --primary-ink: #1f6ac4;
+  --primary-dim: #e2ecf6;
+  --on-primary: #0f1b2a;
+  --on-primary-muted: rgba(15,27,42,0.72);
+  --on-primary-dim: rgba(15,27,42,0.16);
+  --on-primary-negative: #7a2412;
+  --glow: var(--primary);
+  /* Secondary (orange) */
+  --secondary: #a3452e;
+  --primary-negative: var(--secondary);
+  /* Warning (amber) */
+  --warning: #a9661c;
+  --warning-ink: #8a4f10;
+  --warning-dim: #f7eee2;
+  /* Positive (green) */
+  --positive: #2f6b42;
+  /* Glass */
+  --glass: rgba(250,250,247,0.6);
+  --glass-line: rgba(22,22,22,0.12);
+  --glass-divider: rgba(22,22,22,0.14);
+  --glass-control: rgba(255,255,255,0.55);
+  --glass-control-strong: rgba(255,255,255,0.85);
+  --glass-hover: rgba(255,255,255,0.75);
+  --glass-field: rgba(255,255,255,0.7);
+  --glass-airy: rgba(246,245,242,0.65);
+  --glass-airy-control: var(--l0);
+  --glass-airy-field: var(--l0);
+  --glass-card: rgba(238,236,232,0.74);
+  --glass-card-line: rgba(255,255,255,0.8);
+  --veil: rgba(243,242,238,0.35);
+  /* Shadow */
+  --shadow-glass: 0 16px 32px -24px rgba(22,22,22,0.28);
+  --shadow-card: inset 0 1px 0 rgba(255,255,255,0.95), 0 40px 80px -36px rgba(20,20,20,0.5);
+  /* Effects */
+  --glass-blur: blur(22px) saturate(140%);
+  --glass-airy-blur: blur(24px) saturate(170%) brightness(1.08);
+  --glass-card-blur: blur(28px) saturate(160%);
+  /* Type families */
+  --font-display: "Russo One", system-ui, sans-serif;
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-indent: 18px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 40px;
+  /* Radius */
+  --radius-paper: 0px;
+  --radius-control: 12px;
+  --radius-bubble: 14px;
+  --radius-glass: 20px;
+  --radius-card: 28px;
+  --radius-card-control: 16px;
+  /* Sizes */
+  --control-height: 40px;
+  --tab-height: 48px;
+  --row-height: 54px;
+  --bar-height: 64px;
+  --assistant-width: 380px;
+  --search-height: 72px;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* Grey scale */
+  --l0: #000000;
+  --l1: #151514;
+  --l2: #1e1e1c;
+  --l3: #2c2b29;
+  --l4: #3a3936;
+  --l5: #5c5b57;
+  --l6: #a3a19b;
+  --l7: #ecebe7;
+  --l8: #ffffff;
+  /* Greys by role */
+  --paper: var(--l1);
+  --paper-sunken: var(--l2);
+  --paper-column: #232321;
+  --paper-raised: #262624;
+  --line-soft: var(--l3);
+  --line: var(--l4);
+  --line-strong: var(--l5);
+  --line-over-primary: rgba(83,81,77,0.6);
+  --ink-subtle: #8e8c87;
+  --ink-muted: var(--l6);
+  --ink: var(--l7);
+  --on-ink: var(--l1);
+  --on-ink-muted: var(--l5);
+  --active: var(--l4);
+  --on-active: var(--l7);
+  --on-active-muted: #b5b3ad;
+  --button-neutral: var(--l4);
+  --button-neutral-hover: #45433f;
+  /* Primary (blue) */
+  --primary: #5aa6f5;
+  --primary-ink: #7db6f7;
+  --primary-dim: #1b2633;
+  --on-primary: #0f1b2a;
+  --on-primary-muted: rgba(15,27,42,0.72);
+  --on-primary-dim: rgba(15,27,42,0.16);
+  --on-primary-negative: #7a2412;
+  --glow: var(--primary);
+  /* Secondary (orange) */
+  --secondary: #e58a72;
+  --primary-negative: var(--secondary);
+  /* Warning (amber) */
+  --warning: #d19a4a;
+  --warning-ink: #e6b26b;
+  --warning-dim: #2a2117;
+  /* Positive (green) */
+  --positive: #6fbf8a;
+  /* Glass */
+  --glass: rgba(36,36,34,0.6);
+  --glass-line: rgba(255,255,255,0.12);
+  --glass-divider: rgba(255,255,255,0.14);
+  --glass-control: rgba(255,255,255,0.06);
+  --glass-control-strong: rgba(255,255,255,0.14);
+  --glass-hover: rgba(255,255,255,0.14);
+  --glass-field: rgba(255,255,255,0.08);
+  --glass-airy: var(--glass);
+  --glass-airy-control: var(--glass-control);
+  --glass-airy-field: var(--glass-field);
+  --glass-card: rgba(20,21,24,0.78);
+  --glass-card-line: rgba(255,255,255,0.12);
+  --veil: rgba(21,21,20,0.4);
+  /* Shadow */
+  --shadow-glass: 0 16px 32px -20px rgba(0,0,0,0.6);
+  --shadow-card: inset 0 1px 0 rgba(255,255,255,0.08), 0 40px 80px -36px rgba(0,0,0,0.9);
+}
+
+/* Airy glass in dark uses the standard blur. */
+[data-theme="dark"] { --glass-airy-blur: var(--glass-blur); }
+
+/* Text styles */
+.page-title { font-family: var(--font-display); font-size: 40px; line-height: 1.05; font-weight: 400; letter-spacing: -0.01em; }
+.panel-title { font-family: var(--font-display); font-size: 17px; line-height: 1.3; font-weight: 400; }
+.sign-in-title { font-family: var(--font-display); font-size: 48px; line-height: 1; font-weight: 400; letter-spacing: -0.01em; }
+.section-title { font-family: var(--font-sans); font-size: 17px; line-height: 1.3; font-weight: 600; }
+.kpi-value { font-family: var(--font-sans); font-size: 22px; line-height: 1; font-weight: 500; }
+.search-input { font-family: var(--font-sans); font-size: 20px; line-height: 1.3; font-weight: 600; }
+.tile-value { font-family: var(--font-sans); font-size: 17px; line-height: 1; font-weight: 500; }
+.body { font-family: var(--font-sans); font-size: 14px; line-height: 1.55; font-weight: 400; }
+.body-strong { font-family: var(--font-sans); font-size: 14px; line-height: 1.55; font-weight: 600; }
+.small { font-family: var(--font-sans); font-size: 13px; line-height: 1.45; font-weight: 400; }
+.label { font-family: var(--font-mono); font-size: 12px; line-height: 1.4; font-weight: 400; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; line-height: 1.4; font-weight: 400; letter-spacing: 0.06em; }
+.label-sm { font-family: var(--font-mono); font-size: 11px; line-height: 1.4; font-weight: 400; }

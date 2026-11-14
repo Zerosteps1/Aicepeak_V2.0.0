@@ -5,6 +5,7 @@ import difflib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import time
 import checkouts
 import common
 from common import Blocked, git, is_ancestor, out, require, say, warn
+import session
 import workorders
 
 WATCH_ALL_INTERVAL = 60
@@ -216,6 +218,28 @@ def submit(ctx, title=None, desc=None, finished=False):
 
 # --- watch, merge ------------------------------------------------------------------------------------
 
+def pull_number(ctx, number, command):
+    """`number` if it names a pull request. GitHub numbers issues and PRs in one sequence and a work order's branch
+    starts with its issue's number, so that number is easily given for its PR's; GitHub's 404 for it would otherwise
+    read as a broken gh login."""
+    repo = ctx.config['repository']
+    try:
+        item = ctx.gh.request('GET', f'/repos/{repo}/issues/{int(number)}')
+    except session.NotFound:
+        raise Blocked(f'there is no PR #{number}: GitHub has no issue or pull request with that number') from None
+    if item.get('pull_request'):
+        return number
+    closing = re.compile(rf'(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#{int(number)}\b')
+    found = [pull['number'] for pull in workorders.open_pulls(ctx.gh, ctx.config) if closing.search(pull.get('body') or '')]
+    if len(found) == 1:
+        then = f'its PR is #{found[0]}: `factory {command} {found[0]}`'
+    elif found:
+        then = 'the open PRs that close it are ' + ', '.join(f'#{n}' for n in found)
+    else:
+        then = 'no open PR closes it; check the PR number for the issue on GitHub'
+    raise Blocked(f'there is no PR #{number}: #{number} is an issue; {then}')
+
+
 def session_watch(policy, pr, *args):
     """Streamed rather than captured, so the maintainer follows a long review as it runs; a stale `/review` is
     reported in plain words instead of waited on."""
@@ -241,6 +265,7 @@ def session_watch(policy, pr, *args):
 def watch(ctx, pr=None, everything=False):
     common.keep_awake()  # the binding review runs on this device while it watches
     if not everything:
+        pull_number(ctx, pr, 'watch')
         with checkouts.policy_checkout(ctx.control, ctx.policy, ctx.config) as policy:
             return session_watch(policy, pr)
     say(f'Reviewing every PR labelled awaiting-senior-review every {WATCH_ALL_INTERVAL} s; Ctrl-C stops.')
@@ -261,6 +286,7 @@ def watch(ctx, pr=None, everything=False):
 
 def merge(ctx, pr, dry_run=False):
     """session.py merge takes the target from the PR (validation branches only; production PRs merge on GitHub)."""
+    pull_number(ctx, pr, 'merge')
     with checkouts.policy_checkout(ctx.control, ctx.policy, ctx.config) as policy:
         code, _, _ = checkouts.run_tool(policy, 'session.py', 'merge', '--pr', pr, *(['--dry-run'] if dry_run else []))
     if code == 0 and not dry_run:

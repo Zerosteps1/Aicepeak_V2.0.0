@@ -572,6 +572,48 @@ class CommandTests(Repos):
         self.assertIn('reviewer output', output.getvalue())
         self.assertEqual(self.awake.call_count, 2)  # the Mac stays awake while this device watches
 
+    def test_watch_and_merge_say_there_is_no_pr_for_an_issue_number_and_name_the_issues_pr(self):
+        class Hub:
+            def __init__(hub, pulls):
+                hub.pulls = pulls
+
+            def request(hub, method, path, data=None):
+                self.assertEqual((method, path.rsplit('/', 1)[0]), ('GET', f'/repos/{REPOSITORY}/issues'))
+                number = int(path.rsplit('/', 1)[1])
+                if number == 99:
+                    raise session.NotFound('GitHub CLI failed; check your own gh login and repository access')
+                return {'number': number, **({'pull_request': {'url': 'x'}} if number >= 70 else {})}
+
+            def pages(hub, path, field=None):
+                self.assertIn('/pulls?state=open', path)
+                return hub.pulls
+
+        def pull(number, body, author=user(self.config['maintainers'][0])):
+            return {'number': number, 'body': body, 'user': author, 'head': {'repo': {'full_name': REPOSITORY}}}
+        stranger = {'type': 'User', 'id': 1, 'login': 'stranger'}
+        others = [pull(73, 'Closes #620'), pull(74, 'Closes #62', stranger), pull(75, None)]
+        ctx = self.ctx()
+        with mock.patch.object(commands, 'session_watch', return_value=0) as watched, \
+                mock.patch.object(checkouts, 'run_tool', return_value=(0, '', '')) as merged, \
+                mock.patch.object(checkouts, 'policy_checkout', lambda *args: contextlib.nullcontext(self.tmp)):
+            for command, run in (('watch', commands.watch), ('merge', lambda ctx, number: commands.merge(ctx, number, True))):
+                for pulls, number, message in (
+                        ([pull(70, 'Work order: #62\n\nCloses #62')] + others, 62,
+                         rf'^there is no PR #62: #62 is an issue; its PR is #70: `factory {command} 70`$'),
+                        ([pull(70, 'fixes: #62'), pull(71, 'Resolves #62')] + others, 62,
+                         r'^there is no PR #62: #62 is an issue; the open PRs that close it are #70, #71$'),
+                        (others, 62, r'^there is no PR #62: #62 is an issue; no open PR closes it; check the PR number '
+                                     r'for the issue on GitHub$'),
+                        ([], 99, r'^there is no PR #99: GitHub has no issue or pull request with that number$')):
+                    ctx._gh = Hub(pulls)
+                    with self.subTest(command=command, pulls=[p['number'] for p in pulls], number=number), \
+                            self.assertRaisesRegex(Blocked, message):
+                        run(ctx, number)
+                ctx._gh = Hub([])
+                self.assertEqual(run(ctx, 70), 0)
+        self.assertEqual(watched.call_args.args[1:], (70,))
+        self.assertEqual(merged.call_args.args[1:], ('session.py', 'merge', '--pr', 70, '--dry-run'))
+
 
 class RunTests(unittest.TestCase):
     def setUp(self):

@@ -39,6 +39,37 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+class NotText(Blocked):
+    """A source with NUL bytes or invalid UTF-8; `placeholder` names it where its content may stay unreviewed."""
+    def __init__(self, message, raw):
+        super().__init__(message)
+        self.placeholder = (f"[binary or non-UTF-8 file, content not reviewed: {len(raw)} bytes, SHA-256 "
+                            f"{hashlib.sha256(raw).hexdigest()}; judge whether a file of this kind belongs at this path]")
+
+
+# The review prompt's rule for that placeholder: the prompt says missing context blocks, and a pass needs no limitations.
+NOT_TEXT_RULE = ('\nA changed file shown as "[binary or non-UTF-8 file, content not reviewed: ...]" is judged by its path, '
+                 'size and hash alone; its unread content is neither missing context nor a limitation.')
+
+
+def utf8(raw, message):
+    if b"\0" in raw:
+        raise NotText(message, raw)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise NotText(message, raw) from None
+
+
+def changed_text(read):
+    """A changed file's review text. Binary content (an image, a font) cannot be read by the model, so the reviewer
+    sees its path, size and hash instead and the PR is still reviewed; policy and context sources stay text-only."""
+    try:
+        return read()
+    except NotText as exc:
+        return exc.placeholder
+
+
 def validate(value, schema, location="review"):
     """Validate only the deliberately small JSON-Schema subset used by this protocol."""
     allowed = {"$schema", "title", "description", "type", "properties", "required", "additionalProperties", "items", "enum", "const", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "pattern"}

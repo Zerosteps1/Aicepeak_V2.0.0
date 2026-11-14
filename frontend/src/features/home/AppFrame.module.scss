@@ -1,0 +1,39 @@
+// No clipping here: the glow reaches past the frame up to the screen edge; the screen around the frame clips it.
+.frame {
+  position: relative;
+  min-height: 100vh;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+// Glass needs something behind it: the blue glow sits behind the bar as a sibling, never as an ancestor of glass.
+.glow {
+  position: absolute;
+  right: -120px;
+  top: -140px;
+  width: 520px;
+  height: 520px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--primary) 0%, transparent 62%);
+  opacity: 0.45;
+  filter: blur(32px);
+  pointer-events: none;
+}
+
+.bar {
+  position: relative;
+  z-index: 2;
+}
+
+// Paper content starts 18px right of the bar's edge and 40px below it.
+.main {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-width: 0;
+  padding: 40px 0 24px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}

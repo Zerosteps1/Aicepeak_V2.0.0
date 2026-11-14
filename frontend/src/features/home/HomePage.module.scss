@@ -1,0 +1,17 @@
+// Clips the frame's glow at the screen edge, so it never makes the page scroll sideways.
+.page {
+  overflow: clip;
+}
+
+.panel {
+  border: 1px solid var(--line);
+}
+
+.json {
+  margin: 0;
+  padding: 18px 20px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}

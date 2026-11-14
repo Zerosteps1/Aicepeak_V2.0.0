@@ -6,6 +6,6 @@ namespace Aicepeak.Api.Data.Configurations;
 
 internal sealed class UserConfiguration : IEntityTypeConfiguration<User> {
     public void Configure(EntityTypeBuilder<User> builder) {
-        builder.HasKey(user => user.EntraId);
+        builder.HasKey(user => new { user.Tid, user.Oid });
     }
 }

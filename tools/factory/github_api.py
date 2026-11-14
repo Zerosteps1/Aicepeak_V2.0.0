@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 import re
 import branches
-from contracts import Blocked, require
+from contracts import Blocked, require, utf8
 
 API_VERSION = "2026-03-10"
 # The compare route needs "base...head"; every other ".." stays an unsafe path.
@@ -60,11 +60,7 @@ class GitHub:
         data = self.request("GET", f"/repos/{repo}/contents/{urllib.parse.quote(path, safe='/')}?ref={sha}")
         require(isinstance(data, dict) and data.get("type") == "file" and data.get("encoding") == "base64", "unsupported source file")
         raw = base64.b64decode(data["content"], validate=False)
-        require(b"\0" not in raw, "binary source cannot be completely reviewed")
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
-            raise Blocked("non-UTF-8 source cannot be completely reviewed") from None
+        return utf8(raw, "binary or non-UTF-8 source cannot be completely reviewed: " + path)
 
 
 def contains(client, repo, base, head):

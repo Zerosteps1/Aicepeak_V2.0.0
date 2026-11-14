@@ -78,9 +78,11 @@ on:
 permissions: {}
 cache-mode: none
 # One group per PR or work-order issue. GitHub keeps one pending run per group and cancels an older pending one.
+# A /bypass run also cancels the running one: once its head is bypassed, no snapshot, test, review or correction of
+# that PR matters, and a /bypass queued behind a test run would wait minutes. Other runs never cancel each other.
 concurrency:
   group: factory-${{ github.repository }}-${{ inputs.issue != '0' && format('issue-{0}', inputs.issue) || format('pr-{0}', fromJSON(inputs.pr)) }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ inputs.bypass != '' }}
 
 jobs:
   wif-smoke:

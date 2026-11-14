@@ -412,6 +412,14 @@ class PromotionTests(unittest.TestCase):
         self.assertIn('--head "$HEAD_SHA"', workflow)
         self.assertIn('HEAD_SHA: ${{ inputs.head }}', workflow)
 
+    def test_only_a_bypass_cancels_the_running_runs_of_its_pr(self):
+        # A /bypass queued behind a running test or check would wait minutes for results that no longer matter.
+        for name in ('factory.yml', 'factory-promotion.yml'):
+            workflow = (ROOT / '.github/workflows' / name).read_text()
+            with self.subTest(workflow=name):
+                self.assertEqual(workflow.count('cancel-in-progress:'), 1)
+                self.assertIn("\n  cancel-in-progress: ${{ inputs.bypass != '' }}\n", workflow)
+
     def test_promotion_into_maintainer_manual_needs_a_passed_review_bound_to_this_pr(self):
         cases = {'missing': ([], 'the AI review of this head is missing: a maintainer comments `/review` (a review that passed since '
                                  'needs only a re-run of this check: `gh workflow run factory-promotion.yml --repo fixture/repo '

@@ -1,8 +1,10 @@
 // The sign-in animation lives only in this module and its component (AC-23).
-// This version has no transitions yet: zoom and blur are custom properties, so the animation is a change here only.
+// Signing in, the app behind the card zooms in from --app-zoom and sharpens from --app-blur, the veil fades out and
+// the card fades and grows away (design/login/handoff.md). SignInTransition.tsx reads the durations from here.
 .root {
   --app-zoom: 0.95;
   --app-blur: 16px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
   position: relative;
   height: 100vh;
@@ -17,6 +19,9 @@
   transform-origin: 50% 40%;
   transform: scale(var(--app-zoom));
   filter: blur(var(--app-blur)) saturate(110%);
+  transition:
+    transform 1200ms var(--ease-out),
+    filter 1200ms var(--ease-out);
 }
 
 // Signed in: no transform or filter, otherwise the glass inside cannot blur what is behind it.
@@ -25,8 +30,9 @@
   filter: none;
 }
 
+// .pg-veil fades its opacity in 900 ms.
 .root[data-phase='in'] .veil {
-  visibility: hidden;
+  opacity: 0;
 }
 
 .card {
@@ -36,8 +42,30 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  transition:
+    opacity 520ms ease,
+    transform 700ms var(--ease-out),
+    filter 520ms ease,
+    visibility 0s linear 0ms;
 }
 
+// The card fades and grows away, then leaves the accessibility tree after 700 ms.
 .root[data-phase='in'] .card {
+  opacity: 0;
+  transform: scale(1.08);
+  filter: blur(6px);
   visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 520ms ease,
+    transform 700ms var(--ease-out),
+    filter 520ms ease,
+    visibility 0s linear 700ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root,
+  .root * {
+    transition: none !important;
+  }
 }

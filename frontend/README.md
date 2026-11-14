@@ -46,6 +46,6 @@ The redirect URI is `<origin>/login`, e.g. `http://localhost:5173/login`; it mus
 - `src/api/`: backend calls. `httpClient.ts` is the single place that sends requests and attaches the access token as `Authorization: Bearer`.
 - `src/design/`: snapshot of the approved design (`tokens.css`, `components.css`, the logo). Do not edit; update it from the design export.
 - `src/features/<feature>/`: components with their `*.module.scss` and tests.
-- `src/features/login/`: the sign-in page. `SignInTransition` holds the layers behind the card and is the one place for the sign-in animation.
+- `src/features/login/`: the sign-in page. `SignInTransition` (`.tsx` + `.module.scss`) holds the layers behind the card and the whole sign-in animation: zoom, blur, veil and card timings live only in its SCSS, and the component waits for that transition before showing the next page. With reduced motion turned on, there is no transition.
 - `src/features/home/`: the protected home screen, its frame (glass menu bar) and the skeleton shown behind the sign-in card.
 - `src/styles/`: global styles.

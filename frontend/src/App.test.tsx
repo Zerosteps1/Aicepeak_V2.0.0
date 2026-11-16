@@ -65,12 +65,11 @@ const currentPath = () => screen.getByTestId('location').textContent
 const signInButton = () => screen.findByRole('button', { name: 'Mit Microsoft anmelden' })
 
 beforeEach(() => {
-  vi.stubEnv('VITE_ENTRA_CLIENT_ID', 'spa-client-id')
-  vi.stubEnv('VITE_ENTRA_API_SCOPE', API_SCOPE)
+  window.__AICEPEAK_CONFIG__ = { clientId: 'spa-client-id', apiScope: API_SCOPE }
 })
 
 afterEach(() => {
-  vi.unstubAllEnvs()
+  delete window.__AICEPEAK_CONFIG__
 })
 
 describe('App', () => {
@@ -230,10 +229,10 @@ describe('App', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it.each(['VITE_ENTRA_CLIENT_ID', 'VITE_ENTRA_API_SCOPE'])(
-    'AC-8: when %s is not set, stays in the app on /login and shows that the sign-in failed',
+  it.each(['clientId', 'apiScope'] as const)(
+    'AC-8: when the injected config has no %s, stays in the app on /login and shows that the sign-in failed',
     async (name) => {
-      vi.stubEnv(name, '')
+      window.__AICEPEAK_CONFIG__ = { clientId: 'spa-client-id', apiScope: API_SCOPE, [name]: '' }
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
       const msal = createFakeMsal()
       renderApp('/', msal)
@@ -246,6 +245,19 @@ describe('App', () => {
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(name))
     },
   )
+
+  it('AC-8: when the backend injected no config at all, stays in the app on /login and shows that the sign-in failed', async () => {
+    window.__AICEPEAK_CONFIG__ = null
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const msal = createFakeMsal()
+    renderApp('/', msal)
+
+    fireEvent.click(await signInButton())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(FAILED)
+    expect(msal.mocks.loginRedirect).not.toHaveBeenCalled()
+    expect(currentPath()).toBe('/login')
+  })
 
   it('AC-8: when the sign-in redirect cannot start, stays on /login and shows that the sign-in failed', async () => {
     const msal = createFakeMsal()

@@ -1,0 +1,14 @@
+# These files will never be targeted by a command of the Dockerfile
+
+*
+
+!global.json
+!frontend
+!backend
+frontend/dist
+**/node_modules
+**/bin
+**/obj
+**/.env
+**/.DS_Store
+backend/Aicepeak.Api.Tests

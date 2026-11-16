@@ -143,7 +143,9 @@ export function AuthProvider({ children, authResponseAtStart = AUTH_RESPONSE_AT_
       if (missing.length > 0) {
         // Do not leave the app: MSAL would send the user to Microsoft with an empty client ID, or the API token
         // after the sign-in could not be requested.
-        console.error(`Microsoft Entra sign-in is not configured: ${missing.join(', ')} not set.`)
+        console.error(
+          `Microsoft Entra sign-in is not configured: ${missing.join(', ')} missing (set ENTRA_AUDIENCE and ENTRA_SCOPE for the backend).`,
+        )
         setState({ ...SIGNED_OUT, error: FAILED })
         return
       }

@@ -104,6 +104,15 @@ def identity(root, config):
 
 
 DS_STORE = '.DS_Store'  # the only untracked file a clean checkout may hold: a plain, non-executable file of that name
+# The product's build output (npm ci, npm run build, dotnet build and publish), ignored by Git. The factory never
+# imports, reads or runs anything there, so a build in a checkout leaves it clean. Only these folders, and only while
+# Git tracks nothing inside one; an untracked file anywhere else, such as a .py beside the factory's code, still counts.
+BUILD_OUTPUT = ('frontend/node_modules', 'frontend/dist', 'backend/bin', 'backend/obj', 'backend/out',
+                'backend/Aicepeak.Api.Tests/bin', 'backend/Aicepeak.Api.Tests/obj')
+
+
+def build_output(folder, tree):
+    return folder in BUILD_OUTPUT and not any(path.startswith(folder + '/') for path in tree)
 
 
 def clean_tree(root, sha):
@@ -133,6 +142,8 @@ def clean_tree(root, sha):
             files = [name for name in files if name != '.git']
         for name in dirs:
             require(not (Path(directory) / name).is_symlink(), 'symlink directory unsupported')
+        here = Path(directory).relative_to(root)
+        dirs[:] = [name for name in dirs if not build_output((here / name).as_posix(), tree)]
         for name in files:
             file = Path(directory) / name
             relative = file.relative_to(root).as_posix()

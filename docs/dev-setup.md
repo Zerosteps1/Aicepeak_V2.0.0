@@ -220,7 +220,7 @@ cp backend/.env.example backend/.env
 
 `.env` is git-ignored and never published; other environments set the variables directly. If a setting is missing or invalid the backend still starts, and its health endpoint reports the problem.
 
-Sign-in additionally needs the `ENTRA_*` settings in `backend/.env` and the `VITE_ENTRA_*` settings in `frontend/.env` (`cp frontend/.env.example frontend/.env`); see [Microsoft Entra sign-in](#microsoft-entra-sign-in). Without them the backend still starts, but every protected API request answers `401`.
+Sign-in additionally needs the `ENTRA_*` settings in `backend/.env`; the frontend takes its config from them too (see [Microsoft Entra sign-in](#microsoft-entra-sign-in)), so there is no `frontend/.env`. Without them the backend still starts, but every protected API request answers `401` and the sign-in page shows an error.
 
 **Database.** Start Docker and the Postgres container and create or update the database schema with the EF Core migrations:
 
@@ -237,13 +237,13 @@ After changing the EF model, add a migration with `dotnet ef migrations add <Nam
 **Development, two terminals:**
 
 ```sh
-cd backend && dotnet watch     # API on http://localhost:5043 with C# hot reload (or dotnet run)
+cd backend && dotnet watch     # API on http://localhost:8080 with C# hot reload (or dotnet run)
 cd frontend && npm ci && npm run dev   # app with hot reload on http://localhost:5173
 ```
 
-Open http://localhost:5173. Vite proxies `/api/*` to the backend. Without a session the app redirects to `/login`; after signing in with Microsoft it shows your user record (tenant ID, object ID and name) as JSON. The sign-out icon at the right of the menu bar returns to `/login`.
+Open http://localhost:5173. Vite proxies `/api/*` to the backend. The backend uses port 8080, the port the ASP.NET container image listens on, so local URLs and the container's match. Without a session the app redirects to `/login`; after signing in with Microsoft it shows your user record (tenant ID, object ID and name) as JSON. The sign-out icon at the right of the menu bar returns to `/login`.
 
-The backend health endpoint answers without sign-in: `curl -i http://localhost:5043/api/v1/health/alive` returns `204` when the database is reachable and `503` when it is not or the configuration is missing or invalid. In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
+The backend health endpoint answers without sign-in: `curl -i http://localhost:8080/api/v1/health/alive` returns `204` when the database is reachable and `503` when it is not or the configuration is missing or invalid. In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
 
 **Checks:**
 
@@ -260,7 +260,7 @@ npm --prefix frontend run build
 
 Without Docker, skip the database tests with `dotnet test backend/Aicepeak.slnx --filter "Category!=Database"`. `backend/` holds both the API project and the solution, so `dotnet build` and `dotnet test` need the solution file named; inside `backend/`, `dotnet run`, `dotnet watch` and `dotnet ef` use the API project.
 
-**Production build:** `dotnet publish backend/Aicepeak.Api.csproj -c Release -o <dir>` also runs `npm ci` and `npm run build` in `frontend/` and copies `frontend/dist` into `<dir>/wwwroot`; the backend then serves the app at `/`. Add `-p:SkipFrontendBuild=true` to skip the frontend. Vite writes the `VITE_ENTRA_*` values into the build, so set them (environment or `frontend/.env`) before publishing.
+**Production build:** `dotnet publish backend/Aicepeak.Api.csproj -c Release -o <dir>` also runs `npm ci` and `npm run build` in `frontend/` and copies `frontend/dist` into `<dir>/wwwroot`; the backend then serves the app at `/`. Add `-p:SkipFrontendBuild=true` to skip the frontend. The build contains no settings: the same build runs in every environment. For a container image see [Container image](#container-image).
 
 ## Microsoft Entra sign-in
 
@@ -277,8 +277,6 @@ Users sign in with Microsoft Entra ID (AIC-12). The browser signs in with MSAL R
 7. **Token configuration:** add the optional claim `idtyp` to the access token.
 8. **Consent:** an admin of every allowed tenant grants admin consent once: in the home tenant with **API permissions** › **Grant admin consent**, in other tenants by opening `https://login.microsoftonline.com/<tenant-id>/adminconsent?client_id=<client-id>`. Without consent the app cannot get the API token after sign-in, and the sign-in page shows an error.
 
-A separate registration for the API also works: then `ENTRA_AUDIENCE` is the API's client ID, `ENTRA_CLIENT_IDS` lists the SPA's client ID, and `VITE_ENTRA_API_SCOPE` names the API's scope.
-
 **Backend settings** (`backend/.env` in Development, environment variables elsewhere):
 
 | Setting | Value |
@@ -289,12 +287,7 @@ A separate registration for the API also works: then `ENTRA_AUDIENCE` is the API
 | `ENTRA_APP_ROLE` | The app role required from service apps, e.g. `Api.Access` |
 | `ENTRA_METADATA_ADDRESS` | Optional; defaults to `https://login.microsoftonline.com/organizations/v2.0/.well-known/openid-configuration`. Must be `https` |
 
-**Frontend settings** (`frontend/.env`, from `frontend/.env.example`):
-
-| Setting | Value |
-| --- | --- |
-| `VITE_ENTRA_CLIENT_ID` | The SPA's client ID |
-| `VITE_ENTRA_API_SCOPE` | The full scope, `api://<client-id>/access_as_user`; a bare scope name would be read as a Microsoft Graph scope |
+**Frontend config.** The frontend has no settings of its own. At startup the backend fills `index.html` with `{"clientId": ENTRA_AUDIENCE, "apiScope": "api://<ENTRA_AUDIENCE>/<ENTRA_SCOPE>"}` (one registration for SPA and API) and serves that page from memory. In development the Vite dev server does the same from `backend/.env`; real `ENTRA_AUDIENCE` / `ENTRA_SCOPE` environment variables win. Restart `npm run dev` after changing them.
 
 **Tenant allowlist.** The table `allowed_tenants` (column `tid`) lists the tenant IDs whose users may sign in; the migration seeds `db760528-cb7c-455c-bd41-e50a38f6fd62`. Tokens from any other tenant get `401`. To allow another tenant in the local database:
 
@@ -303,6 +296,22 @@ docker exec -it aicepeak-pg psql -U postgres -d aicepeak -c "INSERT INTO allowed
 ```
 
 The backend tests never contact Microsoft: they sign tokens with a key generated at test time and serve the OIDC metadata from a local stub.
+
+## Container image
+
+`backend/Dockerfile` builds one image with the API and the built frontend; it holds no settings, so the same image runs in every environment. Build from the repository root:
+
+```sh
+docker build -f backend/Dockerfile -t aicepeak .
+```
+
+The settings come from the environment when the container starts. Copy `backend/deploy.env.example` to `backend/.env.deploy` (git-ignored), fill it in and run:
+
+```sh
+docker run --rm -p 8080:8080 --env-file backend/.env.deploy aicepeak
+```
+
+Open http://localhost:8080 and register `http://localhost:8080/login` as an additional SPA redirect URI (step 2 of the app registration). `--env-file` keeps quotes as part of the value, so the file has none; inside the container `localhost` is the container itself, so the example points the database at `host.docker.internal`. The image does not apply migrations: run `cd backend && dotnet ef database update` against the target database first (see [Running Aicepeak locally](#running-aicepeak-locally)). The image serves plain HTTP on port 8080 and expects TLS in front of it.
 
 ## Docker
 

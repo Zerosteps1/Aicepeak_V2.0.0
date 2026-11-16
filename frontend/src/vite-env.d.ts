@@ -1,6 +1,9 @@
 /// <reference types="vite/client" />
 
-interface ImportMetaEnv {
-  readonly VITE_ENTRA_CLIENT_ID?: string
-  readonly VITE_ENTRA_API_SCOPE?: string
+/** The Entra config filled into index.html by the backend (see backend/Frontend/FrontendHosting.cs). */
+type AppConfig = { clientId: string; apiScope: string }
+
+interface Window {
+  /** `null` when the backend's ENTRA_AUDIENCE or ENTRA_SCOPE is not set. */
+  __AICEPEAK_CONFIG__?: AppConfig | null
 }

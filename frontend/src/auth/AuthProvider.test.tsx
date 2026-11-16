@@ -33,12 +33,12 @@ function renderWithAuth(msal: ReturnType<typeof createFakeMsal>) {
 }
 
 beforeEach(() => {
-  vi.stubEnv('VITE_ENTRA_API_SCOPE', 'api://api-client-id/access_as_user')
+  window.__AICEPEAK_CONFIG__ = { clientId: 'api-client-id', apiScope: 'api://api-client-id/access_as_user' }
   vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json(USER)))
 })
 
 afterEach(() => {
-  vi.unstubAllEnvs()
+  delete window.__AICEPEAK_CONFIG__
 })
 
 describe('AuthProvider', () => {

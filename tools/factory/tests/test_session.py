@@ -102,6 +102,38 @@ class SessionBoundaries(SessionRepos, unittest.TestCase):
         (self.control / '.DS_Store').unlink()
         session.clean_tree(self.control, sha)
 
+    def test_clean_tree_skips_only_the_products_build_output_folders(self):
+        sha = git(self.control, 'rev-parse', 'HEAD')
+
+        def make(name, mode=0o644):
+            path = self.control / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('built')
+            path.chmod(mode)
+            return path
+        out = self.control / 'backend/out'
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.symlink_to(self.control / 'docs')
+        with self.assertRaisesRegex(Blocked, 'symlink directory unsupported'):
+            session.clean_tree(self.control, sha)
+        out.unlink()
+        for folder in session.BUILD_OUTPUT:  # npm ci, npm run build, dotnet build and publish
+            make(f'{folder}/nested/tool.js', 0o755)
+        session.clean_tree(self.control, sha)
+        for name in ('tools/factory/node_modules/json.py', 'node_modules/a.js', 'frontend/src/dist/a.js',
+                     'frontend/distx/a.js', 'backend/bin.py', 'backend/Data/obj/a.cs'):
+            with self.subTest(name=name):
+                stray = make(name)
+                with self.assertRaisesRegex(Blocked, 'untracked file ' + name):
+                    session.clean_tree(self.control, sha)
+                stray.unlink()
+        # A folder holding a tracked file is checked like any other.
+        make('frontend/dist/kept.txt')
+        git(self.control, 'add', 'frontend/dist/kept.txt')
+        git(self.control, 'commit', '-qm', 'Tracked build file')
+        with self.assertRaisesRegex(Blocked, 'untracked file frontend/dist/nested/tool.js'):
+            session.clean_tree(self.control, git(self.control, 'rev-parse', 'HEAD'))
+
     def test_watch_does_not_revive_superseded_pending_gates(self):
         old=self.gh.pending(1)
         for new_head in (self.head, 'c'*40):

@@ -6,20 +6,23 @@ import { BrowserCacheLocation, PublicClientApplication } from '@azure/msal-brows
  */
 export const LOGIN_SCOPES = ['openid', 'profile']
 
-/** The API scope, e.g. `api://<api-client-id>/access_as_user`. */
-export function apiScope(): string {
-  return import.meta.env.VITE_ENTRA_API_SCOPE ?? ''
+/**
+ * The Entra config of this environment. The backend fills it into index.html once at startup from its `ENTRA_*`
+ * settings (in development the Vite dev server does, from backend/.env), so one build runs everywhere.
+ */
+export function appConfig(): AppConfig | null {
+  return window.__AICEPEAK_CONFIG__ ?? null
 }
 
-/** The `VITE_ENTRA_*` settings that are not set; without them sign-in cannot work. */
+/** The API scope, e.g. `api://<client-id>/access_as_user`. */
+export function apiScope(): string {
+  return appConfig()?.apiScope ?? ''
+}
+
+/** The config values that are missing; without them sign-in cannot work. */
 export function missingSettings(): string[] {
-  const settings = {
-    VITE_ENTRA_CLIENT_ID: import.meta.env.VITE_ENTRA_CLIENT_ID,
-    VITE_ENTRA_API_SCOPE: import.meta.env.VITE_ENTRA_API_SCOPE,
-  }
-  return Object.entries(settings)
-    .filter(([, value]) => !value)
-    .map(([name]) => name)
+  const config = appConfig()
+  return (['clientId', 'apiScope'] as const).filter((name) => !config?.[name])
 }
 
 /** Whether a URL fragment holds a response from Microsoft (`#code=…` or `#error=…`). */
@@ -37,7 +40,7 @@ export const AUTH_RESPONSE_AT_START = hasAuthResponse(window.location.hash)
 export function createMsalInstance(): PublicClientApplication {
   return new PublicClientApplication({
     auth: {
-      clientId: import.meta.env.VITE_ENTRA_CLIENT_ID ?? '',
+      clientId: appConfig()?.clientId ?? '',
       authority: 'https://login.microsoftonline.com/organizations',
       redirectUri: `${window.location.origin}/login`,
     },

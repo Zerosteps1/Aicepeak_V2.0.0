@@ -237,13 +237,13 @@ After changing the EF model, add a migration with `dotnet ef migrations add <Nam
 **Development, two terminals:**
 
 ```sh
-cd backend && dotnet watch     # API on http://localhost:5043 with C# hot reload (or dotnet run)
+cd backend && dotnet watch     # API on http://localhost:8080 with C# hot reload (or dotnet run)
 cd frontend && npm ci && npm run dev   # app with hot reload on http://localhost:5173
 ```
 
-Open http://localhost:5173. Vite proxies `/api/*` to the backend. Without a session the app redirects to `/login`; after signing in with Microsoft it shows your user record (tenant ID, object ID and name) as JSON. The sign-out icon at the right of the menu bar returns to `/login`.
+Open http://localhost:5173. Vite proxies `/api/*` to the backend. The backend uses port 8080, the port the ASP.NET container image listens on, so local URLs and the container's match. Without a session the app redirects to `/login`; after signing in with Microsoft it shows your user record (tenant ID, object ID and name) as JSON. The sign-out icon at the right of the menu bar returns to `/login`.
 
-The backend health endpoint answers without sign-in: `curl -i http://localhost:5043/api/v1/health/alive` returns `204` when the database is reachable and `503` when it is not or the configuration is missing or invalid. In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
+The backend health endpoint answers without sign-in: `curl -i http://localhost:8080/api/v1/health/alive` returns `204` when the database is reachable and `503` when it is not or the configuration is missing or invalid. In `Development`, the 503 body includes exception traces; in any other environment it only names the failing components.
 
 **Checks:**
 

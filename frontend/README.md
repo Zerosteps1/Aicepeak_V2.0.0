@@ -17,7 +17,7 @@ TypeScript + React, built with Vite. Styles use SCSS with CSS Modules; tests use
 Run the backend and the dev server in two terminals:
 
 ```sh
-cd backend && dotnet watch    # http://localhost:5043, C# hot reload
+cd backend && dotnet watch    # http://localhost:8080, C# hot reload
 cd frontend && npm run dev    # http://localhost:5173
 ```
 

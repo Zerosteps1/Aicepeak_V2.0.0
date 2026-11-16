@@ -25,14 +25,9 @@ Open http://localhost:5173. Vite proxies `/api/*` to the backend, so the app cal
 
 ## Configuration
 
-Sign-in uses Microsoft Entra ID. Copy `.env.example` to `.env` (git-ignored) and set:
+Sign-in uses Microsoft Entra ID. The frontend has no settings of its own: the backend fills `window.__AICEPEAK_CONFIG__` in `index.html` at startup from its `ENTRA_AUDIENCE` and `ENTRA_SCOPE`, so one build runs in every environment. The dev server does the same from `backend/.env` (`vite.config.ts`); restart `npm run dev` after changing it.
 
-| Variable | Value |
-|---|---|
-| `VITE_ENTRA_CLIENT_ID` | Client ID of the single-page application registration |
-| `VITE_ENTRA_API_SCOPE` | Full API scope, e.g. `api://<api-client-id>/access_as_user` |
-
-The redirect URI is `<origin>/login`, e.g. `http://localhost:5173/login`; it must be registered for the single-page application. Without both variables the sign-in button shows an error and the browser console names the missing variable.
+The redirect URI is `<origin>/login`, e.g. `http://localhost:5173/login`; it must be registered for the single-page application. Without the config the sign-in button shows an error and the browser console says which value is missing.
 
 ## Production
 
@@ -41,7 +36,7 @@ The redirect URI is `<origin>/login`, e.g. `http://localhost:5173/login`; it mus
 ## Structure
 
 - `src/main.tsx`: entry point. Creates the MSAL `PublicClientApplication` and wraps `<App />` in `MsalProvider`, the router, `ThemeProvider` and `AuthProvider`.
-- `src/auth/`: sign-in with Microsoft Entra ID (redirect, PKCE). `AuthProvider` and `useAuth()` are the only auth context components use: status, current user, error, `signIn`, `signOut`. `msalConfig.ts` reads the `VITE_ENTRA_*` settings; `RequireAuth` sends signed-out users to `/login`.
+- `src/auth/`: sign-in with Microsoft Entra ID (redirect, PKCE). `AuthProvider` and `useAuth()` are the only auth context components use: status, current user, error, `signIn`, `signOut`. `msalConfig.ts` reads the config the backend injected into `index.html`; `RequireAuth` sends signed-out users to `/login`.
 - `src/theme/`: `ThemeProvider` and `useTheme()` for light and dark mode (`?theme=light|dark`, kept for the browser tab so it survives the sign-in redirect; otherwise the system setting); sets `data-theme` on `<html>`.
 - `src/api/`: backend calls. `httpClient.ts` is the single place that sends requests and attaches the access token as `Authorization: Bearer`.
 - `src/design/`: the approved design (`tokens.css`, `components.css`, the logo), derived from `design/`. `tokens.css` orders the greys on a scale `l0`–`l8` (background side to text side) and names the colours `primary`, `secondary` (alias `primary-negative`), `warning` and `positive`, with the modifiers `-ink`, `-dim`, `on-` and `-muted`; its header explains them.

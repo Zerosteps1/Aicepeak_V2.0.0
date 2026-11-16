@@ -1,14 +1,14 @@
 import { BrowserCacheLocation } from '@azure/msal-browser'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { createMsalInstance, hasAuthResponse } from './msalConfig.ts'
 
 afterEach(() => {
-  vi.unstubAllEnvs()
+  delete window.__AICEPEAK_CONFIG__
 })
 
 describe('createMsalInstance', () => {
   it('AC-2: configures MSAL for the Microsoft Entra organizations authority with the redirect URI <origin>/login', () => {
-    vi.stubEnv('VITE_ENTRA_CLIENT_ID', 'spa-client-id')
+    window.__AICEPEAK_CONFIG__ = { clientId: 'spa-client-id', apiScope: 'api://spa-client-id/access_as_user' }
 
     const { auth, cache } = createMsalInstance().getConfiguration()
 

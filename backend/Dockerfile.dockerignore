@@ -1,0 +1,20 @@
+# Ignore file for backend/Dockerfile (Docker uses <Dockerfile>.dockerignore next to the Dockerfile).
+# The build context is the repository root; only frontend/, backend/ and global.json are needed.
+.git
+.github
+.agents
+.claude
+.codex
+.config
+design
+docs
+factory
+tools
+**/node_modules
+frontend/dist
+**/bin
+**/obj
+**/TestResults
+# Settings and secrets never enter the build context.
+**/.env
+**/.env.*

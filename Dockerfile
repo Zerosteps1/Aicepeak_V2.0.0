@@ -11,7 +11,7 @@
 # and as dependencies change less often than code, this speeds things up
 
 # 1) Frontend: node builds dist/ (node 26, as in the factory's test image)
-FROM node:26-bookworm-slim AS frontend
+FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS frontend
 ARG VITE_ENTRA_CLIENT_ID
 ARG VITE_ENTRA_API_SCOPE
 WORKDIR /src/frontend
@@ -21,7 +21,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # 2) Backend: the SDK publishes the API; npm is skipped
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS backend
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS backend
 WORKDIR /src
 COPY global.json ./
 COPY backend/Aicepeak.Api.csproj backend/packages.lock.json backend/Directory.Build.props \

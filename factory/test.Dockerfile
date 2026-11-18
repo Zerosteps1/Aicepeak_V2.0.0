@@ -3,7 +3,7 @@
 # (tools/factory/images.py); runtime resolves the tag to its sha256 ID. No credentials and no provider CLIs.
 
 # Node from the same digest-pinned image as the author image (factory/Dockerfile).
-FROM node:26.12.0-bookworm-slim@sha256:742a0fe7320e09e0321222b68165e6ac731d30470e7ea7f98f9bfc3a6e1034fe AS node
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS node
 
 # .NET 10 SDK on Ubuntu 24.04 (multi-arch: linux/amd64, linux/arm64); satisfies global.json.
 FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb

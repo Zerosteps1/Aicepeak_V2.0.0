@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="de" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neues Projekt · Aicepeak</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Russo+One&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+  <!-- Design system first (shared tokens and pg- components), then this page -->
+  <link rel="stylesheet" href="../tokens.css">
+  <link rel="stylesheet" href="../components.css">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<!-- State lives on #app as data attributes, set by app.js:
+       data-screen  upload | extract
+       data-empty   true | false      (no documents in the Ablage)
+       data-mock    true | false      (shows "Beispieldokumente laden") -->
+<div id="app" class="np" data-screen="upload" data-empty="true" data-mock="false">
+
+  <!-- Ground: the glow behind the assistant, and the signal band under the glass panel of the current step -->
+  <div class="np-glow" aria-hidden="true"></div>
+  <div class="np-band" id="band" aria-hidden="true"></div>
+
+  <!-- Scaffolding: glass menu bar + rolled-up assistant -->
+  <div class="np-top">
+    <header class="pg-glass pg-glass--airy pg-bar np-bar">
+      <div class="pg-bar__start">
+        <img class="pg-bar__logo" src="../aicepeak-mark.png" alt="Aicepeak">
+        <nav class="pg-nav" aria-label="Hauptnavigation">
+          <a class="pg-nav__item" href="#">
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 7V4h9l3 3v11h-4"/><path d="M4 8h10l2 2v10H4z"/></svg>
+            Dokumente
+          </a>
+          <a class="pg-nav__item" href="#">
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9.5h16M4 14.5h16"/></svg>
+            Positionen
+          </a>
+          <a class="pg-nav__item" href="#">
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="1.6"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M6 6a8.5 8.5 0 0 0 0 12M18 6a8.5 8.5 0 0 1 0 12"/></svg>
+            Themen
+          </a>
+        </nav>
+        <span class="pg-bar__divider" aria-hidden="true"></span>
+        <nav class="pg-crumbs" aria-label="Pfad">
+          <a href="#">Projekte</a><span aria-hidden="true">/</span><span aria-current="page">Neues Projekt</span>
+        </nav>
+      </div>
+      <button type="button" class="pg-icon-btn" aria-label="Benachrichtigungen">
+        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5h4"/></svg>
+      </button>
+    </header>
+    <button type="button" class="pg-glass pg-glass--airy np-assistant" aria-label="Assistent öffnen" aria-expanded="false">
+      <span class="np-assistant__titles">
+        <span class="np-assistant__title"><span class="pg-dot" aria-hidden="true"></span>Assistent</span>
+        <span class="label-sm np-muted">Kontext · Neues Projekt</span>
+      </span>
+      <span class="np-assistant__chevron" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 9l6 6 6-6"/></svg>
+      </span>
+    </button>
+  </div>
+
+  <!-- ============ Step 1 · Documents ============ -->
+  <main class="np-main" id="screen-upload" data-screen-name="upload">
+    <div class="np-head rise">
+      <div class="np-head__main">
+        <span class="eyebrow np-muted" data-field="project-eyebrow">Neues Projekt · Alpine Paper</span>
+        <h1 class="np-title">Legen Sie Ihre Berichte<br>hier ab<span class="pg-stop">.</span></h1>
+      </div>
+      <button type="button" class="pg-btn pg-btn--paper np-btn-paper" data-action="cancel">
+        Abbrechen
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p class="np-lead">PDF, Word oder Excel. Wir lesen jedes Dokument zuerst und prüfen, ob es eine Gewinn- und Verlustrechnung, Bilanz oder Kapitalflussrechnung enthält. Erst dann holen wir die Zahlen heraus.</p>
+
+    <!-- The drop tray: glass over the signal band; documents lie on it as paper sheets -->
+    <section class="np-tray" id="tray" aria-labelledby="tray-title">
+      <div class="np-tray__head">
+        <h2 class="panel-title np-tray__title" id="tray-title">Ablage</h2>
+        <span class="label np-muted" id="tray-meta" aria-live="polite">Noch keine Dokumente</span>
+      </div>
+
+      <!-- One drop zone, two layouts: the whole tray while empty, a compact row above the sheets after that -->
+      <label class="np-drop" id="drop" for="file-input">
+        <input class="pg-sr" id="file-input" type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx">
+        <span class="np-drop__plus" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+        </span>
+        <span class="np-drop__text">
+          <span class="np-drop__title np-only-empty">Dokumente hierher ziehen</span>
+          <span class="np-drop__title np-only-filled">Weitere Dokumente hierher ziehen</span>
+          <span class="np-drop__hint np-only-empty">Am besten Jahresabschluss, Planung und Kapitalflussrechnung. Mehrere Dateien auf einmal gehen auch.</span>
+          <span class="label np-muted np-only-filled">PDF · DOC · DOCX · XLS · XLSX · bis 50 MB</span>
+        </span>
+        <span class="np-drop__actions">
+          <span class="np-drop__choose">Dateien auswählen</span>
+          <span class="label np-muted np-only-empty">PDF · DOC · DOCX · XLS · XLSX · bis 50 MB</span>
+        </span>
+      </label>
+      <!-- Prototype only (data-mock="true"): fills the drop tray with four sample documents -->
+      <button type="button" class="np-samples label" data-action="samples">Beispieldokumente laden</button>
+
+      <ul class="np-sheets" id="sheets" aria-label="Dokumente in der Ablage"></ul>
+    </section>
+
+    <div class="np-foot">
+      <span class="small np-muted" id="upload-hint" aria-live="polite">Weiter, sobald mindestens ein Dokument geprüft ist.</span>
+      <button type="button" class="np-go" id="go-extract" data-action="extract" disabled>
+        Weiter zur Extraktion
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+  </main>
+
+  <!-- ============ Step 2 · Extraction ============ -->
+  <main class="np-main" id="screen-extract" data-screen-name="extract" hidden>
+    <div class="np-head rise">
+      <div class="np-head__main">
+        <span class="eyebrow np-muted" data-field="project-eyebrow">Neues Projekt · Alpine Paper</span>
+        <h1 class="np-title">Wir holen<br>die Zahlen heraus<span class="pg-stop">.</span></h1>
+      </div>
+      <button type="button" class="pg-btn pg-btn--paper np-btn-paper" data-action="cancel">
+        Abbrechen
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p class="np-lead">Jede Seite wird gelesen, jede Position mit Wert, Zeitraum und Quelle übernommen. Sie können diese Seite verlassen: Wir melden uns, sobald alles fertig ist.</p>
+
+    <section class="np-tray np-tray--extract" id="panel" aria-labelledby="px-title">
+      <div class="np-tray__head">
+        <h2 class="panel-title np-tray__title" id="px-title">Extraktion</h2>
+        <span class="label np-muted" id="px-meta"></span>
+      </div>
+
+      <!-- Totals left and right, legend in the middle -->
+      <div class="np-totals">
+        <div class="np-totals__read" id="px-progress" role="progressbar" aria-label="Extrahierte Seiten" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+          <span class="kpi-value pg-num" id="px-read">0</span>
+          <span class="label np-muted">von <span id="px-total">0</span> Seiten gelesen</span>
+        </div>
+        <div class="np-legend label np-muted" aria-hidden="true">
+          <span><i class="np-legend__swatch np-legend__swatch--done"></i>gelesen</span>
+          <span><i class="np-legend__swatch np-legend__swatch--now"></i>wird gelesen</span>
+          <span><i class="np-legend__swatch np-legend__swatch--todo"></i>ausstehend</span>
+        </div>
+        <span class="np-totals__found label" aria-live="polite">
+          <span class="pg-dot np-pulse np-only-running" aria-hidden="true"></span>
+          <svg class="np-only-done" aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+          <span id="px-positions">0</span> Positionen übernommen
+        </span>
+      </div>
+
+      <!-- One line per document: one segment per page, or one continuous strip above CONFIG.stripAbovePages -->
+      <div class="np-lines" id="lines"></div>
+
+      <!-- Latest findings -->
+      <div class="np-found">
+        <span class="label np-muted">Zuletzt übernommen</span>
+        <div class="np-found__empty" id="found-empty">Die ersten Positionen erscheinen hier, sobald sie gelesen sind.</div>
+        <div class="np-found__table" id="found" role="table" aria-label="Zuletzt übernommene Positionen" hidden></div>
+      </div>
+    </section>
+
+    <div class="np-foot">
+      <span class="small np-muted" id="px-hint" aria-live="polite">Verfügbar, sobald alle Seiten gelesen sind.</span>
+      <button type="button" class="np-go" id="go-positions" data-action="positions" disabled>
+        Weiter zu den Positionen
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+  </main>
+</div>
+
+<!-- A sheet in the drop tray. app.js clones it once per document and then only updates it, so its entry animation runs once.
+     data-state: uploading | queued | checking | usable | not_financial | failed -->
+<template id="tpl-sheet">
+  <li class="np-sheet rise" data-state="uploading">
+    <div class="np-sheet__card">
+      <div class="np-sheet__head">
+        <div class="np-sheet__meta label-sm">
+          <span class="np-sheet__badges">
+            <span class="np-badge" data-field="kind"></span>
+            <span class="np-badge np-badge--found" data-field="found-badge"><svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span data-field="found"></span></span>
+            <span class="np-badge np-badge--review" data-field="review-badge">Kein Finanzbericht</span>
+          </span>
+          <span data-field="extent"></span>
+        </div>
+        <span class="np-sheet__name" data-field="name"></span>
+      </div>
+      <!-- The face: a preview of the document's FIRST PAGE, rendered by the backend. Drawn hairlines stand in until it arrives. -->
+      <div class="np-sheet__face">
+        <div class="np-sheet__placeholder" aria-hidden="true">
+          <i style="width:64%;height:6px"></i><i style="width:92%"></i><i style="width:84%"></i><i style="width:70%"></i>
+          <i style="width:100%;margin-top:14px"></i><i style="width:100%"></i><i style="width:100%"></i><i style="width:88%"></i><i style="width:60%"></i>
+        </div>
+        <img class="np-sheet__preview" data-field="preview" alt="">
+        <span class="np-scan" aria-hidden="true"><i class="np-scan__glow"></i><i class="np-scan__wash"></i><i class="np-scan__line"></i></span>
+        <span class="np-sheet__status label-sm">
+          <span class="np-sheet__state"><i class="np-sheet__dot" aria-hidden="true"></i><span data-field="state"></span></span>
+          <button type="button" class="np-link" data-field="remove">Entfernen</button>
+        </span>
+      </div>
+    </div>
+  </li>
+</template>
+
+<!-- A document's line in the extraction panel -->
+<template id="tpl-line">
+  <div class="np-line">
+    <span class="np-line__doc">
+      <span class="np-line__kind label-sm" data-field="kind"></span>
+      <span class="np-line__name" data-field="name"></span>
+    </span>
+    <span class="np-line__track" role="img" data-field="track"></span>
+    <span class="np-line__count label pg-num" data-field="count"></span>
+  </div>
+</template>
+
+<!-- A row in the latest-positions table -->
+<template id="tpl-found">
+  <div class="np-found__row rise" role="row">
+    <span role="cell" class="np-found__name"><i class="np-found__mark" aria-hidden="true"></i><span data-field="name"></span></span>
+    <span role="cell" class="np-found__value pg-num" data-field="value"></span>
+    <span role="cell" class="label np-muted" data-field="period"></span>
+    <span role="cell" class="label np-muted np-found__source" data-field="source"></span>
+  </div>
+</template>
+</body>
+</html>

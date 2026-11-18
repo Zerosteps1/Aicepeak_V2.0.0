@@ -1,0 +1,295 @@
+/* Aicepeak · Document upload (add documents → check → extract)
+   Builds on the design system: ../tokens.css (all colours, glass, type, spacing, radii) and ../components.css (pg- classes).
+   This file only adds the page layout and the few page tokens below, each built from a system token where one fits.
+   Theme: data-theme="light" | "dark" on <html>, as in tokens.css.
+   State: data attributes on #app (data-screen, data-empty, data-mock) and on each sheet (data-state), set by app.js. */
+
+/* ---------- Page tokens ---------- */
+
+:root, [data-theme="light"] {
+  /* The drop tray and the extraction panel: the system's card glass */
+  --np-panel: var(--glass-card);
+  --np-panel-line: var(--glass-card-line);
+  --np-panel-blur: var(--glass-card-blur);
+  --np-panel-shadow: var(--shadow-card);
+  /* Drop zone */
+  --np-drop: var(--glass-control);
+  --np-drop-hover: var(--glass-hover);
+  --np-drop-line: rgba(22, 22, 22, 0.28);          /* new: dashed outline */
+  /* Sheets */
+  --np-status: rgba(250, 250, 248, 0.82);           /* new: status strip on the page face */
+  --np-wash: rgba(250, 250, 248, 0.62);             /* new: veil over the part of a page not yet read */
+  /* Extraction lines */
+  --np-lines: rgba(255, 255, 255, 0.45);            /* new: the inset behind the lines */
+  --np-seg-done: var(--signal);
+  --np-seg-now: var(--line-soft);
+  --np-seg-todo: var(--line);
+  --np-glow-opacity: 0.45;
+  /* Motion */
+  --np-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="dark"] {
+  --np-drop-line: rgba(255, 255, 255, 0.24);
+  --np-status: rgba(30, 30, 28, 0.84);
+  --np-wash: rgba(21, 21, 20, 0.6);
+  --np-lines: rgba(255, 255, 255, 0.04);
+  --np-seg-now: #4a4844;                            /* new: line-soft is too close to the panel in dark */
+  --np-glow-opacity: 0.35;
+}
+
+/* ---------- Base ---------- */
+
+html, body { margin: 0; background: var(--paper); }
+a { color: var(--ink); }
+a:hover { color: var(--link); }
+a:focus-visible, button:focus-visible, .np-drop:focus-within { outline: 2px solid var(--link); outline-offset: 2px; }
+.np-muted { color: var(--ink-muted); }
+[hidden] { display: none !important; }
+
+.np {
+  position: relative;
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: var(--space-4);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+/* ---------- Ground ---------- */
+
+.np-glow {
+  position: absolute; width: 560px; height: 560px; right: -140px; top: -120px; border-radius: 50%;
+  background: radial-gradient(circle, var(--glow) 0%, transparent 62%);
+  opacity: var(--np-glow-opacity); filter: blur(32px); pointer-events: none;
+}
+/* The signal band runs under the current step's glass panel to the right screen edge.
+   app.js sets --band-top so the band's middle sits at 55 % of the panel's height. */
+.np-band {
+  position: absolute; left: 34px; right: 0; height: 132px; top: var(--band-top, 560px);
+  background: var(--signal);
+  transition: top 600ms var(--np-ease-out);
+}
+
+/* ---------- Scaffolding ---------- */
+
+.np-top { position: relative; z-index: 2; display: flex; gap: var(--space-4); }
+.np-bar { flex: 1 1 0; min-width: 0; }
+.np-assistant {
+  flex: 0 0 var(--assistant-width); height: var(--bar-height); box-sizing: border-box;
+  padding: 0 var(--space-3) 0 18px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  font: inherit; color: var(--ink); text-align: left; cursor: pointer;
+}
+.np-assistant:hover { background: var(--glass-hover); }
+.np-assistant__titles { display: flex; flex-direction: column; gap: 3px; }
+.np-assistant__title { display: flex; align-items: center; gap: var(--space-2); font-family: var(--font-display); font-size: 17px; }
+.np-assistant__chevron { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+
+/* ---------- Screens ---------- */
+
+.np-main {
+  position: relative; z-index: 1; flex: 1; min-width: 0;
+  padding: var(--space-8) 0 var(--space-6) var(--space-indent);
+  display: flex; flex-direction: column; gap: var(--space-5);
+}
+/* Never animate .np-main or the panels: a running transform/opacity animation on an ancestor
+   cuts the glass off from the band behind it (no blur). Only titles, sheets and rows rise. */
+.rise { animation: np-rise 500ms var(--np-ease-out) both; }
+@keyframes np-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+.np-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--space-6); }
+.np-head__main { display: flex; flex-direction: column; gap: var(--space-5); }
+.np-title { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: 72px; line-height: 0.98; letter-spacing: -0.02em; }
+.np-title .pg-stop { color: var(--signal); }
+.np-btn-paper { white-space: nowrap; }
+.np-btn-paper:hover { background: var(--paper-column); }
+.np-lead { margin: 0; max-width: 640px; font-size: 15px; line-height: 1.55; color: var(--ink-muted); }
+
+.np-foot { display: flex; justify-content: flex-end; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+/* Primary step button: locked = outline, ready = ink fill */
+.np-go {
+  height: 48px; padding: 0 18px; box-sizing: border-box; display: flex; align-items: center; gap: var(--space-3);
+  border: 1px solid var(--ink); background: var(--ink); color: var(--on-ink);
+  font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+  transition: background 300ms, color 300ms, border-color 300ms;
+}
+.np-go:hover:not(:disabled) { opacity: 0.88; }
+.np-go:disabled { border-color: var(--line-strong); background: transparent; color: var(--ink-muted); cursor: not-allowed; }
+
+/* ---------- Glass panel (drop tray, extraction) ---------- */
+
+.np-tray {
+  border-radius: var(--radius-card); border: 1px solid var(--np-panel-line);
+  background: var(--np-panel); backdrop-filter: var(--np-panel-blur); -webkit-backdrop-filter: var(--np-panel-blur);
+  box-shadow: var(--np-panel-shadow);
+  padding: var(--space-5); display: flex; flex-direction: column; gap: var(--space-5);
+}
+.np-tray--extract { margin-top: var(--space-4); padding: var(--space-6); gap: var(--space-6); }
+.np-tray__head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); padding: 0 var(--space-1); }
+.np-tray__title { margin: 0; }
+
+/* ---------- Drop zone ---------- */
+
+.np-drop {
+  position: relative; display: grid; grid-template-columns: 72px 1fr auto; align-items: center; gap: var(--space-5);
+  padding: 22px var(--space-6); border-radius: var(--radius-glass); border: 1.5px dashed var(--np-drop-line);
+  background: var(--np-drop); cursor: pointer; transition: background 200ms;
+}
+.np-drop:hover, .np-drop[data-over="true"] { background: var(--np-drop-hover); }
+.np-drop[data-over="true"] { border-color: var(--signal); }
+.np-drop__plus { width: 72px; height: 72px; border-radius: 50%; background: var(--signal); color: var(--on-signal); display: flex; align-items: center; justify-content: center; }
+.np-drop__plus svg { width: 30px; height: 30px; }
+.np-drop__text { display: flex; flex-direction: column; gap: 6px; }
+.np-drop__title { font-size: 20px; font-weight: 600; line-height: 1.25; }
+.np-drop__hint { font-size: 14px; line-height: 1.5; color: var(--ink-muted); max-width: 460px; }
+.np-drop__actions { display: flex; align-items: center; gap: var(--space-4); }
+.np-drop__choose {
+  height: var(--control-height); padding: 0 14px; box-sizing: border-box; display: inline-flex; align-items: center;
+  border: 1px solid var(--ink); background: var(--paper-raised); color: var(--ink); font-family: var(--font-mono); font-size: 12px;
+}
+.np[data-empty="true"] .np-only-filled, .np[data-empty="false"] .np-only-empty { display: none; }
+
+/* Empty: the drop zone is the whole tray, centred */
+.np[data-empty="true"] .np-drop {
+  min-height: 340px; box-sizing: border-box; grid-template-columns: 1fr; justify-items: center; align-content: center;
+  text-align: center; padding: var(--space-8) var(--space-6);
+}
+.np[data-empty="true"] .np-drop__plus { width: 88px; height: 88px; }
+.np[data-empty="true"] .np-drop__plus svg { width: 34px; height: 34px; }
+.np[data-empty="true"] .np-drop__text { align-items: center; gap: var(--space-2); }
+.np[data-empty="true"] .np-drop__title { font-size: 24px; }
+
+.np-samples { align-self: center; border: 0; padding: 0; background: none; color: var(--ink-muted); text-decoration: underline; cursor: pointer; }
+.np[data-mock="false"] .np-samples, .np[data-empty="false"] .np-samples { display: none; }
+
+/* ---------- Sheets ---------- */
+
+.np-sheets { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-4); }
+.np[data-empty="true"] .np-sheets { display: none; }
+.np-sheet { min-width: 0; }
+.np-sheet__card {
+  position: relative; overflow: hidden; display: flex; flex-direction: column;
+  background: var(--paper-raised); border: 1px solid var(--line-soft); transition: opacity 400ms;
+}
+.np-sheet__head { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-4) 14px; min-width: 0; }
+.np-sheet__meta { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); color: var(--ink-muted); }
+.np-sheet__badges { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.np-badge { padding: 2px 6px; border: 1px solid var(--line-strong); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.np-badge--found { border-color: var(--selection); background: var(--selection); color: var(--on-selection); }
+.np-badge--review { border-color: var(--review); background: var(--review-fill); color: var(--review-ink); }
+.np-sheet__name { font-size: 14px; font-weight: 600; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The face: first-page preview at A4 proportions, cropped from the top */
+.np-sheet__face { position: relative; overflow: hidden; aspect-ratio: 210 / 297; border-top: 1px solid var(--line-soft); background: var(--paper-raised); }
+.np-sheet__preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top; opacity: 0; transition: opacity 400ms; }
+.np-sheet[data-preview="true"] .np-sheet__preview { opacity: 1; }
+.np-sheet[data-preview="true"] .np-sheet__placeholder { visibility: hidden; transition: visibility 0s 400ms; }
+.np-sheet__placeholder { position: absolute; inset: 0; padding: 20px 16px; display: flex; flex-direction: column; gap: 7px; }
+.np-sheet__placeholder i { display: block; height: 3px; background: var(--line-soft); }
+
+.np-sheet__status {
+  position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) 10px; background: var(--np-status); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--line-soft); color: var(--ink-muted);
+}
+.np-sheet__state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.np-sheet__dot { flex: 0 0 auto; width: 7px; height: 7px; box-sizing: border-box; border-radius: 50%; border: 1px solid var(--line-strong); }
+.np-link { border: 0; padding: 0; background: none; color: var(--ink-muted); font: inherit; text-decoration: underline; cursor: pointer; }
+
+/* Badges and the remove link show per state */
+.np-badge--found, .np-badge--review, .np-link { display: none; }
+.np-sheet[data-state="usable"] .np-badge--found { display: inline-flex; }
+.np-sheet[data-state="not_financial"] .np-badge--review { display: inline-flex; }
+.np-sheet[data-state="not_financial"] .np-link, .np-sheet[data-state="failed"] .np-link { display: inline; }
+
+/* Per state */
+.np-sheet[data-state="uploading"] .np-sheet__card, .np-sheet[data-state="queued"] .np-sheet__card { opacity: 0.72; }
+.np-sheet[data-state="not_financial"] .np-sheet__card, .np-sheet[data-state="failed"] .np-sheet__card { opacity: 0.8; border-color: var(--line-strong); }
+.np-sheet[data-state="checking"] .np-sheet__status { color: var(--ink); }
+.np-sheet[data-state="checking"] .np-sheet__dot { border: 0; background: var(--signal); animation: np-pulse 1.6s ease-in-out infinite; }
+.np-sheet[data-state="uploading"] .np-sheet__dot { border: 0; background: var(--line-strong); }
+.np-sheet[data-state="usable"] .np-sheet__dot { border: 0; background: var(--ink); }
+.np-sheet[data-state="failed"] .np-sheet__dot { border: 0; background: var(--review); }
+
+/* Checking: a scan line reads the page top to bottom; the unread part sits under a wash */
+.np-scan { display: none; position: absolute; left: 0; right: 0; top: 52%; height: 0; animation: np-scan 1.2s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate; }
+.np-sheet[data-state="checking"] .np-scan { display: block; }
+.np-scan i { position: absolute; left: 0; right: 0; display: block; }
+.np-scan__glow { bottom: 0; height: 56px; background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--signal) 22%, transparent)); }
+.np-scan__wash { top: 2px; height: 900px; background: var(--np-wash); }
+.np-scan__line { top: 0; height: 2px; background: var(--signal); }
+@keyframes np-scan { from { top: 6%; } to { top: 94%; } }
+@keyframes np-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.np-pulse { animation: np-pulse 1.6s ease-in-out infinite; }
+
+/* ---------- Extraction ---------- */
+
+.np-totals { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: var(--space-6); padding: 0 var(--space-1); }
+.np-totals__read { display: flex; align-items: baseline; gap: var(--space-2); }
+.np-totals__found { justify-self: end; display: inline-flex; align-items: center; gap: var(--space-2); color: var(--ink); }
+.np[data-extraction="done"] .np-only-running, .np:not([data-extraction="done"]) .np-only-done { display: none; }
+.np-legend { display: flex; gap: var(--space-5); justify-content: center; }
+.np-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.np-legend__swatch { display: block; width: 30px; height: 3px; }
+.np-legend__swatch--done { background: var(--np-seg-done); }
+.np-legend__swatch--now { background: linear-gradient(90deg, var(--np-seg-now) 0%, var(--signal) 50%, var(--np-seg-now) 100%); }
+.np-legend__swatch--todo { background: var(--np-seg-todo); }
+
+.np-lines { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-radius: var(--radius-glass); background: var(--np-lines); }
+.np-line { display: grid; grid-template-columns: 340px minmax(0, 1fr) 52px; align-items: center; gap: var(--space-4); min-height: 24px; }
+.np-line__doc { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.np-line__kind { flex: 0 0 44px; height: 22px; box-sizing: border-box; border: 1px solid var(--line-strong); display: flex; align-items: center; justify-content: center; color: var(--ink-muted); }
+.np-line__name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted); }
+.np-line__count { text-align: right; white-space: nowrap; color: var(--ink-subtle); }
+.np-line[data-active="true"] .np-line__name, .np-line[data-active="true"] .np-line__count { color: var(--ink); }
+
+/* Segments: one per page */
+.np-line__track { display: flex; gap: 2px; height: 3px; }
+.np-seg { position: relative; flex: 1 1 0; min-width: 0; height: 3px; background: var(--np-seg-todo); overflow: hidden; transition: background-color 300ms; }
+.np-seg[data-s="done"] { background: var(--np-seg-done); }
+.np-seg[data-s="now"] { background: var(--np-seg-now); }
+/* The page being read: a short glow travels through its own segment */
+.np-seg[data-s="now"]::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -50%; width: 50%;
+  background: linear-gradient(90deg, transparent, var(--signal), transparent);
+  animation: np-seg 1.2s linear infinite;
+}
+@keyframes np-seg { from { left: -50%; } to { left: 100%; } }
+
+/* Strip: documents over CONFIG.stripAbovePages pages. Plain fill; the glow travels through the pages still left. */
+.np-strip { position: relative; flex: 1 1 0; height: 3px; background: var(--np-seg-todo); overflow: hidden; }
+.np-strip__fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--np-seg-done); transition: width 300ms; }
+.np-strip__rest { position: absolute; top: 0; bottom: 0; right: 0; overflow: hidden; display: none; }
+.np-line[data-reading="true"] .np-strip__rest { display: block; }
+.np-strip__rest::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -160px; width: 160px;
+  background: linear-gradient(90deg, transparent, var(--signal), transparent);
+  animation: np-strip 2.4s linear infinite;
+}
+@keyframes np-strip { from { left: -160px; } to { left: 100%; } }
+
+/* Latest findings */
+.np-found { display: flex; flex-direction: column; gap: 10px; padding: 0 var(--space-1); }
+.np-found__empty { min-height: 144px; box-sizing: border-box; border: 1px dashed var(--line); display: flex; align-items: center; justify-content: center; font-size: 14px; color: var(--ink-muted); }
+.np-found__table { border: 1px solid var(--line); background: var(--paper); font-variant-numeric: tabular-nums; }
+.np-found__row { display: grid; grid-template-columns: minmax(220px, 2fr) 120px 140px minmax(220px, 1.6fr); align-items: center; min-height: 48px; border-bottom: 1px solid var(--line-soft); font-size: 14px; }
+.np-found__row:last-child { border-bottom: 0; }
+.np-found__row > * { padding: 0 var(--space-3); }
+.np-found__name { padding-left: var(--space-4) !important; display: flex; align-items: center; gap: 10px; }
+.np-found__mark { flex: 0 0 6px; height: 6px; background: var(--ink-muted); }
+.np-found__row:first-child .np-found__mark { background: var(--signal); }
+.np-found__value { text-align: right; font-weight: 500; }
+.np-found__source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .np-pulse, .np-scan, .np-sheet[data-state="checking"] .np-sheet__dot { animation: none; }
+  .np-seg[data-s="now"]::after { animation: none; left: 25%; }
+  .np-strip__rest::after { animation: none; left: 0; }
+  .np-band, .np-sheet__card, .np-sheet__preview, .np-strip__fill { transition: none; }
+}

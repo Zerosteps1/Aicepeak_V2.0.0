@@ -89,8 +89,11 @@ public sealed class EnvironmentConfigurationTests : IDisposable {
         WriteDotEnv(
             $"DB_CON_STR='{unreachable["DB_CON_STR"]}'",
             $"DB_USR='{unreachable["DB_USR"]}'",
-            $"DB_PWD='{unreachable["DB_PWD"]}'");
-        using var _ = new EnvironmentVariables(("DB_CON_STR", null), ("DB_USR", null), ("DB_PWD", null));
+            $"DB_PWD='{unreachable["DB_PWD"]}'",
+            $"BLOB_PROVIDER='{unreachable["BLOB_PROVIDER"]}'",
+            $"BLOB_CON_STR='{unreachable["BLOB_CON_STR"]}'");
+        using var _ = new EnvironmentVariables(
+            ("DB_CON_STR", null), ("DB_USR", null), ("DB_PWD", null), ("BLOB_PROVIDER", null), ("BLOB_CON_STR", null));
         await using var factory = new ApiFactory(environment, new Dictionary<string, string?>(), _contentRoot);
         var client = factory.CreateClient();
 

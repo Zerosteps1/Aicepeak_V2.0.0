@@ -40,6 +40,9 @@ public static class EntraAuthentication {
     /// </summary>
     public static bool IsUserToken(ClaimsPrincipal principal) => principal.HasClaim(claim => claim.Type == ScopeClaim);
 
+    /// <summary>The token's tenant ID (<c>tid</c>); every principal authenticated here has exactly one valid tid.</summary>
+    public static bool TryGetTenantId(ClaimsPrincipal principal, out Guid tid) => TryParseGuid(SingleValue(principal, "tid"), out tid);
+
     private static void Configure(JwtBearerOptions options, EntraOptions entra) {
         // Without a valid https address there is no metadata and no signing key, so every token is rejected.
         if (entra.ValidMetadataAddress is { } metadataAddress) {

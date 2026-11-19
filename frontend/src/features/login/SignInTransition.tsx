@@ -44,6 +44,7 @@ export function SignInTransition({ phase, background, children, onDone }: SignIn
   const onDoneRef = useRef(onDone)
 
   useEffect(() => {
+    // oxlint-disable-next-line aicepeak-state/no-ref-mirror -- latest-callback ref: the transition listeners must call the current onDone without restarting the effect
     onDoneRef.current = onDone
   }, [onDone])
 

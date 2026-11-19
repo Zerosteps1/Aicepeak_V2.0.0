@@ -39,6 +39,36 @@ public sealed class HealthAliveTests {
     }
 
     [Theory]
+    [InlineData("BLOB_PROVIDER", "")]
+    [InlineData("BLOB_PROVIDER", "aws")]
+    [InlineData("BLOB_CON_STR", "")]
+    [InlineData("BLOB_CON_STR", "not a connection string")]
+    public async Task AC09_MissingOrInvalidBlobStorageSetting_AppStartsAndReturns503NamingConfiguration(string key, string value) {
+        var settings = TestSettings.UnreachableDatabase();
+        settings[key] = value;
+
+        var (status, health) = await GetHealth(TestSettings.Production, settings);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
+        Assert.Equal("Unhealthy", health.ComponentStatus("configuration"));
+        Assert.Contains("configuration", health.Detail);
+        Assert.False(health.HasErrors);
+    }
+
+    [Fact]
+    public async Task AC09_Development_NamesEveryFailingSetting_OfDatabaseAndBlobStorage() {
+        var settings = TestSettings.Database("Host=127.0.0.1", "postgres", "");
+        settings["BLOB_PROVIDER"] = "aws";
+        settings["BLOB_CON_STR"] = "";
+
+        var (_, health) = await GetHealth(TestSettings.Development, settings);
+
+        Assert.Equal(
+            "DB_PWD is missing. BLOB_PROVIDER is not a supported provider (supported: azure). BLOB_CON_STR is missing.",
+            health.ErrorDescription("configuration"));
+    }
+
+    [Theory]
     [InlineData("Unknown=value")]
     [InlineData("Host=127.0.0.1;Port=not-a-number")]
     [InlineData("Database=aicepeak")]

@@ -13,5 +13,6 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   if (status === 'loading') {
     return null
   }
+  // oxlint-disable-next-line aicepeak-state/no-router-state -- the return path after sign-in is navigation data that LoginPage reads once, not app state
   return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
 }

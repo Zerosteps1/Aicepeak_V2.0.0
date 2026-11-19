@@ -1,0 +1,5 @@
+# EF Core generates the tenant migrations in its own style; like Data/Migrations (root .editorconfig) they are
+# never formatted or checked.
+[*.cs]
+generated_code = true
+dotnet_diagnostic.IDE0055.severity = none

@@ -6,13 +6,22 @@
     "oxc",
     "vitest"
   ],
+  "jsPlugins": [
+    "./lint/aicepeak-state.js"
+  ],
   "rules": {
     "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "error",
     "react/only-export-components": [
       "warn",
       {
         "allowConstantExport": true
       }
-    ]
+    ],
+    "aicepeak-state/no-state-copy-init": "error",
+    "aicepeak-state/no-sync-state-effect": "error",
+    "aicepeak-state/no-ref-mirror": "error",
+    "aicepeak-state/no-router-state": "error",
+    "aicepeak-state/context-files-only": "error"
   }
 }

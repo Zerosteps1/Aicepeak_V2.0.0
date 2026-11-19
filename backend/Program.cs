@@ -1,8 +1,11 @@
 using Aicepeak.Api.Auth;
 using Aicepeak.Api.Configuration;
 using Aicepeak.Api.Data;
+using Aicepeak.Api.Documents.Analysis;
 using Aicepeak.Api.Frontend;
 using Aicepeak.Api.Health;
+using Aicepeak.Api.Projects;
+using Aicepeak.Api.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,6 +13,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddDotEnvInDevelopment(builder.Environment);
 
 builder.Services.AddDatabase(builder.Configuration);
+builder.Services.AddBlobStorage(builder.Configuration);
+builder.Services.AddDocumentAnalysis(builder.Configuration);
 builder.Services.AddEntraAuthentication(builder.Configuration);
 builder.Services.AddHealth();
 builder.Services.AddProblemDetails();
@@ -33,7 +38,7 @@ app.UseAuthorization();
 
 // Health, the OpenAPI document (Development) and the frontend fallback are anonymous; API endpoints require a token.
 app.MapHealth();
-app.MapGroup("/api/v1").RequireAuthorization().MapLogin();
+app.MapGroup("/api/v1").RequireAuthorization().MapLogin().MapProjects();
 app.MapControllers().RequireAuthorization();
 
 if (app.Environment.IsDevelopment()) {

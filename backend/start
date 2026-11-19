@@ -193,7 +193,8 @@ def check_database(database, user, password):
 
 
 def migrate():
-    for command in (["dotnet", "tool", "restore"], ["dotnet", "ef", "database", "update"]):
+    # Only the main database; each tenant's database is created and migrated by the app on the tenant's first request.
+    for command in (["dotnet", "tool", "restore"], ["dotnet", "ef", "database", "update", "--context", "AppDbContext"]):
         print(f"Running: {' '.join(command)}")
         try:
             result = subprocess.run(command, cwd=BACKEND_DIR, check=False)

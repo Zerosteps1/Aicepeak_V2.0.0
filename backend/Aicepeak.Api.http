@@ -1,12 +1,77 @@
 @Aicepeak_Api_HostAddress = http://localhost:8080
 # An Entra v2 access token for the API, e.g. copied from the browser's network tab after signing in.
 @AccessToken =
+# The id of a project, e.g. from the response of "Create a project".
+@ProjectId =
+# The last path segment of a document's url.
+@DocumentId =
 
 GET {{Aicepeak_Api_HostAddress}}/api/v1/health/alive
 
 ###
 
 PUT {{Aicepeak_Api_HostAddress}}/api/v1/login
+Authorization: Bearer {{AccessToken}}
+
+###
+
+# Create a project
+POST {{Aicepeak_Api_HostAddress}}/api/v1/project
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+
+{
+  "name": "Forecast 2026",
+  "startDate": "2026-01-01",
+  "endDate": null,
+  "description": ""
+}
+
+###
+
+GET {{Aicepeak_Api_HostAddress}}/api/v1/project/{{ProjectId}}
+Authorization: Bearer {{AccessToken}}
+
+###
+
+# Change fields; "endDate": null clears it. "documents" only adds documents, each { url, name, size, contentType }
+# with the url of its upload without the signed query.
+PATCH {{Aicepeak_Api_HostAddress}}/api/v1/project/{{ProjectId}}
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+
+{
+  "description": "Planung 2026"
+}
+
+###
+
+# An upload URL (PUT the file to blobUrl with the header x-ms-blob-type: BlockBlob), or { document } for a
+# file the tenant already has.
+POST {{Aicepeak_Api_HostAddress}}/api/v1/project/{{ProjectId}}/upload-url
+Authorization: Bearer {{AccessToken}}
+Content-Type: application/json
+
+{
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "name": "Jahresabschluss 2025.pdf",
+  "size": 123456,
+  "contentType": "application/pdf"
+}
+
+###
+
+DELETE {{Aicepeak_Api_HostAddress}}/api/v1/project/{{ProjectId}}/document/{{DocumentId}}
+Authorization: Bearer {{AccessToken}}
+
+###
+
+GET {{Aicepeak_Api_HostAddress}}/api/v1/project/{{ProjectId}}/document-validation/sse
+Authorization: Bearer {{AccessToken}}
+
+###
+
+GET {{Aicepeak_Api_HostAddress}}/api/v1/project/{{ProjectId}}/document-extraction/sse
 Authorization: Bearer {{AccessToken}}
 
 ###

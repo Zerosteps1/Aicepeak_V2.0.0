@@ -7,14 +7,19 @@ public static class TestSettings {
     public const string Development = "Development";
     public const string Production = "Production";
 
+    /// <summary>Azurite's well-known development account; valid without a running Azurite until a blob is accessed.</summary>
+    public const string DevelopmentStorage = "UseDevelopmentStorage=true";
+
     /// <summary>
-    /// All three database keys, always set, so a developer's .env or shell variables never leak into a test.
-    /// An empty string means "missing".
+    /// All three database keys and both blob storage keys, always set, so a developer's .env or shell variables never
+    /// leak into a test. An empty string means "missing".
     /// </summary>
     public static Dictionary<string, string?> Database(string conStr, string user, string password) => new() {
         ["DB_CON_STR"] = conStr,
         ["DB_USR"] = user,
         ["DB_PWD"] = password,
+        ["BLOB_PROVIDER"] = "azure",
+        ["BLOB_CON_STR"] = DevelopmentStorage,
     };
 
     /// <summary>

@@ -8,7 +8,10 @@ using Npgsql;
 
 namespace Aicepeak.Api.Tests.Data;
 
-/// <summary>AC-2/AC-4: <see cref="DataServiceCollectionExtensions.AddDatabase"/> validates the settings and builds the connection.</summary>
+/// <summary>
+/// AC-2/AC-4: <see cref="DataServiceCollectionExtensions.AddDatabase"/> validates the settings and builds the connection;
+/// AC-12 (AIC-02): a tenant's database is the same server with the tid as database name.
+/// </summary>
 public sealed class DatabaseRegistrationTests {
     private const string Password = "p;w=d'x\"$y";
 
@@ -71,6 +74,28 @@ public sealed class DatabaseRegistrationTests {
         using var scope = services.CreateScope();
 
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        Assert.Null(db.Database.GetConnectionString());
+    }
+
+    [Fact]
+    public void AC12_TenantDbContext_UsesTheSameServer_WithTheTidAsDatabaseName() {
+        using var services = Services("Host=db.example;Port=5433;Database=aicepeak", "app", Password);
+        var tid = new Guid("1B4E28BA-2FA1-41D2-883F-0016D3CCA427");
+
+        using var db = services.GetRequiredService<TenantDbContextFactory>().Create(tid);
+        var builder = new NpgsqlConnectionStringBuilder(db.Database.GetConnectionString());
+
+        Assert.Equal(("db.example", 5433, "1b4e28ba-2fa1-41d2-883f-0016d3cca427"), (builder.Host, builder.Port, builder.Database));
+        Assert.Equal(("app", Password), (builder.Username, builder.Password));
+    }
+
+    [Fact]
+    public void AC12_TenantDbContext_OutsideARequest_HasNoConnectionString() {
+        using var services = Services("Host=db.example", "app", Password);
+        using var scope = services.CreateScope();
+
+        var db = scope.ServiceProvider.GetRequiredService<TenantDbContext>();
 
         Assert.Null(db.Database.GetConnectionString());
     }

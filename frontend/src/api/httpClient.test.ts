@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiFetch, setAccessTokenProvider } from './httpClient.ts'
+import { ApiError, apiFetch, ensureOk, setAccessTokenProvider } from './httpClient.ts'
 
 function stubFetch() {
   const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }))
@@ -40,5 +40,35 @@ describe('apiFetch', () => {
 
     await expect(apiFetch('/login')).rejects.toThrow('no token')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('ensureOk', () => {
+  it('passes a success response through', async () => {
+    const response = new Response(null, { status: 204 })
+
+    await expect(ensureOk(response, 'DELETE /x')).resolves.toBe(response)
+  })
+
+  it('AC-5: turns a 400 ValidationProblem into an ApiError listing every field error', async () => {
+    const response = new Response(
+      JSON.stringify({ status: 400, errors: { name: ['is required'], 'documents[2].size': ['does not match the uploaded file'] } }),
+      { status: 400, headers: { 'Content-Type': 'application/problem+json' } },
+    )
+
+    const error = await ensureOk(response, 'PATCH /project/{id}').catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({
+      status: 400,
+      message: 'PATCH /project/{id} failed with HTTP 400',
+      errors: { name: ['is required'], 'documents[2].size': ['does not match the uploaded file'] },
+    })
+  })
+
+  it('gives no field errors for a body that is not a ValidationProblem', async () => {
+    const error = await ensureOk(new Response('Not Found', { status: 404 }), 'GET /project/{id}').catch((caught: unknown) => caught)
+
+    expect(error).toMatchObject({ status: 404, errors: {} })
   })
 })

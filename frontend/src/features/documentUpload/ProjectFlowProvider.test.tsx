@@ -1,19 +1,39 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { StrictMode, type ReactNode } from 'react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setAccessTokenProvider } from '../../api/httpClient.ts'
 import type { DocumentRef, Project } from '../../api/projects.ts'
 import { deferred } from '../../test/deferred.ts'
-import { json, stubApi, validationProblem, type RecordedRequest } from '../../test/fakeApi.ts'
+import { FakeEventStream, json, stubApi, validationProblem, type RecordedRequest } from '../../test/fakeApi.ts'
 import { fakeSha256, stubDigest } from '../../test/fakeCrypto.ts'
 import { stubXhr, type FakeXhr } from '../../test/fakeXhr.ts'
-import { NO_VALID_DOCUMENT, NOT_LINKED, PROJECT_NOT_FOUND, UPLOAD_FAILED } from './flowState.ts'
+import { CHECK_INTERRUPTED, EXTRACTION_FAILED, NO_VALID_DOCUMENT, NOT_LINKED, PROJECT_NOT_FOUND, UPLOAD_FAILED } from './flowState.ts'
 import { ProjectFlowProvider } from './ProjectFlowProvider.tsx'
-import { selectCanAdvance, selectExtractionLines, selectSheets } from './selectors.ts'
+import { CHECK_FAILED, selectCanAdvance, selectCanRetryExtraction, selectCanRetryValidation, selectExtractionLines, selectSheets } from './selectors.ts'
 import { useProjectFlowActions, useProjectFlowState } from './useProjectFlow.ts'
+
+/** The waits before stream reconnects, recorded instead of waited for, so the tests need no timers. */
+const reconnectWaits = vi.hoisted((): number[] => [])
+
+vi.mock('../../api/documentStreams.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/documentStreams.ts')>()
+  const sleep = async (ms: number, signal?: AbortSignal) => {
+    reconnectWaits.push(ms)
+    signal?.throwIfAborted()
+  }
+  return {
+    ...actual,
+    readValidationRun: (...[projectId, onEvent, options]: Parameters<typeof actual.readValidationRun>) =>
+      actual.readValidationRun(projectId, onEvent, { ...options, sleep }),
+    readExtractionRun: (...[projectId, onEvent, options]: Parameters<typeof actual.readExtractionRun>) =>
+      actual.readExtractionRun(projectId, onEvent, { ...options, sleep }),
+  }
+})
 
 const PROJECT_ID = '0195f3a2-0000-7000-8000-0000000000aa'
 const PROJECT_PATH = `/project/${PROJECT_ID}`
+const VALIDATION_PATH = `${PROJECT_PATH}/document-validation/sse`
+const EXTRACTION_PATH = `${PROJECT_PATH}/document-extraction/sse`
 const EXPIRES = new Date(Date.now() + 15 * 60_000).toISOString()
 
 /** The blob URL of a document of this project, without query. */
@@ -61,8 +81,8 @@ function setup(documents: DocumentRef[] = [], { strict = false } = {}) {
     backend.project = { ...backend.project, documents: backend.project.documents.filter((ref) => !ref.url.endsWith(`/${documentId}`)) }
     return new Response(null, { status: 204 })
   })
-  const validations = api.streams(`${PROJECT_PATH}/document-validation/sse`)
-  const extractions = api.streams(`${PROJECT_PATH}/document-extraction/sse`)
+  const validations = api.streams(VALIDATION_PATH)
+  const extractions = api.streams(EXTRACTION_PATH)
 
   const wrapper = ({ children }: { children: ReactNode }) => {
     const provider = <ProjectFlowProvider projectId={PROJECT_ID}>{children}</ProjectFlowProvider>
@@ -120,8 +140,34 @@ async function validate(flow: Flow, results: Record<string, 'valid' | 'invalid'>
   await waitFor(() => expect(flow.hook.result.current.state.validation.status).toBe('done'))
 }
 
+/** Answers the next `times` requests to the stream `path` with `status`, then streams again as before. */
+function refuseStream(flow: Flow, path: string, status: number, times = 1) {
+  const streams = path === VALIDATION_PATH ? flow.validations : flow.extractions
+  let refused = 0
+  flow.api.on('GET', path, () => {
+    if (refused < times) {
+      refused += 1
+      return new Response(null, { status })
+    }
+    const stream = new FakeEventStream()
+    streams.push(stream)
+    return stream
+  })
+}
+
+/** Goes to step `extract` with the valid document `d1` and waits for the extraction stream. */
+async function extract(flow: Flow) {
+  await loaded(flow)
+  await validate(flow, { d1: 'valid' })
+  act(() => flow.hook.result.current.actions.advance())
+  await waitFor(() => expect(flow.extractions).toHaveLength(1))
+}
+
+const POSITION = { name: 'Umsatzerlöse', value: '184 300', period: '2025', source: 'd1 · S. 1', page: 1 }
+
 beforeEach(() => {
   setAccessTokenProvider(async () => 'app-token')
+  reconnectWaits.length = 0
 })
 
 afterEach(() => {
@@ -524,5 +570,142 @@ describe('ProjectFlowProvider', () => {
     expect(patches(flow)).toHaveLength(1)
     expect(flow.validations.filter((stream) => !stream.cancelled)).toHaveLength(1)
     expect(sheets(flow).map(({ id, status }) => ({ id, status }))).toEqual([{ id: 'doc-bilanz', status: 'valid' }])
+  })
+})
+
+describe('ProjectFlowProvider stream breaks', () => {
+  it('reconnects a validation stream that closes early or answers 503, within the same run', async () => {
+    const flow = setup([linked('d1'), linked('d2')])
+    await loaded(flow)
+    await waitFor(() => expect(flow.validations).toHaveLength(1))
+    await act(async () => flow.validations[0]?.push({ overallProgress: 50, document: 'd1', documentProgress: 100 }))
+    await waitFor(() => expect(sheets(flow)[0]?.status).toBe('valid'))
+    refuseStream(flow, VALIDATION_PATH, 503)
+
+    await act(async () => flow.validations[0]?.end())
+    await waitFor(() => expect(flow.validations).toHaveLength(2))
+    expect(flow.hook.result.current.state.validation).toMatchObject({ run: 1, status: 'running' })
+    await validate(flow, { d1: 'valid', d2: 'valid' })
+
+    expect(flow.api.sent('GET', VALIDATION_PATH)).toHaveLength(3)
+    expect(reconnectWaits).toEqual([1000, 3000])
+    expect(flow.hook.result.current.state.validation.run).toBe(1)
+    expect(selectCanAdvance(flow.hook.result.current.state)).toBe(true)
+  })
+
+  it('keeps documents without a result failed after the last reconnect, and advancing stays blocked', async () => {
+    const flow = setup([linked('d1'), linked('d2')])
+    await loaded(flow)
+    await waitFor(() => expect(flow.validations).toHaveLength(1))
+    await act(async () => flow.validations[0]?.push({ overallProgress: 50, document: 'd1', documentProgress: 100 }))
+    await waitFor(() => expect(sheets(flow)[0]?.status).toBe('valid'))
+
+    for (let index = 0; index < 4; index++) {
+      await waitFor(() => expect(flow.validations).toHaveLength(index + 1))
+      await act(async () => flow.validations[index]?.end())
+    }
+
+    await waitFor(() => expect(flow.hook.result.current.state.validation).toMatchObject({ status: 'failed', error: CHECK_INTERRUPTED }))
+    expect(reconnectWaits).toEqual([1000, 3000, 10_000])
+    expect(sheets(flow).map(({ id, status, error }) => ({ id, status, error }))).toEqual([
+      { id: 'd1', status: 'valid', error: null },
+      { id: 'd2', status: 'failed', error: CHECK_INTERRUPTED },
+    ])
+    expect(selectCanAdvance(flow.hook.result.current.state)).toBe(false)
+    expect(selectCanRetryValidation(flow.hook.result.current.state)).toBe(true)
+
+    act(() => flow.hook.result.current.actions.advance())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(flow.hook.result.current.state).toMatchObject({ step: 'upload', advancing: false })
+    expect(flow.api.sent('DELETE', new RegExp(`^${PROJECT_PATH}/document/`))).toHaveLength(0)
+    expect(flow.api.sent('GET', VALIDATION_PATH)).toHaveLength(4)
+  })
+
+  it.each([401, 404])('does not reconnect when the backend answers %i', async (status) => {
+    const flow = setup([linked('d1')])
+    refuseStream(flow, VALIDATION_PATH, status)
+
+    await loaded(flow)
+
+    await waitFor(() => expect(flow.hook.result.current.state.validation).toMatchObject({ status: 'failed', error: CHECK_FAILED }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(flow.api.sent('GET', VALIDATION_PATH)).toHaveLength(1)
+    expect(reconnectWaits).toEqual([])
+    expect(sheets(flow)[0]).toMatchObject({ status: 'failed', error: CHECK_FAILED })
+    expect(selectCanAdvance(flow.hook.result.current.state)).toBe(false)
+  })
+
+  it('retryValidation reopens the validation stream after a run error and clears the failure', async () => {
+    const flow = setup([linked('d1')])
+    await loaded(flow)
+    await waitFor(() => expect(flow.validations).toHaveLength(1))
+    await act(async () => {
+      flow.validations[0]?.push({ overallProgress: 100, document: '', error: 'Analyse nicht verfügbar' })
+      flow.validations[0]?.end()
+    })
+    await waitFor(() => expect(sheets(flow)[0]).toMatchObject({ status: 'failed', error: 'Analyse nicht verfügbar' }))
+    // A run error is final: no reconnect.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(flow.validations).toHaveLength(1)
+    expect(reconnectWaits).toEqual([])
+    expect(selectCanAdvance(flow.hook.result.current.state)).toBe(false)
+    expect(selectCanRetryValidation(flow.hook.result.current.state)).toBe(true)
+
+    act(() => flow.hook.result.current.actions.retryValidation())
+    act(() => flow.hook.result.current.actions.retryValidation())
+
+    expect(flow.hook.result.current.state.validation).toMatchObject({ run: 2, status: 'running', error: null })
+    expect(sheets(flow)[0]).toMatchObject({ status: 'queued', error: null })
+    expect(selectCanRetryValidation(flow.hook.result.current.state)).toBe(false)
+    await waitFor(() => expect(flow.validations).toHaveLength(2))
+    await validate(flow, { d1: 'valid' })
+    expect(flow.validations).toHaveLength(2)
+    expect(sheets(flow)[0]).toMatchObject({ status: 'valid', error: null })
+    expect(selectCanAdvance(flow.hook.result.current.state)).toBe(true)
+  })
+
+  it('starts the extraction progress over when its stream reconnects, so no position is counted twice', async () => {
+    const flow = setup([linked('d1')])
+    await extract(flow)
+    await act(async () => flow.extractions[0]?.push({ overallProgress: 50, document: 'd1', pages: 2, pagesRead: 1, positions: 1, position: POSITION }))
+    await waitFor(() => expect(flow.hook.result.current.state.extraction.found).toHaveLength(1))
+
+    await act(async () => flow.extractions[0]?.fail())
+    await waitFor(() => expect(flow.extractions).toHaveLength(2))
+    expect(flow.hook.result.current.state.extraction).toMatchObject({ run: 1, status: 'running', found: [], positions: 0, documents: {} })
+    await act(async () => {
+      flow.extractions[1]?.push({ overallProgress: 50, document: 'd1', pages: 2, pagesRead: 1, positions: 1, position: POSITION })
+      flow.extractions[1]?.push({ overallProgress: 100, document: 'd1', pagesRead: 2, positions: 1 })
+      flow.extractions[1]?.end()
+    })
+
+    await waitFor(() => expect(flow.hook.result.current.state.extraction).toMatchObject({ status: 'done', positions: 1 }))
+    expect(flow.hook.result.current.state.extraction.found).toEqual([{ ...POSITION, documentId: 'd1' }])
+    expect(reconnectWaits).toEqual([1000])
+  })
+
+  it('fails the extraction after the last reconnect; retryExtraction restarts it and clears the failure', async () => {
+    const flow = setup([linked('d1')])
+    await extract(flow)
+    refuseStream(flow, EXTRACTION_PATH, 503, 3)
+
+    await act(async () => flow.extractions[0]?.fail())
+
+    await waitFor(() => expect(flow.hook.result.current.state.extraction).toMatchObject({ run: 1, status: 'failed', error: EXTRACTION_FAILED }))
+    expect(flow.api.sent('GET', EXTRACTION_PATH)).toHaveLength(4)
+    expect(reconnectWaits).toEqual([1000, 3000, 10_000])
+    expect(selectCanRetryExtraction(flow.hook.result.current.state)).toBe(true)
+
+    act(() => flow.hook.result.current.actions.retryExtraction())
+
+    expect(flow.hook.result.current.state.extraction).toMatchObject({ run: 2, status: 'running', error: null })
+    expect(selectCanRetryExtraction(flow.hook.result.current.state)).toBe(false)
+    await waitFor(() => expect(flow.extractions).toHaveLength(2))
+    await act(async () => {
+      flow.extractions[1]?.push({ overallProgress: 100, document: 'd1', pages: 1, pagesRead: 1, positions: 1, position: POSITION })
+      flow.extractions[1]?.end()
+    })
+    await waitFor(() => expect(flow.hook.result.current.state.extraction).toMatchObject({ run: 2, status: 'done', error: null }))
+    expect(flow.hook.result.current.state.extraction.found).toEqual([{ ...POSITION, documentId: 'd1' }])
   })
 })

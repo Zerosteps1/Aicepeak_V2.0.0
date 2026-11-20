@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text.Json;
 
 namespace Aicepeak.Api.Projects;
@@ -7,6 +8,9 @@ namespace Aicepeak.Api.Projects;
 /// serves the duplicate lookup; the stored hash is computed by the backend.
 /// </summary>
 internal sealed record UploadUrlInput(byte[] Sha256, string Name, long Size, string ContentType) {
+    /// <summary>The properties of the body, documented by <see cref="UploadUrlRequest"/>; any other is unknown.</summary>
+    public static readonly FrozenSet<string> Properties = ["sha256", "name", "size", "contentType"];
+
     public static UploadUrlInput? Parse(JsonElement body, ValidationErrors errors) {
         byte[]? sha256 = null;
         string? name = null;
@@ -17,6 +21,11 @@ internal sealed record UploadUrlInput(byte[] Sha256, string Name, long Size, str
             var value = property.Value;
             if (!seen.Add(property.Name)) {
                 errors.Add(property.Name, "is given more than once");
+                continue;
+            }
+
+            if (!Properties.Contains(property.Name)) {
+                errors.Add(property.Name, "is not a known property");
                 continue;
             }
 
@@ -47,9 +56,6 @@ internal sealed record UploadUrlInput(byte[] Sha256, string Name, long Size, str
                         errors.Add("contentType", DocumentRules.ContentTypeRule);
                     }
 
-                    break;
-                default:
-                    errors.Add(property.Name, "is not a known property");
                     break;
             }
         }

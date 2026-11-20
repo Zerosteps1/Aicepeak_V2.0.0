@@ -101,14 +101,22 @@ namespace Aicepeak.Api.Data.TenantMigrations
                         .HasColumnType("character varying(200)")
                         .HasColumnName("name");
 
+                    b.Property<string>("NameNormalized")
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("text")
+                        .HasColumnName("name_normalized")
+                        .HasComputedColumnSql("lower(name)", true);
+
                     b.Property<DateOnly>("StartDate")
                         .HasColumnType("date")
                         .HasColumnName("start_date");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Name")
-                        .IsUnique();
+                    b.HasIndex("NameNormalized")
+                        .IsUnique()
+                        .HasDatabaseName("IX_projects_name_normalized");
 
                     b.ToTable("projects", (string)null);
                 });

@@ -31,7 +31,10 @@ export type DocumentCheck = {
 
 /** The validation of the project's documents. Documents never change, so results are kept across runs. */
 export type ValidationState = {
-  /** Counts the runs: the first starts once a loaded project has documents, then every PATCH starts one (AC-7). */
+  /**
+   * Counts the runs: the first starts once a loaded project has documents, then every PATCH starts one (AC-7), and so
+   * does `retryValidation`.
+   */
   run: number
   status: RunStatus
   /** Why the current run failed as a whole, ready to show. */
@@ -55,6 +58,8 @@ export type FoundPosition = ExtractedPosition & { documentId: string }
 
 /** The extraction of the project's documents (step `extract`). */
 export type ExtractionState = {
+  /** Counts the runs: `advance` starts the first, `retryExtraction` each further one; `0` before step `extract`. */
+  run: number
   status: RunStatus
   /** Why the run failed as a whole, as the backend says. */
   error: string | null
@@ -111,6 +116,13 @@ export type ProjectFlowActions = {
    * step `extract`; when no valid document remains it stays and sets `message` (AC-25).
    */
   advance(): void
+  /**
+   * "Erneut prüfen" (only when `selectCanRetryValidation`): starts a new validation run, which opens the validation
+   * stream again and clears the failure; the results documents already have are kept.
+   */
+  retryValidation(): void
+  /** "Erneut versuchen" (only when `selectCanRetryExtraction`): starts the extraction again from the beginning. */
+  retryExtraction(): void
 }
 
 /** The flow's state; read it with `useProjectFlowState`. */

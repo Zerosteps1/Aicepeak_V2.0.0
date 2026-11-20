@@ -2,6 +2,7 @@ import {
   AuthError,
   BrowserAuthErrorCodes,
   CacheLookupPolicy,
+  ClientAuthErrorCodes,
   EventType,
   InteractionStatus,
   InteractionType,
@@ -36,6 +37,22 @@ function errorMessage(error: unknown): string {
   return cancelled ? CANCELLED : FAILED
 }
 
+/**
+ * MSAL's codes for a token request that did not get through to Microsoft: the browser is offline, or the request
+ * (e.g. renewing the access token with the refresh token) failed on the way.
+ */
+const NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
+  BrowserAuthErrorCodes.noNetworkConnectivity,
+  BrowserAuthErrorCodes.postRequestFailed,
+  BrowserAuthErrorCodes.getRequestFailed,
+  ClientAuthErrorCodes.networkError,
+])
+
+/** Whether MSAL failed to get a token because the network failed, not because Microsoft refused it. */
+function isNetworkFailure(error: unknown): error is AuthError {
+  return error instanceof AuthError && NETWORK_ERROR_CODES.has(error.errorCode)
+}
+
 /** Only paths inside the app, so the state carried through Microsoft cannot send the user elsewhere. */
 function appPath(value: unknown): string | null {
   return typeof value === 'string' && /^\/(?![/\\])/.test(value) && !value.startsWith('/login') ? value : null
@@ -67,13 +84,22 @@ export function AuthProvider({ children, authResponseAtStart = AUTH_RESPONSE_AT_
       if (!account) {
         throw new Error('No signed-in account')
       }
-      const result = await instance.acquireTokenSilent({
-        scopes: [apiScope()],
-        account,
-        // Cached access token or refresh token only, no hidden iframe.
-        cacheLookupPolicy: CacheLookupPolicy.AccessTokenAndRefreshToken,
-      })
-      return result.accessToken
+      try {
+        const result = await instance.acquireTokenSilent({
+          scopes: [apiScope()],
+          account,
+          // Cached access token or refresh token only, no hidden iframe.
+          cacheLookupPolicy: CacheLookupPolicy.AccessTokenAndRefreshToken,
+        })
+        return result.accessToken
+      } catch (error) {
+        // As the `AccessTokenProvider` contract asks: a network failure rejects like `fetch`, so a broken event stream
+        // reconnects (`isStreamBreak`) also when it is the token renewal that finds the network down.
+        if (isNetworkFailure(error)) {
+          throw new TypeError(`The access token request failed: ${error.errorCode}`, { cause: error })
+        }
+        throw error
+      }
     })
     return () => setAccessTokenProvider(null)
   }, [instance])

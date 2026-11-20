@@ -1,10 +1,12 @@
 using System.Security.Claims;
 using Aicepeak.Api.Auth;
 using Aicepeak.Api.Data;
+using Aicepeak.Api.Data.Configurations;
 using Aicepeak.Api.Data.Entities;
 using Aicepeak.Api.Documents.Analysis;
 using Aicepeak.Api.Storage;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -19,21 +21,37 @@ namespace Aicepeak.Api.Projects;
 public static class ProjectEndpoints {
     public const string BasePath = "/api/v1/project";
 
+    /// <summary>The name of the upload-url endpoint, also its OpenAPI operation ID (<see cref="UploadUrlOpenApiTransformer"/>).</summary>
+    public const string UploadUrlEndpointName = "CreateUploadUrl";
+
     private const string NameTaken = "is already used by another project";
-    private const string ProjectNameIndex = "IX_projects_name";
 
     public static RouteGroupBuilder MapProjects(this RouteGroupBuilder group) {
         var projects = group.MapGroup("/project").AddEndpointFilter<TenantEndpointFilter>();
-        projects.MapPost("", CreateAsync);
+        // OpenAPI: the other responses follow from the handlers' typed results.
+        projects.MapPost("", CreateAsync).DocumentJsonBody<CreateProjectRequest>();
         projects.MapGet("/{id}", GetAsync);
-        projects.MapPatch("/{id}", UpdateAsync);
-        projects.MapPost("/{id}/upload-url", CreateUploadUrlAsync);
+        projects.MapPatch("/{id}", UpdateAsync).DocumentJsonBody<UpdateProjectRequest>();
+        projects.MapPost("/{id}/upload-url", CreateUploadUrlAsync).DocumentJsonBody<UploadUrlRequest>().WithName(UploadUrlEndpointName);
         projects.MapDelete("/{id}/document/{documentId}", DeleteDocumentAsync);
-        projects.MapGet("/{id}/document-validation/sse", ValidationEventsAsync);
-        projects.MapGet("/{id}/document-extraction/sse", ExtractionEventsAsync);
+        projects.MapGet("/{id}/document-validation/sse", ValidationEventsAsync).DocumentEventStream();
+        projects.MapGet("/{id}/document-extraction/sse", ExtractionEventsAsync).DocumentEventStream();
 
         return group;
     }
+
+    /// <summary>
+    /// OpenAPI: <typeparamref name="TRequest"/> as the JSON body (JSON is the default without a content type), and 415.
+    /// Unlike <c>Accepts&lt;TRequest&gt;("application/json")</c>, metadata without content types leaves routing alone:
+    /// with one, routing would turn away a request without a JSON content type before authentication, to the 404 of the
+    /// API catch-all. The handlers check the content type themselves.
+    /// </summary>
+    private static RouteHandlerBuilder DocumentJsonBody<TRequest>(this RouteHandlerBuilder endpoint) =>
+        endpoint.WithMetadata(new AcceptsMetadata([], typeof(TRequest))).Produces(StatusCodes.Status415UnsupportedMediaType);
+
+    /// <summary>OpenAPI: each event of the stream is a <see cref="DocumentProgressEvent"/> (the data line of the event).</summary>
+    private static RouteHandlerBuilder DocumentEventStream(this RouteHandlerBuilder endpoint) =>
+        endpoint.Produces<DocumentProgressEvent>(StatusCodes.Status200OK, "text/event-stream");
 
     /// <summary><c>POST /project</c>: <c>{name, startDate, endDate?, description?}</c>; 201 with the project.</summary>
     private static async Task<Results<Created<ProjectResponse>, ValidationProblem, StatusCodeHttpResult>> CreateAsync(
@@ -49,7 +67,7 @@ public static class ProjectEndpoints {
         }
 
         var input = ProjectInput.ParseCreate(body.RootElement, errors);
-        if (input.Name is { } name && await db.Projects.AnyAsync(project => project.Name == name, cancellationToken)) {
+        if (input.Name is { } name && await db.ProjectsNamed(name).AnyAsync(cancellationToken)) {
             errors.Add("name", NameTaken);
         }
 
@@ -123,8 +141,8 @@ public static class ProjectEndpoints {
 
         var input = ProjectInput.ParseUpdate(body.RootElement, projectId, errors);
         input.CheckDates(project.StartDate, project.EndDate, errors);
-        if (input.Name is { } name
-            && await db.Projects.AnyAsync(other => other.Name == name && other.Id != projectId, cancellationToken)) {
+        // Its own name in another case is a rename, not a conflict.
+        if (input.Name is { } name && await db.ProjectsNamed(name).AnyAsync(other => other.Id != projectId, cancellationToken)) {
             errors.Add("name", NameTaken);
         }
 
@@ -289,5 +307,5 @@ public static class ProjectEndpoints {
             : throw new InvalidOperationException("The caller has no tenant; the endpoint lacks the TenantEndpointFilter.");
 
     private static bool IsNameTaken(DbUpdateException exception) =>
-        exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: ProjectNameIndex };
+        exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: ProjectConfiguration.NameIndex };
 }

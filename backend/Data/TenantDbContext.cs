@@ -22,6 +22,13 @@ public sealed class TenantDbContext(DbContextOptions<TenantDbContext> options) :
             .OrderBy(document => document.CreatedAt)
             .ThenBy(document => document.Id);
 
+    /// <summary>
+    /// The projects named <paramref name="name"/> ignoring case, compared like their unique index:
+    /// <c>lower(name)</c> in PostgreSQL (<see cref="ProjectConfiguration"/>).
+    /// </summary>
+    public IQueryable<Project> ProjectsNamed(string name) =>
+        Projects.FromSql($"SELECT * FROM projects WHERE name_normalized = lower({name})");
+
     protected override void OnModelCreating(ModelBuilder modelBuilder) {
         modelBuilder.ApplyConfiguration(new ProjectConfiguration());
         modelBuilder.ApplyConfiguration(new DocumentConfiguration());

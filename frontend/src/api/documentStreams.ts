@@ -1,4 +1,5 @@
 import { readEventStream } from './eventStream.ts'
+import { ApiError } from './httpClient.ts'
 
 /**
  * Data of an event of `GET /project/{id}/document-validation/sse`. `document` is the documentId the event is about,
@@ -157,4 +158,132 @@ export function readExtractionStream(
     },
     signal,
   )
+}
+
+/** The waits before the reconnects of a broken stream, in milliseconds: three reconnects, after 1 s, 3 s and 10 s. */
+export const RECONNECT_DELAYS_MS: readonly number[] = [1000, 3000, 10_000]
+
+/** One connection of a run's stream: calls `onEvent` for each event and settles like `readEventStream`. */
+export type StreamConnection<E> = (onEvent: (event: E) => void, signal?: AbortSignal) => Promise<void>
+
+/** How `readWithReconnect` reconnects. */
+export type ReconnectOptions = {
+  /** Aborts the reading, also while it waits to reconnect. */
+  signal?: AbortSignal
+  /**
+   * Called once the wait before a reconnect is over, just before it (`attempt` counts from 1). The backend starts the
+   * run again for every connection, so what the previous connection reported starts over.
+   */
+  onReconnect?: (attempt: number) => void
+  /** The wait before each reconnect; their number is the number of reconnects. `RECONNECT_DELAYS_MS` by default. */
+  delays?: readonly number[]
+  /** Waits `ms` milliseconds and rejects with the abort reason once `signal` aborts; a timer by default. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+}
+
+/** Whether the event ends a run: the event with `overallProgress: 100`, or an error of the whole run. */
+export function isFinalEvent(event: ValidationEvent): boolean {
+  return event.overallProgress >= 100 || (event.document === '' && event.error !== undefined)
+}
+
+/**
+ * Whether a stream that failed with `error` is worth reconnecting: a network error (fetch rejects, and a body breaks
+ * off, with a `TypeError`, and so does the `AccessTokenProvider` when the network fails while it gets the token) or a
+ * 5xx. A 4xx is not: asking again gets the same answer.
+ */
+export function isStreamBreak(error: unknown): boolean {
+  return error instanceof ApiError ? error.status >= 500 : error instanceof TypeError
+}
+
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * Reads a run's stream until its final event (`isFinalEvent`), reconnecting when the stream breaks: after a network
+ * error, a 5xx or a stream that closes before its final event, it waits the next of `delays` and connects again,
+ * through `apiFetch`, so with a fresh access token. A 4xx, an error of `onEvent` or an abort ends it at once, and so
+ * does an error of the whole run the backend reports, since that is a final event.
+ *
+ * Resolves after the final event, or when the last connection closed early as well (the caller sees no final event);
+ * rejects with the error of the last connection otherwise, and with the abort reason once `signal` aborts.
+ */
+export async function readWithReconnect<E extends ValidationEvent>(
+  connect: StreamConnection<E>,
+  onEvent: (event: E) => void,
+  { signal, onReconnect, delays = RECONNECT_DELAYS_MS, sleep = wait }: ReconnectOptions = {},
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    if (attempt > 0) {
+      await sleep(delays[attempt - 1], signal)
+      signal?.throwIfAborted()
+      onReconnect?.(attempt)
+    }
+    const connection = { final: false, failedInHandler: false }
+    const handle = (event: E) => {
+      connection.final ||= isFinalEvent(event)
+      try {
+        onEvent(event)
+      } catch (error) {
+        connection.failedInHandler = true
+        throw error
+      }
+    }
+    const lastAttempt = attempt >= delays.length
+    try {
+      await connect(handle, signal)
+    } catch (error) {
+      if (signal?.aborted || connection.failedInHandler) {
+        throw error
+      }
+      if (connection.final) {
+        return
+      }
+      if (lastAttempt || !isStreamBreak(error)) {
+        throw error
+      }
+      continue
+    }
+    if (connection.final || lastAttempt) {
+      return
+    }
+  }
+}
+
+/**
+ * Reads the validation run of a project until its final event, reconnecting a broken stream; see `readWithReconnect`
+ * and `readValidationStream`.
+ */
+export function readValidationRun(
+  projectId: string,
+  onEvent: (event: ValidationEvent) => void,
+  options?: ReconnectOptions,
+): Promise<void> {
+  return readWithReconnect((handle, signal) => readValidationStream(projectId, handle, signal), onEvent, options)
+}
+
+/**
+ * Reads the extraction run of a project until its final event, reconnecting a broken stream; see `readWithReconnect`
+ * and `readExtractionStream`. Each reconnect starts the extraction over (`onReconnect`).
+ */
+export function readExtractionRun(
+  projectId: string,
+  onEvent: (event: ExtractionEvent) => void,
+  options?: ReconnectOptions,
+): Promise<void> {
+  return readWithReconnect((handle, signal) => readExtractionStream(projectId, handle, signal), onEvent, options)
 }

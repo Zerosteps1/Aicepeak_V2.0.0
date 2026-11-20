@@ -4,6 +4,8 @@ import { INITIAL_FLOW_STATE } from './flowState.ts'
 import type { DocumentCheck, FoundPosition, LocalUpload, ProjectFlowState } from './projectFlowContext.ts'
 import {
   selectCanAdvance,
+  selectCanRetryExtraction,
+  selectCanRetryValidation,
   selectExtractionLines,
   selectExtractionSummary,
   selectHasValidDocument,
@@ -126,6 +128,36 @@ describe('selectCanAdvance', () => {
   })
 })
 
+describe('retrying', () => {
+  const linked = { project: project(ref('d1'), ref('d2')) }
+  const failedRun = { run: 1, status: 'failed' as const, error: 'Die Prüfung wurde unterbrochen.', documents: {} }
+
+  it('offers checking again while a linked document has no result after its run failed or ended', () => {
+    expect(selectCanRetryValidation(flow({ ...linked, validation: failedRun }, { d1: VALID }))).toBe(true)
+    expect(selectCanRetryValidation(flow({ ...linked, validation: { ...failedRun, status: 'done', error: null } }, { d1: VALID }))).toBe(true)
+  })
+
+  it.each([
+    ['the run is still going', flow(linked, { d1: VALID })],
+    ['every document has its result despite the failure', flow({ ...linked, validation: failedRun }, { d1: VALID, d2: INVALID })],
+    ['the document without a result is being removed', flow({ ...linked, validation: failedRun, removing: ['d2'] }, { d1: VALID })],
+    ['only an upload failed', flow({ uploads: { 'upload:1': upload('upload:1', { error: 'Hochladen fehlgeschlagen.' }) } })],
+    ['advance runs', flow({ ...linked, validation: failedRun, advancing: true }, { d1: VALID })],
+    ['the step is extract', flow({ ...linked, validation: failedRun, step: 'extract' }, { d1: VALID })],
+  ])('does not offer checking again while %s', (_case, state) => {
+    expect(selectCanRetryValidation(state)).toBe(false)
+  })
+
+  it('offers extracting again only in step extract once the run failed', () => {
+    const extraction = (status: 'running' | 'done' | 'failed') => ({ ...INITIAL_FLOW_STATE.extraction, run: 1, status })
+
+    expect(selectCanRetryExtraction(flow({ ...linked, step: 'extract', extraction: extraction('failed') }))).toBe(true)
+    expect(selectCanRetryExtraction(flow({ ...linked, step: 'extract', extraction: extraction('running') }))).toBe(false)
+    expect(selectCanRetryExtraction(flow({ ...linked, step: 'extract', extraction: extraction('done') }))).toBe(false)
+    expect(selectCanRetryExtraction(flow({ ...linked, step: 'upload', extraction: extraction('failed') }))).toBe(false)
+  })
+})
+
 describe('upload hints and totals', () => {
   it('counts the documents and their size in MB', () => {
     expect(selectUploadTotals(flow()).label).toBe('Noch keine Dokumente')
@@ -137,7 +169,8 @@ describe('upload hints and totals', () => {
     ['no documents', flow(), 'Weiter, sobald alle Dokumente geprüft sind.'],
     ['uploading', flow({ uploads: { 'upload:1': upload('upload:1') } }), 'Dokumente werden hochgeladen …'],
     ['checking', flow({ project: project(ref('d1')) }), 'Dokumente werden geprüft …'],
-    ['a check failed', flow({ project: project(ref('d1')), validation: { run: 1, status: 'done', error: null, documents: {} } }), 'Die Prüfung ist fehlgeschlagen. Bitte entfernen Sie die betroffenen Dokumente.'],
+    ['a check failed', flow({ project: project(ref('d1')), validation: { run: 1, status: 'done', error: null, documents: {} } }), 'Die Prüfung ist fehlgeschlagen. Bitte prüfen Sie erneut oder entfernen Sie die betroffenen Dokumente.'],
+    ['a check failed while advance runs', flow({ project: project(ref('d1')), advancing: true, validation: { run: 1, status: 'failed', error: null, documents: {} } }), 'Die Prüfung ist fehlgeschlagen. Bitte entfernen Sie die betroffenen Dokumente.'],
     ['none valid', flow({ project: project(ref('d1')) }, { d1: INVALID }), 'Keines der Dokumente enthält einen Finanzbericht.'],
     ['some valid', flow({ project: project(ref('d1'), ref('d2')) }, { d1: VALID, d2: INVALID }), '1 von 2 Dokumenten werden verwendet.'],
     ['all valid', flow({ project: project(ref('d1')) }, { d1: VALID }), 'Alle Dokumente geprüft.'],
@@ -151,7 +184,7 @@ describe('upload hints and totals', () => {
 describe('extraction', () => {
   function extracting(documents: ProjectFlowState['extraction']['documents'], found: FoundPosition[] = [], status: 'running' | 'done' = 'running') {
     return flow(
-      { project: project(ref('d1'), ref('d2'), ref('d3'), ref('d-invalid')), step: 'extract', extraction: { status, error: null, overallProgress: 40, positions: 12, documents, found } },
+      { project: project(ref('d1'), ref('d2'), ref('d3'), ref('d-invalid')), step: 'extract', extraction: { run: 1, status, error: null, overallProgress: 40, positions: 12, documents, found } },
       { d1: VALID, d2: VALID, d3: VALID, 'd-invalid': INVALID },
     )
   }

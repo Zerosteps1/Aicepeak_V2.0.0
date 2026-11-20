@@ -33,6 +33,20 @@ public sealed class ProjectEndpointsAuthTests {
     }
 
     [Theory]
+    [InlineData("POST", "/api/v1/project", "text/plain")]
+    [InlineData("PATCH", "/api/v1/project/0193a5b2-0000-7000-8000-000000000001", "application/xml")]
+    [InlineData("POST", "/api/v1/project/not-a-guid/upload-url", "text/plain")]
+    public async Task AC08_WithoutToken_BodyThatIsNoJson_Returns401(string method, string path, string mediaType) {
+        // The OpenAPI request bodies must not make routing pick another endpoint (415 or the API catch-all's 404) first.
+        await using var factory = new ApiFactory(TestSettings.Production, TestSettings.WithEntra(TestSettings.UnreachableDatabase()));
+        using var request = new HttpRequestMessage(new HttpMethod(method), path) { Content = new StringContent("name=x", null, mediaType) };
+
+        var response = await factory.CreateClient().SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
     [MemberData(nameof(Routes))]
     public async Task AC08_InvalidToken_Returns401(string method, string path) {
         await using var factory = new ApiFactory(TestSettings.Production, TestSettings.WithEntra(TestSettings.UnreachableDatabase()));

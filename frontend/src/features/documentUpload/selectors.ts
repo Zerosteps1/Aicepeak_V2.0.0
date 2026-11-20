@@ -111,6 +111,17 @@ export function selectCanAdvance(state: ProjectFlowState): boolean {
   return sheets.length > 0 && sheets.every(isSettled)
 }
 
+/**
+ * Whether the documents can be checked again ("Erneut prüfen"): in step `upload`, with no `advance` running, while a
+ * linked document has no result because the last validation run failed or ended without it (its sheet is `failed`).
+ */
+export function selectCanRetryValidation(state: ProjectFlowState): boolean {
+  if (state.step !== 'upload' || state.advancing) {
+    return false
+  }
+  return selectSheets(state).some((sheet) => sheet.status === 'failed' && sheet.documentId !== null)
+}
+
 /** Whether a valid document is linked; what `advance` needs after removing the invalid ones (AC-25). */
 export function selectHasValidDocument(state: ProjectFlowState): boolean {
   return selectSheets(state).some((sheet) => sheet.status === 'valid')
@@ -164,7 +175,10 @@ export function selectUploadHint(state: ProjectFlowState): string {
     return 'Dokumente werden geprüft …'
   }
   if (sheets.some((sheet) => !isSettled(sheet))) {
-    return 'Die Prüfung ist fehlgeschlagen. Bitte entfernen Sie die betroffenen Dokumente.'
+    // In line with the "Erneut prüfen" button whenever it is offered.
+    return selectCanRetryValidation(state)
+      ? 'Die Prüfung ist fehlgeschlagen. Bitte prüfen Sie erneut oder entfernen Sie die betroffenen Dokumente.'
+      : 'Die Prüfung ist fehlgeschlagen. Bitte entfernen Sie die betroffenen Dokumente.'
   }
   const valid = sheets.filter((sheet) => sheet.status === 'valid').length
   if (valid === 0) {
@@ -264,6 +278,11 @@ export function selectExtractionSummary(state: ProjectFlowState): ExtractionSumm
     hint,
     canContinue: status === 'done',
   }
+}
+
+/** Whether the extraction can be started again ("Erneut versuchen"): in step `extract`, once its run failed. */
+export function selectCanRetryExtraction(state: ProjectFlowState): boolean {
+  return state.step === 'extract' && state.extraction.status === 'failed'
 }
 
 /** The latest positions found, newest first; at most `LATEST_POSITIONS`. */

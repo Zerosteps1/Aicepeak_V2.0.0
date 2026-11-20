@@ -1,6 +1,9 @@
 const API_BASE_PATH = '/api/v1'
 
-/** Returns the Microsoft Entra access token for the API. */
+/**
+ * Returns the Microsoft Entra access token for the API. When the token cannot be had because the network failed, it
+ * rejects with a `TypeError`, as `fetch` does, so callers treat both alike.
+ */
 export type AccessTokenProvider = () => Promise<string>
 
 let accessTokenProvider: AccessTokenProvider | null = null

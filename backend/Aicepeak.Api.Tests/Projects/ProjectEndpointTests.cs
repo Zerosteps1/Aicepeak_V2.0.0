@@ -139,6 +139,51 @@ public sealed class ProjectEndpointTests(PostgresFixture postgres) {
         Assert.Equal(HttpStatusCode.OK, own.StatusCode);
     }
 
+    [Theory]
+    [InlineData("Alpha", "alpha")]
+    [InlineData("Übernahme 2026", " ÜBERNAHME 2026")]
+    public async Task AC05_Create_NameOfAnotherProjectInAnotherCase_Returns400(string existing, string name) {
+        await using var api = await TenantApi.CreateAsync(postgres);
+        await api.CreateProjectAsync(existing);
+
+        var response = await api.SendJsonAsync(HttpMethod.Post, Base, new { name, startDate = "2026-01-01" });
+
+        Assert.Equal(["is already used by another project"], (await TenantApi.ReadErrorsAsync(response))["name"]);
+        await using var db = api.CreateDb();
+        Assert.Equal([existing], await db.Projects.Select(project => project.Name).ToListAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task AC05_Patch_NameOfAnotherProjectInAnotherCase_Returns400_OwnNameInAnotherCaseIsARename() {
+        await using var api = await TenantApi.CreateAsync(postgres);
+        await api.CreateProjectAsync("Erstes");
+        var id = await api.CreateProjectAsync("Zweites");
+
+        var taken = await api.SendJsonAsync(HttpMethod.Patch, $"{Base}/{id}", new { name = "ERSTES" });
+        var renamed = await api.SendJsonAsync(HttpMethod.Patch, $"{Base}/{id}", new { name = " zweites " });
+
+        Assert.Equal(["is already used by another project"], (await TenantApi.ReadErrorsAsync(taken))["name"]);
+        Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+        Assert.Equal("zweites", (await TenantApi.ReadJsonAsync(renamed)).GetProperty("name").GetString());
+        Assert.Equal("zweites", (await api.GetProjectAsync(id)).GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task AC05_Create_ConcurrentNamesDifferingInCase_OnlyOneIsCreated() {
+        await using var api = await TenantApi.CreateAsync(postgres);
+        var names = new[] { "Parallel", "parallel", "PARALLEL", "pArAlLeL" };
+
+        var responses = await Task.WhenAll(names.Select(name => api.SendJsonAsync(HttpMethod.Post, Base, new { name, startDate = "2026-01-01" })));
+
+        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Created);
+        foreach (var rejected in responses.Where(response => response.StatusCode != HttpStatusCode.Created)) {
+            Assert.Equal(["is already used by another project"], (await TenantApi.ReadErrorsAsync(rejected))["name"]);
+        }
+
+        await using var db = api.CreateDb();
+        Assert.Single(await db.Projects.ToListAsync(TestContext.Current.CancellationToken));
+    }
+
     [Fact]
     public async Task AC05_Create_ListsEveryFailure_AndStoresNothing() {
         await using var api = await TenantApi.CreateAsync(postgres);

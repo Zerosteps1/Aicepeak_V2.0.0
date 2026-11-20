@@ -15,7 +15,7 @@ export function useProjectFlowState(): ProjectFlowState {
   return value
 }
 
-/** The flow's actions: `addFiles`, `removeDocument` and `advance`. */
+/** The flow's actions: `addFiles`, `removeDocument`, `advance`, `retryValidation` and `retryExtraction`. */
 export function useProjectFlowActions(): ProjectFlowActions {
   const value = useContext(ProjectFlowActionsContext)
   if (!value) {

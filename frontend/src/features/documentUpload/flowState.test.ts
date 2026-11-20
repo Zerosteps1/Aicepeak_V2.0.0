@@ -2,22 +2,29 @@ import { describe, expect, it } from 'vitest'
 import { ApiError } from '../../api/httpClient.ts'
 import type { DocumentRef, Project } from '../../api/projects.ts'
 import {
+  CHECK_INTERRUPTED,
   discardedDocuments,
+  EXTRACTION_FAILED,
   INITIAL_FLOW_STATE,
   linkRequest,
   matchLinked,
   NOT_LINKED,
   uploadsRejectedBy,
   uploadsToLink,
+  withAdvanceOutcome,
   withExtractionEnd,
   withExtractionEvent,
+  withExtractionReconnect,
+  withExtractionRetry,
   withLinked,
   withLinkFailure,
   withProject,
   withValidationEnd,
   withValidationEvent,
+  withValidationRetry,
 } from './flowState.ts'
 import type { LocalUpload, ProjectFlowState } from './projectFlowContext.ts'
+import { selectCanAdvance, selectSheets } from './selectors.ts'
 
 function ref(id: string, query = ''): DocumentRef {
   return { url: `https://store.example/tenant/p1/${id}${query}`, name: `${id}.pdf`, size: 10, contentType: 'application/pdf' }
@@ -156,13 +163,14 @@ describe('stream events', () => {
   })
 
   it('AC-21: records pages, counters and every position of the extraction', () => {
-    const extracting = { ...running, step: 'extract' as const, extraction: { ...running.extraction, status: 'running' as const } }
+    const extracting = { ...running, step: 'extract' as const, extraction: { ...running.extraction, run: 1, status: 'running' as const } }
     const position = { name: 'Umsatzerlöse', value: 184300, period: '2025', source: 'GuV', page: 1 }
 
-    let next = withExtractionEvent(extracting, { overallProgress: 10, document: 'd1', pages: 3, pagesRead: 1, positions: 2, position })
-    next = withExtractionEvent(next, { overallProgress: 100, document: 'd1', pagesRead: 3, positions: 6 })
+    let next = withExtractionEvent(extracting, 1, { overallProgress: 10, document: 'd1', pages: 3, pagesRead: 1, positions: 2, position })
+    next = withExtractionEvent(next, 1, { overallProgress: 100, document: 'd1', pagesRead: 3, positions: 6 })
 
     expect(next.extraction).toEqual({
+      run: 1,
       status: 'done',
       error: null,
       overallProgress: 100,
@@ -170,6 +178,85 @@ describe('stream events', () => {
       documents: { d1: { pages: 3, pagesRead: 3, progress: 0, error: null } },
       found: [{ ...position, documentId: 'd1' }],
     })
-    expect(withExtractionEnd(extracting, null).extraction).toMatchObject({ status: 'failed', error: 'Die Extraktion wurde unterbrochen.' })
+    expect(withExtractionEnd(extracting, 1, null).extraction).toMatchObject({ status: 'failed', error: 'Die Extraktion wurde unterbrochen.' })
+  })
+})
+
+describe('retrying a failed run', () => {
+  const position = { name: 'Umsatzerlöse', value: 184300, period: '2025', source: 'GuV', page: 1 }
+
+  it('keeps documents without a result failed after the stream gave up, which blocks advancing', () => {
+    let next = withProject(state({ project: null }), project(ref('d1'), ref('d2')))
+    next = withValidationEvent(next, 1, { overallProgress: 50, document: 'd1', documentProgress: 100 })
+    next = withValidationEnd(next, 1, null)
+
+    expect(selectSheets(next).map(({ id, status, error }) => ({ id, status, error }))).toEqual([
+      { id: 'd1', status: 'valid', error: null },
+      { id: 'd2', status: 'failed', error: CHECK_INTERRUPTED },
+    ])
+    expect(selectCanAdvance(next)).toBe(false)
+  })
+
+  it('starts a new validation run that clears the failure and keeps the results', () => {
+    let failed = withProject(state({ project: null }), project(ref('d1'), ref('d2')))
+    failed = withValidationEvent(failed, 1, { overallProgress: 50, document: 'd1', documentProgress: 100 })
+    failed = withValidationEvent(failed, 1, { overallProgress: 100, document: '', error: 'Analyse nicht verfügbar' })
+
+    const retried = withValidationRetry(failed)
+
+    expect(retried.validation).toEqual({ run: 2, status: 'running', error: null, documents: { d1: { progress: 100, error: null } } })
+    expect(selectSheets(retried).map((sheet) => sheet.status)).toEqual(['valid', 'queued'])
+    // Events of the failed run no longer count; the new run's do.
+    expect(withValidationEvent(retried, 1, { overallProgress: 100, document: 'd2', documentProgress: 100 })).toBe(retried)
+    expect(withValidationEvent(retried, 2, { overallProgress: 100, document: 'd2', documentProgress: 100 }).validation.status).toBe('done')
+  })
+
+  it('does not retry the validation while it runs, once every document has its result, or after advance started', () => {
+    const running = withProject(state({ project: null }), project(ref('d1')))
+    const done = withValidationEvent(running, 1, { overallProgress: 100, document: 'd1', documentProgress: 100 })
+    const failed = withValidationEnd(running, 1, null)
+
+    expect(withValidationRetry(running)).toBe(running)
+    expect(withValidationRetry(done)).toBe(done)
+    expect(withValidationRetry({ ...failed, advancing: true }).validation.run).toBe(1)
+    expect(withValidationRetry(failed).validation.run).toBe(2)
+  })
+
+  it('counts extraction runs and ignores events and ends of older runs', () => {
+    const validated = withValidationEvent(withProject(state({ project: null }), project(ref('d1'))), 1, { overallProgress: 100, document: 'd1', documentProgress: 100 })
+    const extracting = withAdvanceOutcome(validated, true)
+    expect(extracting.extraction).toMatchObject({ run: 1, status: 'running' })
+
+    const failed = withExtractionEnd(withExtractionEvent(extracting, 1, { overallProgress: 40, document: 'd1', pages: 3, pagesRead: 1, positions: 1, position }), 1, EXTRACTION_FAILED)
+    expect(failed.extraction).toMatchObject({ run: 1, status: 'failed', error: EXTRACTION_FAILED, found: [{ ...position, documentId: 'd1' }] })
+
+    const retried = withExtractionRetry(failed)
+    expect(retried.extraction).toEqual({ run: 2, status: 'running', error: null, overallProgress: 0, positions: 0, documents: {}, found: [] })
+    expect(withExtractionEvent(retried, 1, { overallProgress: 100, document: 'd1', pagesRead: 3 })).toBe(retried)
+    expect(withExtractionEnd(retried, 1, EXTRACTION_FAILED)).toBe(retried)
+    expect(withExtractionEvent(retried, 2, { overallProgress: 100, document: 'd1', pages: 3, pagesRead: 3 }).extraction).toMatchObject({ run: 2, status: 'done' })
+  })
+
+  it('does not retry the extraction while it runs, once done, or in step upload', () => {
+    const validated = withValidationEvent(withProject(state({ project: null }), project(ref('d1'))), 1, { overallProgress: 100, document: 'd1', documentProgress: 100 })
+    const extracting = withAdvanceOutcome(validated, true)
+    const done = withExtractionEvent(extracting, 1, { overallProgress: 100, document: 'd1', pages: 1, pagesRead: 1 })
+    const failedInUpload = { ...validated, extraction: { ...validated.extraction, status: 'failed' as const } }
+
+    expect(withExtractionRetry(extracting)).toBe(extracting)
+    expect(withExtractionRetry(done)).toBe(done)
+    expect(withExtractionRetry(failedInUpload)).toBe(failedInUpload)
+  })
+
+  it('starts the progress of an extraction over when its stream reconnects, so nothing is counted twice', () => {
+    const validated = withValidationEvent(withProject(state({ project: null }), project(ref('d1'))), 1, { overallProgress: 100, document: 'd1', documentProgress: 100 })
+    const extracting = withExtractionEvent(withAdvanceOutcome(validated, true), 1, { overallProgress: 40, document: 'd1', pages: 3, pagesRead: 1, positions: 1, position })
+
+    const reconnected = withExtractionReconnect(extracting, 1)
+
+    expect(reconnected.extraction).toEqual({ run: 1, status: 'running', error: null, overallProgress: 0, positions: 0, documents: {}, found: [] })
+    expect(withExtractionReconnect(extracting, 0)).toBe(extracting)
+    const failed = withExtractionEnd(extracting, 1, null)
+    expect(withExtractionReconnect(failed, 1)).toBe(failed)
   })
 })

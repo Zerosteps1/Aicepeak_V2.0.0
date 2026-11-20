@@ -3,7 +3,7 @@ import type { ExtractionEvent, ValidationEvent } from '../../api/documentStreams
 import { ApiError } from '../../api/httpClient.ts'
 import type { DocumentRef, Project } from '../../api/projects.ts'
 import type { DocumentExtraction, ExtractionState, LocalUpload, ProjectFlowState, RunStatus } from './projectFlowContext.ts'
-import { selectHasValidDocument, selectIsLinked } from './selectors.ts'
+import { selectCanRetryExtraction, selectCanRetryValidation, selectHasValidDocument, selectIsLinked } from './selectors.ts'
 
 // The state changes of ProjectFlowProvider, as plain functions for `setState((prev) => …)`: each takes the previous
 // state and returns the next one, without side effects.
@@ -21,6 +21,7 @@ export const EXTRACTION_FAILED = 'Die Extraktion ist fehlgeschlagen.'
 export const EXTRACTION_INTERRUPTED = 'Die Extraktion wurde unterbrochen.'
 
 const IDLE_EXTRACTION: ExtractionState = {
+  run: 0,
   status: 'idle',
   error: null,
   overallProgress: 0,
@@ -45,6 +46,11 @@ export const INITIAL_FLOW_STATE: ProjectFlowState = {
 
 function withValidationRun(prev: ProjectFlowState): ProjectFlowState['validation'] {
   return { ...prev.validation, run: prev.validation.run + 1, status: 'running', error: null }
+}
+
+/** A new extraction run from the beginning: nothing of an earlier run is kept. */
+function withExtractionRun(prev: ProjectFlowState): ExtractionState {
+  return { ...IDLE_EXTRACTION, run: prev.extraction.run + 1, status: 'running' }
 }
 
 /** The loaded project; with documents, their validation starts. */
@@ -260,7 +266,7 @@ export function withAdvanceOutcome(prev: ProjectFlowState, removedAll: boolean):
   if (!selectHasValidDocument(prev)) {
     return { ...prev, advancing: false, message: NO_VALID_DOCUMENT }
   }
-  return { ...prev, advancing: false, step: 'extract', extraction: { ...IDLE_EXTRACTION, status: 'running' } }
+  return { ...prev, advancing: false, step: 'extract', extraction: withExtractionRun(prev) }
 }
 
 /** One event of validation run `run`; events of older runs and of documents not linked are ignored. */
@@ -289,7 +295,11 @@ export function withValidationEvent(prev: ProjectFlowState, run: number, event: 
   return { ...prev, validation: { ...validation, status, error, documents } }
 }
 
-/** The end of validation run `run`: a stream that ends before its last event, or fails, fails the run. */
+/**
+ * The end of validation run `run` once its stream gave up reconnecting: a stream that ends before its last event, or
+ * fails, fails the run. Documents without a result then stay `failed` and block `advance` until they are checked again
+ * (`withValidationRetry`) or removed.
+ */
 export function withValidationEnd(prev: ProjectFlowState, run: number, failure: string | null): ProjectFlowState {
   const validation = prev.validation
   if (validation.run !== run || validation.status !== 'running') {
@@ -298,12 +308,20 @@ export function withValidationEnd(prev: ProjectFlowState, run: number, failure: 
   return { ...prev, validation: { ...validation, status: 'failed', error: failure ?? CHECK_INTERRUPTED } }
 }
 
+/**
+ * "Erneut prüfen": a new validation run, which opens the stream again and clears the failure; the results documents
+ * already have are kept. Nothing when `selectCanRetryValidation` is false.
+ */
+export function withValidationRetry(prev: ProjectFlowState): ProjectFlowState {
+  return selectCanRetryValidation(prev) ? { ...prev, validation: withValidationRun(prev) } : prev
+}
+
 const NOT_STARTED: DocumentExtraction = { pages: null, pagesRead: 0, progress: 0, error: null }
 
-/** One event of the extraction run; events of documents not linked are ignored. */
-export function withExtractionEvent(prev: ProjectFlowState, event: ExtractionEvent): ProjectFlowState {
+/** One event of extraction run `run`; events of older runs and of documents not linked are ignored. */
+export function withExtractionEvent(prev: ProjectFlowState, run: number, event: ExtractionEvent): ProjectFlowState {
   const extraction = prev.extraction
-  if (extraction.status !== 'running') {
+  if (extraction.run !== run || extraction.status !== 'running') {
     return prev
   }
   let status: RunStatus = extraction.status
@@ -334,6 +352,7 @@ export function withExtractionEvent(prev: ProjectFlowState, event: ExtractionEve
   return {
     ...prev,
     extraction: {
+      run,
       status,
       error,
       overallProgress: event.overallProgress,
@@ -344,10 +363,31 @@ export function withExtractionEvent(prev: ProjectFlowState, event: ExtractionEve
   }
 }
 
-/** The end of the extraction stream: ending before its last event, or failing, fails the run. */
-export function withExtractionEnd(prev: ProjectFlowState, failure: string | null): ProjectFlowState {
-  if (prev.extraction.status !== 'running') {
+/**
+ * Extraction run `run` reconnects its stream: the backend extracts from the beginning again, so the progress and the
+ * positions reported so far start over instead of being counted twice.
+ */
+export function withExtractionReconnect(prev: ProjectFlowState, run: number): ProjectFlowState {
+  const extraction = prev.extraction
+  if (extraction.run !== run || extraction.status !== 'running') {
     return prev
   }
-  return { ...prev, extraction: { ...prev.extraction, status: 'failed', error: failure ?? EXTRACTION_INTERRUPTED } }
+  return { ...prev, extraction: { ...IDLE_EXTRACTION, run, status: 'running' } }
+}
+
+/**
+ * The end of extraction run `run` once its stream gave up reconnecting: ending before its last event, or failing,
+ * fails the run.
+ */
+export function withExtractionEnd(prev: ProjectFlowState, run: number, failure: string | null): ProjectFlowState {
+  const extraction = prev.extraction
+  if (extraction.run !== run || extraction.status !== 'running') {
+    return prev
+  }
+  return { ...prev, extraction: { ...extraction, status: 'failed', error: failure ?? EXTRACTION_INTERRUPTED } }
+}
+
+/** "Erneut versuchen": a new extraction run from the beginning. Nothing when `selectCanRetryExtraction` is false. */
+export function withExtractionRetry(prev: ProjectFlowState): ProjectFlowState {
+  return selectCanRetryExtraction(prev) ? { ...prev, extraction: withExtractionRun(prev) } : prev
 }

@@ -44,15 +44,33 @@ public sealed class TenantModelTests : IDisposable {
     }
 
     [Fact]
-    public void AC11_Projects_HaveAGuidKey_AndAUniqueName() {
+    public void AC11_Projects_HaveAGuidKey_AndANameUniqueIgnoringCase() {
         var project = Entity<Project>();
 
         Assert.Equal("projects", project.GetTableName());
         Assert.Equal(ValueGenerated.Never, Assert.Single(project.FindPrimaryKey()!.Properties).ValueGenerated);
         Assert.Equal(
-            ["description:character varying(4000)", "end_date:date?", "id:uuid", "name:character varying(200)", "start_date:date"],
+            ["description:character varying(4000)", "end_date:date?", "id:uuid", "name_normalized:text", "name:character varying(200)",
+                "start_date:date"],
             Columns(project));
-        Assert.True(Assert.Single(project.GetIndexes()).IsUnique);
+
+        // The unique index is on lower(name), kept by PostgreSQL; the app never writes it.
+        var index = Assert.Single(project.GetIndexes());
+        Assert.True(index.IsUnique);
+        Assert.Equal("IX_projects_name_normalized", index.GetDatabaseName());
+        var normalized = Assert.Single(index.Properties);
+        Assert.Equal("name_normalized", normalized.GetColumnName());
+        Assert.True(normalized.IsShadowProperty());
+        Assert.Equal("lower(name)", normalized.GetComputedColumnSql());
+        Assert.True(normalized.GetIsStored());
+        Assert.Equal(ValueGenerated.OnAddOrUpdate, normalized.ValueGenerated);
+    }
+
+    [Fact]
+    public void AC12_TenantMigrations_MakeNamesCaseInsensitive_AfterCreatingTheTables() {
+        Assert.Equal(
+            ["CreateProjectsAndDocuments", "ProjectNamesCaseInsensitive"],
+            _tenant.Database.GetMigrations().Select(migration => migration[(migration.IndexOf('_') + 1)..]));
     }
 
     [Fact]

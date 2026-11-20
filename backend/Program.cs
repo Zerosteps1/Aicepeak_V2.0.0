@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Aicepeak.Api.Auth;
 using Aicepeak.Api.Configuration;
 using Aicepeak.Api.Data;
@@ -19,7 +20,10 @@ builder.Services.AddEntraAuthentication(builder.Configuration);
 builder.Services.AddHealth();
 builder.Services.AddProblemDetails();
 builder.Services.AddControllers();
-builder.Services.AddOpenApi();
+// Request bodies are parsed by hand and take numbers only as JSON numbers, and responses never write them as strings.
+// The web default (numbers read from strings too) would make the OpenAPI document type them as "integer | string".
+builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.NumberHandling = JsonNumberHandling.Strict);
+builder.Services.AddOpenApi(options => options.AddOperationTransformer<UploadUrlOpenApiTransformer>());
 
 var app = builder.Build();
 

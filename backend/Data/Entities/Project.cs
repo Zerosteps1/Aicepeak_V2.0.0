@@ -8,7 +8,7 @@ public sealed class Project {
     /// <summary>A version 7 GUID, assigned on creation and never changed.</summary>
     public required Guid Id { get; init; }
 
-    /// <summary>Unique within the tenant.</summary>
+    /// <summary>Trimmed; unique within the tenant, ignoring case.</summary>
     public required string Name { get; set; }
 
     public required DateOnly StartDate { get; set; }

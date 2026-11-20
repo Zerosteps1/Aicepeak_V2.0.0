@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import { deleteDocument, documentIdOf } from '../../api/documents.ts'
-import { readExtractionStream, readValidationStream } from '../../api/documentStreams.ts'
+import { readExtractionRun, readValidationRun } from '../../api/documentStreams.ts'
 import { ApiError } from '../../api/httpClient.ts'
 import { getProject, patchProject } from '../../api/projects.ts'
 import { createSerialQueue, createTaskLimiter, type SerialQueue } from './concurrency.ts'
@@ -21,6 +21,8 @@ import {
   withAdvancing,
   withExtractionEnd,
   withExtractionEvent,
+  withExtractionReconnect,
+  withExtractionRetry,
   withLinked,
   withLinkFailure,
   withLoadError,
@@ -32,6 +34,7 @@ import {
   withUploadChange,
   withValidationEnd,
   withValidationEvent,
+  withValidationRetry,
 } from './flowState.ts'
 import {
   ProjectFlowActionsContext,
@@ -92,8 +95,9 @@ type ProjectFlowProviderProps = {
  * `useProjectFlowActions`.
  *
  * It loads the project; once no upload runs, it links all finished uploads with one PATCH and opens the validation
- * stream again after each PATCH (AC-7); in step `extract` it reads the extraction stream. PATCH and DELETE requests
- * run one after another. Unmounting aborts every request, upload and stream.
+ * stream again after each PATCH (AC-7); in step `extract` it reads the extraction stream. A broken stream reconnects up
+ * to 3 times (see `readWithReconnect`); after that the run has failed until `retryValidation` or `retryExtraction`
+ * starts it again. PATCH and DELETE requests run one after another. Unmounting aborts every request, upload and stream.
  */
 export function ProjectFlowProvider({ projectId, children }: ProjectFlowProviderProps) {
   // Another project starts from a fresh state: nothing of the previous one is kept.
@@ -191,7 +195,8 @@ function ProjectFlowScope({ projectId, children }: ProjectFlowProviderProps) {
     )
   }, [projectId, state])
 
-  // The validation stream, opened again for every run (AC-7) while in step `upload`.
+  // The validation stream, opened again for every run (AC-7, `retryValidation`) while in step `upload`; a broken
+  // stream reconnects within the run.
   const validationRun = state.validation.run
   const validating = state.step === 'upload' && validationRun > 0
   useEffect(() => {
@@ -200,14 +205,14 @@ function ProjectFlowScope({ projectId, children }: ProjectFlowProviderProps) {
     }
     const controller = new AbortController()
     const signal = controller.signal
-    readValidationStream(
+    readValidationRun(
       projectId,
       (event) => {
         if (!signal.aborted) {
           setState((prev) => withValidationEvent(prev, validationRun, event))
         }
       },
-      signal,
+      { signal },
     ).then(
       () => {
         if (!signal.aborted) {
@@ -223,36 +228,45 @@ function ProjectFlowScope({ projectId, children }: ProjectFlowProviderProps) {
     return () => controller.abort()
   }, [projectId, validationRun, validating])
 
-  // The extraction stream in step `extract`.
-  const extracting = state.step === 'extract'
+  // The extraction stream, opened for every run (`advance`, `retryExtraction`) in step `extract`; a broken stream
+  // reconnects within the run and starts its progress over.
+  const extractionRun = state.extraction.run
+  const extracting = state.step === 'extract' && extractionRun > 0
   useEffect(() => {
     if (!extracting) {
       return
     }
     const controller = new AbortController()
     const signal = controller.signal
-    readExtractionStream(
+    readExtractionRun(
       projectId,
       (event) => {
         if (!signal.aborted) {
-          setState((prev) => withExtractionEvent(prev, event))
+          setState((prev) => withExtractionEvent(prev, extractionRun, event))
         }
       },
-      signal,
+      {
+        signal,
+        onReconnect: () => {
+          if (!signal.aborted) {
+            setState((prev) => withExtractionReconnect(prev, extractionRun))
+          }
+        },
+      },
     ).then(
       () => {
         if (!signal.aborted) {
-          setState((prev) => withExtractionEnd(prev, null))
+          setState((prev) => withExtractionEnd(prev, extractionRun, null))
         }
       },
       () => {
         if (!signal.aborted) {
-          setState((prev) => withExtractionEnd(prev, EXTRACTION_FAILED))
+          setState((prev) => withExtractionEnd(prev, extractionRun, EXTRACTION_FAILED))
         }
       },
     )
     return () => controller.abort()
-  }, [projectId, extracting])
+  }, [projectId, extractionRun, extracting])
 
   // Plain functions over the current state; each call leads straight to its requests. They read the state of this
   // render (e.g. which documents `advance` removes), so the object changes with the state instead of mirroring it.
@@ -325,6 +339,16 @@ function ProjectFlowScope({ projectId, children }: ProjectFlowProviderProps) {
             setState((prev) => withAdvanceOutcome(prev, removed.every(Boolean)))
           }
         })
+      },
+
+      retryValidation() {
+        // A new run: the validation effect opens the stream again for it.
+        setState(withValidationRetry)
+      },
+
+      retryExtraction() {
+        // A new run: the extraction effect opens the stream again for it.
+        setState(withExtractionRetry)
       },
     }
   }, [projectId, state])

@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Text.Json;
 using Aicepeak.Api.Data.Entities;
@@ -11,6 +12,16 @@ namespace Aicepeak.Api.Projects;
 /// </summary>
 internal sealed class ProjectInput {
     public const string DateFormat = "yyyy-MM-dd";
+
+    /// <summary>
+    /// The properties of a PATCH body, documented by <see cref="UpdateProjectRequest"/>; any other is unknown. A POST
+    /// body has <see cref="CreateProperties"/> (<see cref="CreateProjectRequest"/>) and is told the others must not be
+    /// given.
+    /// </summary>
+    public static readonly FrozenSet<string> UpdateProperties = ["id", "name", "startDate", "endDate", "description", "documents"];
+
+    /// <inheritdoc cref="UpdateProperties"/>
+    public static readonly FrozenSet<string> CreateProperties = ["name", "startDate", "endDate", "description"];
 
     public string? Name { get; private set; }
 
@@ -63,6 +74,11 @@ internal sealed class ProjectInput {
                 continue;
             }
 
+            if (!UpdateProperties.Contains(property.Name)) {
+                errors.Add(property.Name, "is not a known property");
+                continue;
+            }
+
             var value = property.Value;
             switch (property.Name) {
                 case "name":
@@ -92,9 +108,6 @@ internal sealed class ProjectInput {
                     break;
                 case "documents":
                     input.Documents = DocumentRefInput.ParseList(value, errors);
-                    break;
-                default:
-                    errors.Add(property.Name, "is not a known property");
                     break;
             }
         }
@@ -150,6 +163,9 @@ internal sealed class ProjectInput {
 
 /// <summary>An entry of <c>documents</c> in a PATCH body: <c>{url, name, size, contentType}</c> at <see cref="Index"/>.</summary>
 internal sealed record DocumentRefInput(int Index, Uri Url, string Name, long Size, string ContentType) {
+    /// <summary>The properties of an entry, documented by <see cref="DocumentRef"/>; any other is unknown.</summary>
+    public static readonly FrozenSet<string> Properties = ["url", "name", "size", "contentType"];
+
     public string Field(string property) => $"documents[{Index}].{property}";
 
     /// <summary>The valid entries of a <c>documents</c> array; a failure for each invalid one.</summary>
@@ -184,6 +200,12 @@ internal sealed record DocumentRefInput(int Index, Uri Url, string Name, long Si
         var valid = true;
         foreach (var property in item.EnumerateObject()) {
             var field = $"{prefix}.{property.Name}";
+            if (!Properties.Contains(property.Name)) {
+                errors.Add(field, "is not a known property");
+                valid = false;
+                continue;
+            }
+
             var value = property.Value;
             switch (property.Name) {
                 case "url" when url is null:
@@ -209,10 +231,6 @@ internal sealed record DocumentRefInput(int Index, Uri Url, string Name, long Si
                     break;
                 case "url" or "name" or "contentType" or "size":
                     errors.Add(field, "is given more than once");
-                    valid = false;
-                    break;
-                default:
-                    errors.Add(field, "is not a known property");
                     valid = false;
                     break;
             }

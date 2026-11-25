@@ -6,7 +6,7 @@
 FROM node:26.12.0-bookworm-slim@sha256:742a0fe7320e09e0321222b68165e6ac731d30470e7ea7f98f9bfc3a6e1034fe AS node
 
 # .NET 10 SDK on Ubuntu 24.04 (multi-arch: linux/amd64, linux/arm64); satisfies global.json.
-FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble@sha256:8c6edfb26c85153f236d26efebd9ad349aec403583f343f201ee67838b23658d
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends python3 git ca-certificates libatomic1 \
